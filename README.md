@@ -1,8 +1,8 @@
 # MomentumStrategy
 
-A small Python CLI that lists all equity holdings and the current cash
-balance in your Zerodha account using the official
-[Kite Connect](https://kite.trade) Python client
+A small Python CLI that lists all equity holdings, current open positions
+(equity and F&O), and the equity cash balance in your Zerodha account
+using the official [Kite Connect](https://kite.trade) Python client
 ([pykiteconnect](https://github.com/zerodha/pykiteconnect)).
 
 ## What it does
@@ -11,6 +11,10 @@ balance in your Zerodha account using the official
 - Calls `kite.holdings()` and prints a table of every stock you own with:
   symbol, exchange, quantity, average price, last price, invested value,
   current value, P&L, and day change %.
+- Calls `kite.positions()` and prints two separate tables for currently
+  open positions (qty != 0):
+    - **Equity** positions on NSE / BSE.
+    - **F&O / derivatives** positions on NFO / BFO / CDS / BCD / MCX.
 - Calls `kite.margins(segment="equity")` and prints the available cash,
   live balance, and utilised margin for the equity segment.
 - Caches the daily access token in `.access_token.json` so you don't have to
@@ -88,9 +92,12 @@ holdings table is printed.
 
 ## Notes
 
-- This script only reads. It calls `kite.holdings()`, `kite.margins()` and
-  `kite.profile()` (the last only to validate the cached token). It does not
-  place, modify, or cancel any orders.
+- This script only reads. It calls `kite.holdings()`, `kite.positions()`,
+  `kite.margins()` and `kite.profile()` (the last only to validate the
+  cached token). It does not place, modify, or cancel any orders.
+- For positions, the script uses the `net` view (consolidated current
+  positions) and filters out closed/zero-quantity rows. If you also want to
+  see intraday round-trips that net to zero, switch to `positions["day"]`
+  inside `_print_positions`.
 - Mutual fund holdings are not included; use `kite.mf_holdings()` if you want
   those too.
-- Open intraday / F&O positions are not included; use `kite.positions()` for those.
