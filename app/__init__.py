@@ -4,6 +4,7 @@ A small CLI that reports the current state of a Zerodha account using the
 Kite Connect API:
 
 * Equity holdings (long-term stocks held in demat).
+* Mutual fund holdings (units held per folio, with NAV and P&L).
 * Open net positions, separated into equity and F&O / derivatives.
 * Equity segment cash balance (available, live, utilised).
 

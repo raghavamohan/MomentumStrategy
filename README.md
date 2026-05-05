@@ -1,9 +1,9 @@
 # MomentumStrategy
 
-A small Python CLI that lists all equity holdings, current open positions
-(equity and F&O), and the equity cash balance in your Zerodha account
-using the official [Kite Connect](https://kite.trade) Python client
-([pykiteconnect](https://github.com/zerodha/pykiteconnect)).
+A small Python CLI that lists all equity holdings, mutual fund holdings,
+current open positions (equity and F&O), and the equity cash balance in
+your Zerodha account using the official [Kite Connect](https://kite.trade)
+Python client ([pykiteconnect](https://github.com/zerodha/pykiteconnect)).
 
 ## What it does
 
@@ -11,6 +11,10 @@ using the official [Kite Connect](https://kite.trade) Python client
 - Calls `kite.holdings()` and prints a table of every stock you own with:
   symbol, exchange, quantity, average price, last price, invested value,
   current value, P&L, and day change %.
+- Calls `kite.mf_holdings()` and prints a table of every mutual fund you
+  own with: fund name, folio, units, average NAV, latest NAV, invested
+  value, current value, and P&L. If the Mutual Funds module isn't enabled
+  on your Kite Connect app, a friendly notice is printed instead.
 - Calls `kite.positions()` and prints two separate tables for currently
   open positions (qty != 0):
     - **Equity** positions on NSE / BSE.
@@ -114,8 +118,10 @@ External documentation for everything this app talks to:
 | `app/auth.py` (validation)  | `KiteConnect.profile()`               | `GET /user/profile`           | <https://kite.trade/docs/connect/v3/user/#user-profile> · <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.profile>         |
 | `app/auth.py` (error)       | `kiteconnect.exceptions.TokenException` | (raised on 403 token errors) | <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.exceptions.TokenException>                                                             |
 | `app/main.py` `_print_holdings`     | `KiteConnect.holdings()`      | `GET /portfolio/holdings`     | <https://kite.trade/docs/connect/v3/portfolio/#holdings> · <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.holdings>       |
+| `app/main.py` `_print_mf_holdings`  | `KiteConnect.mf_holdings()`   | `GET /mf/holdings`            | <https://kite.trade/docs/connect/v3/mutual-funds/#mutual-fund-holdings> · <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.mf_holdings> |
 | `app/main.py` `_print_positions`    | `KiteConnect.positions()`     | `GET /portfolio/positions`    | <https://kite.trade/docs/connect/v3/portfolio/#positions> · <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.positions>     |
 | `app/main.py` `_print_cash_balance` | `KiteConnect.margins("equity")` | `GET /user/margins/equity`  | <https://kite.trade/docs/connect/v3/user/#funds-and-margins> · <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.margins>    |
+| `app/main.py` `_print_mf_holdings` (error) | `kiteconnect.exceptions.PermissionException` | (raised on 403 when MF API not enabled) | <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.exceptions.PermissionException>                                |
 
 ### Login flow used by `app/auth.py`
 
@@ -136,7 +142,7 @@ sequenceDiagram
     A->>Z: POST /session/token (request_token + api_secret)
     Z->>A: { access_token, ... }
     A->>A: cache access_token in .access_token.json
-    A->>Z: GET /portfolio/holdings, /portfolio/positions, /user/margins/equity
+    A->>Z: GET /portfolio/holdings, /mf/holdings, /portfolio/positions, /user/margins/equity
 ```
 
 The `access_token` returned by `generate_session` is valid until
@@ -152,12 +158,16 @@ only a subset), refer to the Kite Connect HTTP API docs:
 
 - **Holdings entry fields** —
   <https://kite.trade/docs/connect/v3/portfolio/#holdings>
+- **MF holdings entry fields** —
+  <https://kite.trade/docs/connect/v3/mutual-funds/#mutual-fund-holdings>
 - **Positions entry fields** (with `net` vs `day` semantics) —
   <https://kite.trade/docs/connect/v3/portfolio/#positions>
 - **Margins / funds response** (per segment) —
   <https://kite.trade/docs/connect/v3/user/#funds-and-margins>
 - **Exchange & segment codes** (NSE / BSE / NFO / BFO / CDS / BCD / MCX) —
   <https://kite.trade/docs/connect/v3/exchange/>
+- **Mutual Funds API overview** (orders, SIPs, holdings, instruments) —
+  <https://kite.trade/docs/connect/v3/mutual-funds/>
 - **Order constants** (variety, product, order_type, validity) —
   <https://kite.trade/docs/connect/v3/orders/#constants>
   (not used yet, but referenced by the pykiteconnect class constants
@@ -165,16 +175,20 @@ only a subset), refer to the Kite Connect HTTP API docs:
 
 ## Notes
 
-- This script only reads. It calls `kite.holdings()`, `kite.positions()`,
-  `kite.margins()` and `kite.profile()` (the last only to validate the
-  cached token). It does not place, modify, or cancel any orders.
+- This script only reads. It calls `kite.holdings()`, `kite.mf_holdings()`,
+  `kite.positions()`, `kite.margins()` and `kite.profile()` (the last only
+  to validate the cached token). It does not place, modify, or cancel any
+  orders.
 - For positions, the script uses the `net` view (consolidated current
   positions) and filters out closed/zero-quantity rows. If you also want to
   see intraday round-trips that net to zero, switch to `positions["day"]`
   inside `_print_positions`.
-- Mutual fund holdings are not included; use
-  [`kite.mf_holdings()`](https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.mf_holdings)
-  if you want those too.
+- The mutual funds section requires the Mutual Funds module to be enabled
+  on your Kite Connect app (toggle it in the
+  [developer console](https://developers.kite.trade)). If it isn't, the
+  script catches the resulting
+  [`PermissionException`](https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.exceptions.PermissionException)
+  and prints a notice rather than failing.
 - Index constituents (e.g. NIFTY 50) are **not** part of Kite Connect. Use
   the NSE Indices CSV at
   <https://nsearchives.nseindia.com/content/indices/ind_nifty50list.csv>

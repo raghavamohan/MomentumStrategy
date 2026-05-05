@@ -10,7 +10,15 @@ Sections produced
    `KiteConnect.holdings <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.holdings>`_
    (HTTP: `GET /portfolio/holdings <https://kite.trade/docs/connect/v3/portfolio/#holdings>`_).
 
-2. **Open Positions** — current intraday / overnight open positions,
+2. **Mutual Fund Holdings** — units held per folio, with NAV, invested
+   value, current value, and P&L. Sourced from
+   `KiteConnect.mf_holdings <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.mf_holdings>`_
+   (HTTP: `GET /mf/holdings <https://kite.trade/docs/connect/v3/mutual-funds/#mutual-fund-holdings>`_).
+   Requires the Mutual Funds module to be enabled on the Kite Connect
+   app at https://developers.kite.trade; otherwise a friendly notice is
+   printed instead of crashing.
+
+3. **Open Positions** — current intraday / overnight open positions,
    split into two tables by exchange:
 
    * Equity (NSE / BSE).
@@ -21,7 +29,7 @@ Sections produced
    (HTTP: `GET /portfolio/positions <https://kite.trade/docs/connect/v3/portfolio/#positions>`_).
    Closed positions (``quantity == 0``) are filtered out.
 
-3. **Equity Cash Balance** — available cash, live balance, and utilised
+4. **Equity Cash Balance** — available cash, live balance, and utilised
    margin for the equity segment. Sourced from
    `KiteConnect.margins <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.margins>`_
    (HTTP: `GET /user/margins/{segment} <https://kite.trade/docs/connect/v3/user/#funds-and-margins>`_)
@@ -35,11 +43,14 @@ References
 * pykiteconnect v4 API ref: https://kite.trade/docs/pykiteconnect/v4/
 * pykiteconnect source:     https://github.com/zerodha/pykiteconnect
 * Exchange & segment codes: https://kite.trade/docs/connect/v3/exchange/
+* Mutual Funds endpoints:   https://kite.trade/docs/connect/v3/mutual-funds/
 """
 
 from __future__ import annotations
 
 from tabulate import tabulate
+
+from kiteconnect.exceptions import PermissionException
 
 from app.auth import get_kite_client
 
@@ -141,6 +152,118 @@ def _print_holdings(kite) -> None:
     print(f"Invested: {total_invested:>14,.2f}")
     print(f"Current : {total_current:>14,.2f}")
     print(f"P&L     : {total_pnl:>14,.2f}")
+
+
+# ---------------------------------------------------------------------------
+# Mutual fund holdings
+# ---------------------------------------------------------------------------
+#
+# ``KiteConnect.mf_holdings()`` corresponds to the HTTP endpoint
+# ``GET /mf/holdings`` documented at:
+#   https://kite.trade/docs/connect/v3/mutual-funds/#mutual-fund-holdings
+#
+# Response shape (list of dicts), relevant subset:
+#   [
+#     {
+#       "folio":            "1234/5678",            # AMC folio number
+#       "fund":             "Axis Bluechip Fund - Direct Plan - Growth",
+#       "tradingsymbol":    "INF846K01EW2",         # ISIN
+#       "quantity":         123.456,                # units held
+#       "average_price":    45.1234,                # weighted avg buy NAV
+#       "last_price":       67.8910,                # latest NAV
+#       "last_price_date":  "2026-04-15",
+#       "pledged_quantity": 0,
+#       "pnl":              1234.56                 # realised + unrealised
+#     },
+#     ...
+#   ]
+#
+# The Mutual Funds module must be enabled for the Kite Connect app
+# (https://developers.kite.trade). If it isn't, ``mf_holdings()`` raises
+# ``kiteconnect.exceptions.PermissionException`` -- caught below so the
+# rest of the report still renders.
+# ---------------------------------------------------------------------------
+
+
+def _mf_row(holding: dict) -> list:
+    """Map a single Kite ``mf_holdings`` entry to a printable table row.
+
+    The "Avg" and "LTP" columns are NAVs (per-unit prices). "Invested"
+    and "Current" are NAV * units. P&L is taken straight from Kite.
+    """
+    units = float(holding.get("quantity") or 0.0)
+    avg_nav = float(holding.get("average_price") or 0.0)
+    last_nav = float(holding.get("last_price") or 0.0)
+    pnl = float(holding.get("pnl") or 0.0)
+
+    invested = avg_nav * units
+    current = last_nav * units
+
+    return [
+        holding.get("fund", ""),
+        holding.get("folio", ""),
+        units,
+        avg_nav,
+        last_nav,
+        invested,
+        current,
+        pnl,
+    ]
+
+
+def _print_mf_holdings(kite) -> None:
+    """Print the mutual fund holdings table.
+
+    Calls
+    `KiteConnect.mf_holdings <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.mf_holdings>`_
+    (HTTP: `GET /mf/holdings <https://kite.trade/docs/connect/v3/mutual-funds/#mutual-fund-holdings>`_).
+
+    If the Kite Connect app isn't subscribed to the Mutual Funds module,
+    Kite returns 403 and pykiteconnect raises
+    :class:`kiteconnect.exceptions.PermissionException`; this function
+    catches that so the rest of the report still runs.
+    """
+    print()
+    print("=== Mutual Fund Holdings ===")
+
+    try:
+        holdings = kite.mf_holdings()
+    except PermissionException:
+        print(
+            "Mutual Funds API not enabled on this Kite Connect app. "
+            "Enable the MF module at https://developers.kite.trade if you "
+            "want this section."
+        )
+        return
+
+    if not holdings:
+        print("No mutual fund holdings found in your Zerodha account.")
+        return
+
+    rows = [_mf_row(h) for h in holdings]
+    rows.sort(key=lambda r: r[0])
+
+    headers = ["Fund", "Folio", "Units", "Avg NAV", "LTP", "Invested", "Current", "P&L"]
+
+    print()
+    print(
+        tabulate(
+            rows,
+            headers=headers,
+            tablefmt="github",
+            floatfmt=("", "", ",.4f", ",.4f", ",.4f", ",.2f", ",.2f", ",.2f"),
+        )
+    )
+
+    total_invested = sum(r[5] for r in rows)
+    total_current = sum(r[6] for r in rows)
+    total_pnl = sum(r[7] for r in rows)
+
+    print()
+    print(f"MF holdings: {len(rows)} fund(s)")
+    print(f"Invested   : {total_invested:>14,.2f}")
+    print(f"Current    : {total_current:>14,.2f}")
+    print(f"P&L        : {total_pnl:>14,.2f}")
 
 
 # ---------------------------------------------------------------------------
@@ -330,9 +453,10 @@ def _print_cash_balance(kite) -> None:
 
 
 def main() -> None:
-    """Authenticate and emit the three account-snapshot sections."""
+    """Authenticate and emit the four account-snapshot sections."""
     kite = get_kite_client()
     _print_holdings(kite)
+    _print_mf_holdings(kite)
     _print_positions(kite)
     _print_cash_balance(kite)
 
