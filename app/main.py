@@ -1,8 +1,40 @@
-"""List all equity holdings, current open positions (equity and F&O),
-and the equity cash balance in the user's Zerodha account.
+"""Entry point: render the current Zerodha account snapshot.
 
-Run with:
+Run with::
+
     python -m app.main
+
+Sections produced
+-----------------
+1. **Equity Holdings** — long-term stocks held in demat. Sourced from
+   `KiteConnect.holdings <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.holdings>`_
+   (HTTP: `GET /portfolio/holdings <https://kite.trade/docs/connect/v3/portfolio/#holdings>`_).
+
+2. **Open Positions** — current intraday / overnight open positions,
+   split into two tables by exchange:
+
+   * Equity (NSE / BSE).
+   * F&O / derivatives (NFO / BFO / CDS / BCD / MCX).
+
+   Sourced from
+   `KiteConnect.positions <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.positions>`_
+   (HTTP: `GET /portfolio/positions <https://kite.trade/docs/connect/v3/portfolio/#positions>`_).
+   Closed positions (``quantity == 0``) are filtered out.
+
+3. **Equity Cash Balance** — available cash, live balance, and utilised
+   margin for the equity segment. Sourced from
+   `KiteConnect.margins <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.margins>`_
+   (HTTP: `GET /user/margins/{segment} <https://kite.trade/docs/connect/v3/user/#funds-and-margins>`_)
+   called with ``segment="equity"``.
+
+Authentication is handled by :mod:`app.auth`.
+
+References
+----------
+* Kite Connect HTTP API:    https://kite.trade/docs/connect/v3/
+* pykiteconnect v4 API ref: https://kite.trade/docs/pykiteconnect/v4/
+* pykiteconnect source:     https://github.com/zerodha/pykiteconnect
+* Exchange & segment codes: https://kite.trade/docs/connect/v3/exchange/
 """
 
 from __future__ import annotations
@@ -12,7 +44,32 @@ from tabulate import tabulate
 from app.auth import get_kite_client
 
 
+# ---------------------------------------------------------------------------
+# Equity holdings
+# ---------------------------------------------------------------------------
+#
+# Each row in ``KiteConnect.holdings()`` is documented at:
+#   https://kite.trade/docs/connect/v3/portfolio/#holdings
+#
+# The fields used here:
+#   tradingsymbol           Symbol on the listed exchange (e.g. "INFY").
+#   exchange                "NSE" or "BSE".
+#   quantity                Settled quantity available for sale (T+2).
+#   t1_quantity             Quantity bought today, still on T+1 path.
+#   average_price           Buy-side weighted average per unit.
+#   last_price              Latest traded price for the instrument.
+#   pnl                     Realised + unrealised P&L on this holding.
+#   day_change_percentage   Today's percentage change vs previous close.
+# ---------------------------------------------------------------------------
+
+
 def _row(holding: dict) -> list:
+    """Map a single Kite ``holdings`` entry to a printable table row.
+
+    The total quantity shown adds ``quantity`` (settled) and
+    ``t1_quantity`` (today's buy still pending settlement) so that
+    freshly bought shares are not invisible.
+    """
     quantity = (holding.get("quantity") or 0) + (holding.get("t1_quantity") or 0)
     avg_price = float(holding.get("average_price") or 0.0)
     last_price = float(holding.get("last_price") or 0.0)
@@ -36,6 +93,11 @@ def _row(holding: dict) -> list:
 
 
 def _print_holdings(kite) -> None:
+    """Print the equity holdings table.
+
+    Calls ``kite.holdings()`` once and renders the result. See:
+    https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.holdings
+    """
     holdings = kite.holdings()
 
     print()
@@ -81,11 +143,62 @@ def _print_holdings(kite) -> None:
     print(f"P&L     : {total_pnl:>14,.2f}")
 
 
+# ---------------------------------------------------------------------------
+# Open positions
+# ---------------------------------------------------------------------------
+#
+# ``KiteConnect.positions()`` returns:
+#   {
+#       "net": [...],   # consolidated open positions across the day
+#       "day": [...],   # today's intraday breakdown (entries + exits)
+#   }
+#
+# This module uses the "net" view and discards rows with ``quantity == 0``
+# (closed intraday round-trips) so the output reflects what the user is
+# currently exposed to.
+#
+# Exchange codes (full list at https://kite.trade/docs/connect/v3/exchange/):
+#   NSE   - NSE equity (cash market).
+#   BSE   - BSE equity (cash market).
+#   NFO   - NSE futures and options (equity derivatives).
+#   BFO   - BSE futures and options.
+#   CDS   - NSE currency derivatives.
+#   BCD   - BSE currency derivatives.
+#   MCX   - Multi Commodity Exchange (commodity futures and options).
+# ---------------------------------------------------------------------------
+
 EQUITY_EXCHANGES = {"NSE", "BSE"}
+"""Exchanges treated as cash-market equity positions in the output."""
+
 FNO_EXCHANGES = {"NFO", "BFO", "CDS", "BCD", "MCX"}
+"""Exchanges treated as F&O / derivatives positions in the output."""
 
 
 def _position_row(position: dict) -> list:
+    """Map a single Kite ``positions`` entry to a printable row.
+
+    Fields used (full schema at
+    https://kite.trade/docs/connect/v3/portfolio/#positions):
+
+    ``tradingsymbol``
+        Symbol with strike/expiry suffix for derivatives, e.g.
+        ``NIFTY24DEC25000CE``.
+    ``exchange``
+        See module-level exchange code list.
+    ``product``
+        Product type: ``CNC`` (delivery), ``MIS`` (intraday),
+        ``NRML`` (overnight derivatives).
+    ``quantity``
+        Net signed quantity. Positive = long, negative = short.
+    ``average_price``
+        Weighted average entry price for the open quantity.
+    ``last_price``
+        Latest traded price for the instrument.
+    ``pnl``
+        Total profit / loss on the position.
+    ``m2m``
+        Mark-to-market for the day (today's price movement only).
+    """
     qty = int(position.get("quantity") or 0)
     avg = float(position.get("average_price") or 0.0)
     ltp = float(position.get("last_price") or 0.0)
@@ -104,6 +217,7 @@ def _position_row(position: dict) -> list:
 
 
 def _print_position_table(title: str, positions: list[dict]) -> None:
+    """Render one positions table with subtotals."""
     print()
     print(f"=== {title} ===")
 
@@ -135,6 +249,17 @@ def _print_position_table(title: str, positions: list[dict]) -> None:
 
 
 def _print_positions(kite) -> None:
+    """Fetch and print open positions, separated by equity vs F&O.
+
+    Uses
+    `KiteConnect.positions <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.positions>`_
+    which corresponds to
+    `GET /portfolio/positions <https://kite.trade/docs/connect/v3/portfolio/#positions>`_.
+
+    Only the ``net`` slice of the response is used; ``day`` is ignored.
+    Closed positions are filtered out so the output reflects the user's
+    current market exposure.
+    """
     positions = kite.positions() or {}
     net_positions = positions.get("net", []) or []
 
@@ -154,7 +279,40 @@ def _print_positions(kite) -> None:
         _print_position_table("Positions: Other", other)
 
 
+# ---------------------------------------------------------------------------
+# Cash balance (equity segment)
+# ---------------------------------------------------------------------------
+#
+# ``KiteConnect.margins(segment="equity")`` corresponds to the HTTP
+# endpoint ``GET /user/margins/equity`` documented at:
+#   https://kite.trade/docs/connect/v3/user/#funds-and-margins
+#
+# Response shape (relevant subset):
+#   {
+#       "enabled": True,
+#       "net": <float>,
+#       "available": {
+#           "adhoc_margin":   <float>,
+#           "cash":           <float>,  # free cash available for new trades
+#           "opening_balance":<float>,
+#           "live_balance":   <float>,  # cash adjusted for intraday MTM
+#           "collateral":     <float>,
+#           "intraday_payin": <float>
+#       },
+#       "utilised": {
+#           "debits":  <float>,         # total margin currently locked
+#           ...other granular utilisation fields...
+#       }
+#   }
+# ---------------------------------------------------------------------------
+
+
 def _print_cash_balance(kite) -> None:
+    """Print equity cash balance: available, live, and utilised.
+
+    Calls ``kite.margins(segment="equity")``. See:
+    https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.margins
+    """
     margins = kite.margins(segment="equity") or {}
     available = margins.get("available", {}) or {}
     utilised = margins.get("utilised", {}) or {}
@@ -172,6 +330,7 @@ def _print_cash_balance(kite) -> None:
 
 
 def main() -> None:
+    """Authenticate and emit the three account-snapshot sections."""
     kite = get_kite_client()
     _print_holdings(kite)
     _print_positions(kite)

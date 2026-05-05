@@ -1,3 +1,17 @@
+# Runtime dependencies for the MomentumStrategy CLI.
+#
+# kiteconnect      - Official Zerodha Python client for the Kite Connect API.
+#                    Source : https://github.com/zerodha/pykiteconnect
+#                    Docs   : https://kite.trade/docs/pykiteconnect/v4/
+#                    PyPI   : https://pypi.org/project/kiteconnect/
+#
+# python-dotenv    - Loads KITE_API_KEY / KITE_API_SECRET from .env at startup.
+#                    Docs   : https://github.com/theskumar/python-dotenv
+#
+# tabulate         - Pretty ASCII tables for the holdings / positions / cash
+#                    balance output in app/main.py.
+#                    Docs   : https://github.com/astanin/python-tabulate
+
 kiteconnect>=5.0,<6
 python-dotenv>=1.0
 tabulate>=0.9
