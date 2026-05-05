@@ -365,18 +365,36 @@ async def dashboard(request: Request):
         "utilised": float(utilised.get("debits") or 0.0),
     }
 
+    equity_totals = _summarise(equity_holdings, "invested", "current", "pnl")
+    mf_totals = _summarise(mf_holdings, "invested", "current", "pnl")
+    equity_position_totals = _summarise(equity_positions, "pnl", "m2m")
+    fno_position_totals = _summarise(fno_positions, "pnl", "m2m")
+
+    total_invested = equity_totals["invested"] + mf_totals["invested"]
+    total_current = equity_totals["current"] + mf_totals["current"]
+    holdings_pnl = equity_totals["pnl"] + mf_totals["pnl"]
+    positions_pnl = equity_position_totals["pnl"] + fno_position_totals["pnl"]
+    overall_pnl = holdings_pnl + positions_pnl
+
     context = {
         "request": request,
         "equity_holdings": equity_holdings,
-        "equity_totals": _summarise(equity_holdings, "invested", "current", "pnl"),
+        "equity_totals": equity_totals,
         "mf_holdings": mf_holdings,
-        "mf_totals": _summarise(mf_holdings, "invested", "current", "pnl"),
+        "mf_totals": mf_totals,
         "mf_error": mf_error,
         "equity_positions": equity_positions,
-        "equity_position_totals": _summarise(equity_positions, "pnl", "m2m"),
+        "equity_position_totals": equity_position_totals,
         "fno_positions": fno_positions,
-        "fno_position_totals": _summarise(fno_positions, "pnl", "m2m"),
+        "fno_position_totals": fno_position_totals,
         "cash": cash,
+        "portfolio_summary": {
+            "total_invested": total_invested,
+            "total_current": total_current,
+            "holdings_pnl": holdings_pnl,
+            "positions_pnl": positions_pnl,
+            "overall_pnl": overall_pnl,
+        },
     }
     return templates.TemplateResponse(request, "dashboard.html", context)
 

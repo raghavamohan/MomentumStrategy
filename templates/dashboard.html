@@ -47,6 +47,29 @@
     </div>
   </div>
 
+  <div class="summary">
+    <div class="stat">
+      <div class="label">Total Invested (Equity + MF)</div>
+      <div class="value">{{ portfolio_summary.total_invested|inr }}</div>
+    </div>
+    <div class="stat">
+      <div class="label">Current Value (Equity + MF)</div>
+      <div class="value">{{ portfolio_summary.total_current|inr }}</div>
+    </div>
+    <div class="stat">
+      <div class="label">Overall P&amp;L</div>
+      <div class="value {{ portfolio_summary.overall_pnl|sign_class }}">
+        {{ portfolio_summary.overall_pnl|inr }}
+      </div>
+    </div>
+    <div class="stat">
+      <div class="label">Open Positions P&amp;L</div>
+      <div class="value {{ portfolio_summary.positions_pnl|sign_class }}">
+        {{ portfolio_summary.positions_pnl|inr }}
+      </div>
+    </div>
+  </div>
+
   <div class="tabs" role="tablist">
     <button class="tab active" data-tab="equity" role="tab">
       Equity Holdings <span class="count">{{ equity_holdings|length }}</span>
