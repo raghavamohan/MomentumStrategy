@@ -192,15 +192,24 @@ def _decorate_mf(h: dict) -> dict:
     units = float(h.get("quantity") or 0.0)
     avg = float(h.get("average_price") or 0.0)
     ltp = float(h.get("last_price") or 0.0)
-    pnl = float(h.get("pnl") or 0.0)
+    invested = avg * units
+    current = ltp * units
+    api_pnl = h.get("pnl")
+    # Kite MF holdings can return pnl=0.0 even when NAV-based P&L is non-zero.
+    # Prefer API pnl only when it is non-zero; otherwise derive from NAV values.
+    pnl = (
+        float(api_pnl)
+        if api_pnl not in (None, "") and float(api_pnl) != 0.0
+        else (current - invested)
+    )
     return {
         "fund": h.get("fund", ""),
         "folio": h.get("folio", ""),
         "units": units,
         "average_price": avg,
         "last_price": ltp,
-        "invested": avg * units,
-        "current": ltp * units,
+        "invested": invested,
+        "current": current,
         "pnl": pnl,
     }
 

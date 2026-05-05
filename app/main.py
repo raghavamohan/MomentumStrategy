@@ -202,10 +202,17 @@ def _mf_row(holding: dict) -> list:
     units = float(holding.get("quantity") or 0.0)
     avg_nav = float(holding.get("average_price") or 0.0)
     last_nav = float(holding.get("last_price") or 0.0)
-    pnl = float(holding.get("pnl") or 0.0)
 
     invested = avg_nav * units
     current = last_nav * units
+    api_pnl = holding.get("pnl")
+    # Kite MF holdings can return pnl=0.0 despite valid NAV deltas.
+    # Keep API pnl when non-zero; otherwise derive from invested/current.
+    pnl = (
+        float(api_pnl)
+        if api_pnl not in (None, "") and float(api_pnl) != 0.0
+        else (current - invested)
+    )
 
     return [
         holding.get("fund", ""),
