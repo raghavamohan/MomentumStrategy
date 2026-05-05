@@ -234,7 +234,7 @@ async def index(request: Request):
     """Landing page. Redirects to /dashboard if already authenticated."""
     if request.session.get("authenticated") and load_cached_access_token():
         return RedirectResponse("/dashboard", status_code=303)
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(request, "index.html")
 
 
 @app.get("/login")
@@ -260,15 +260,17 @@ async def callback(
     """
     if status and status != "success":
         return templates.TemplateResponse(
+            request,
             "index.html",
-            {"request": request, "error": f"Login was cancelled (status={status})."},
+            {"error": f"Login was cancelled (status={status})."},
             status_code=400,
         )
 
     if not request_token:
         return templates.TemplateResponse(
+            request,
             "index.html",
-            {"request": request, "error": "Missing request_token in callback URL."},
+            {"error": "Missing request_token in callback URL."},
             status_code=400,
         )
 
@@ -278,8 +280,9 @@ async def callback(
         session = kite.generate_session(request_token, api_secret=api_secret)
     except Exception as exc:  # noqa: BLE001 - surface any Kite error to the user
         return templates.TemplateResponse(
+            request,
             "index.html",
-            {"request": request, "error": f"Login failed: {exc}"},
+            {"error": f"Login failed: {exc}"},
             status_code=401,
         )
 
@@ -366,7 +369,7 @@ async def dashboard(request: Request):
         "fno_position_totals": _summarise(fno_positions, "pnl", "m2m"),
         "cash": cash,
     }
-    return templates.TemplateResponse("dashboard.html", context)
+    return templates.TemplateResponse(request, "dashboard.html", context)
 
 
 def main() -> None:
