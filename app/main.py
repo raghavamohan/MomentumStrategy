@@ -40,6 +40,10 @@ Sections produced
    (HTTP: `GET /user/margins/{segment} <https://kite.trade/docs/connect/v3/user/#funds-and-margins>`_)
    called with ``segment="equity"``.
 
+5. **Overall Portfolio Summary** — consolidated totals for invested,
+   current, and overall P&L across equity holdings, mutual fund holdings,
+   and open positions.
+
 Authentication is handled by :mod:`app.auth` (specifically
 :func:`app.auth.get_kite_client`, which runs the interactive terminal
 login flow).
@@ -111,7 +115,7 @@ def _row(holding: dict) -> list:
     ]
 
 
-def _print_holdings(kite) -> None:
+def _print_holdings(kite) -> tuple[float, float, float]:
     """Print the equity holdings table.
 
     Calls ``kite.holdings()`` once and renders the result. See:
@@ -124,7 +128,7 @@ def _print_holdings(kite) -> None:
 
     if not holdings:
         print("No equity holdings found in your Zerodha account.")
-        return
+        return (0.0, 0.0, 0.0)
 
     rows = [_row(h) for h in holdings]
     rows.sort(key=lambda r: r[0])
@@ -160,6 +164,7 @@ def _print_holdings(kite) -> None:
     print(f"Invested: {total_invested:>14,.2f}")
     print(f"Current : {total_current:>14,.2f}")
     print(f"P&L     : {total_pnl:>14,.2f}")
+    return (total_invested, total_current, total_pnl)
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +231,7 @@ def _mf_row(holding: dict) -> list:
     ]
 
 
-def _print_mf_holdings(kite) -> None:
+def _print_mf_holdings(kite) -> tuple[float, float, float]:
     """Print the mutual fund holdings table.
 
     Calls
@@ -249,11 +254,11 @@ def _print_mf_holdings(kite) -> None:
             "Enable the MF module at https://developers.kite.trade if you "
             "want this section."
         )
-        return
+        return (0.0, 0.0, 0.0)
 
     if not holdings:
         print("No mutual fund holdings found in your Zerodha account.")
-        return
+        return (0.0, 0.0, 0.0)
 
     rows = [_mf_row(h) for h in holdings]
     rows.sort(key=lambda r: r[0])
@@ -279,6 +284,7 @@ def _print_mf_holdings(kite) -> None:
     print(f"Invested   : {total_invested:>14,.2f}")
     print(f"Current    : {total_current:>14,.2f}")
     print(f"P&L        : {total_pnl:>14,.2f}")
+    return (total_invested, total_current, total_pnl)
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +392,7 @@ def _print_position_table(title: str, positions: list[dict]) -> None:
     print(f"Total M2M     : {total_m2m:>14,.2f}")
 
 
-def _print_positions(kite) -> None:
+def _print_positions(kite) -> float:
     """Fetch and print open positions, separated by equity vs F&O.
 
     Uses
@@ -415,6 +421,8 @@ def _print_positions(kite) -> None:
     _print_position_table("Positions: F&O / Derivatives (NFO / BFO / CDS / BCD / MCX)", fno)
     if other:
         _print_position_table("Positions: Other", other)
+
+    return sum(float(p.get("pnl") or 0.0) for p in open_positions)
 
 
 # ---------------------------------------------------------------------------
@@ -467,13 +475,31 @@ def _print_cash_balance(kite) -> None:
     print(f"Utilised      : {utilised_debits:>14,.2f}")
 
 
+def _print_overall_summary(
+    total_invested: float,
+    total_current: float,
+    overall_pnl: float,
+) -> None:
+    """Print consolidated portfolio totals across holdings and positions."""
+    print()
+    print("=== Overall Portfolio Summary ===")
+    print()
+    print(f"Total invested: {total_invested:>14,.2f}")
+    print(f"Current value : {total_current:>14,.2f}")
+    print(f"Overall P&L   : {overall_pnl:>14,.2f}")
+
+
 def main() -> None:
-    """Authenticate and emit the four account-snapshot sections."""
+    """Authenticate and emit the account-snapshot sections."""
     kite = get_kite_client()
-    _print_holdings(kite)
-    _print_mf_holdings(kite)
-    _print_positions(kite)
+    eq_invested, eq_current, eq_pnl = _print_holdings(kite)
+    mf_invested, mf_current, mf_pnl = _print_mf_holdings(kite)
+    positions_pnl = _print_positions(kite)
     _print_cash_balance(kite)
+    total_invested = eq_invested + mf_invested
+    total_current = eq_current + mf_current
+    overall_pnl = eq_pnl + mf_pnl + positions_pnl
+    _print_overall_summary(total_invested, total_current, overall_pnl)
 
 
 if __name__ == "__main__":
