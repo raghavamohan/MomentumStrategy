@@ -1,0 +1,44 @@
+{#
+  Login landing page.
+
+  Rendered by:
+    * `app/web.py` GET /         when the visitor is not yet authenticated.
+    * `app/web.py` GET /callback when the OAuth-style exchange fails (the
+                                 view passes an `error` string into the
+                                 context for inline display).
+
+  The "Login with Zerodha" button hits `/login`, which redirects to the
+  Kite Connect login URL produced by `KiteConnect.login_url()`. After
+  the user signs in, Zerodha redirects back to /callback?request_token=...
+  which exchanges the token via `KiteConnect.generate_session()` and
+  hops the visitor to /dashboard.
+
+  See: https://kite.trade/docs/connect/v3/user/#login-flow
+#}
+{% extends "base.html" %}
+
+{% block title %}Sign in &middot; MomentumStrategy{% endblock %}
+
+{% block content %}
+  <div class="card login-card">
+    <h2>MomentumStrategy</h2>
+    <p>
+      A local dashboard for your Zerodha account. Sign in with Kite Connect to
+      view your equity holdings, mutual fund holdings, open positions, and
+      cash balance.
+    </p>
+
+    {% if error %}
+      <div class="alert error">{{ error }}</div>
+    {% endif %}
+
+    <a class="button" href="/login">Login with Zerodha</a>
+
+    <p style="margin-top: 32px; font-size: 12px;">
+      Make sure your
+      <a href="https://developers.kite.trade" target="_blank" rel="noopener">Kite Connect app</a>
+      has its <strong>Redirect URL</strong> set to
+      <code>http://127.0.0.1:5000/callback</code>.
+    </p>
+  </div>
+{% endblock %}

@@ -1,0 +1,346 @@
+{#
+  Tabbed account dashboard.
+
+  Rendered by `app/web.py` GET /dashboard once per request after the
+  view fetches the four Kite Connect data sets:
+
+    * equity_holdings     <- KiteConnect.holdings()
+        https://kite.trade/docs/connect/v3/portfolio/#holdings
+    * mf_holdings         <- KiteConnect.mf_holdings()  (optional; if the
+                             MF API is not enabled, mf_error is set)
+        https://kite.trade/docs/connect/v3/mutual-funds/#mutual-fund-holdings
+    * equity_positions    <- KiteConnect.positions()["net"] filtered to
+                             NSE / BSE with quantity != 0.
+        https://kite.trade/docs/connect/v3/portfolio/#positions
+    * fno_positions       <- same source, exchange in NFO/BFO/CDS/BCD/MCX.
+    * cash                <- KiteConnect.margins(segment="equity")
+        https://kite.trade/docs/connect/v3/user/#funds-and-margins
+
+  Layout:
+    * Topbar with title, Refresh and Logout buttons.
+    * Tab nav (5 tabs, accessible buttons with role="tab").
+    * One <section class="panel"> per tab, only one visible at a time.
+    * Per-tab summary cards (counts, totals) above each table.
+
+  Tab switching is handled by a tiny vanilla JS block at the bottom of
+  this file.
+
+  Custom Jinja2 filters used (registered in `app/web.py`):
+    * `inr`        - format number as NN,NNN.NN
+    * `units`      - format number with 4 decimals (MF units / NAV)
+    * `pct`        - format number as NN.NN%
+    * `sign_class` - return "positive" / "negative" / "neutral" CSS class
+#}
+{% extends "base.html" %}
+
+{% block title %}Dashboard &middot; MomentumStrategy{% endblock %}
+
+{% block content %}
+  <div class="topbar">
+    <div>
+      <h1>MomentumStrategy</h1>
+      <div class="subtitle">Live snapshot from Kite Connect</div>
+    </div>
+    <div class="right">
+      <a class="button secondary" href="/dashboard">Refresh</a>
+      <a class="button secondary" href="/logout">Logout</a>
+    </div>
+  </div>
+
+  <div class="tabs" role="tablist">
+    <button class="tab active" data-tab="equity" role="tab">
+      Equity Holdings <span class="count">{{ equity_holdings|length }}</span>
+    </button>
+    <button class="tab" data-tab="mf" role="tab">
+      Mutual Funds <span class="count">{{ mf_holdings|length }}</span>
+    </button>
+    <button class="tab" data-tab="positions-equity" role="tab">
+      Equity Positions <span class="count">{{ equity_positions|length }}</span>
+    </button>
+    <button class="tab" data-tab="positions-fno" role="tab">
+      F&amp;O Positions <span class="count">{{ fno_positions|length }}</span>
+    </button>
+    <button class="tab" data-tab="cash" role="tab">Cash Balance</button>
+  </div>
+
+  {# ---------------- Equity Holdings ---------------- #}
+  <section class="panel active" data-panel="equity">
+    {% if equity_holdings %}
+      <div class="summary">
+        <div class="stat">
+          <div class="label">Stocks</div>
+          <div class="value">{{ equity_holdings|length }}</div>
+        </div>
+        <div class="stat">
+          <div class="label">Invested</div>
+          <div class="value">{{ equity_totals.invested|inr }}</div>
+        </div>
+        <div class="stat">
+          <div class="label">Current</div>
+          <div class="value">{{ equity_totals.current|inr }}</div>
+        </div>
+        <div class="stat">
+          <div class="label">Total P&amp;L</div>
+          <div class="value {{ equity_totals.pnl|sign_class }}">
+            {{ equity_totals.pnl|inr }}
+          </div>
+        </div>
+      </div>
+      <div class="card" style="padding: 0; overflow: hidden;">
+        <table>
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Exch</th>
+              <th class="num">Qty</th>
+              <th class="num">Avg</th>
+              <th class="num">LTP</th>
+              <th class="num">Invested</th>
+              <th class="num">Current</th>
+              <th class="num">P&amp;L</th>
+              <th class="num">Day %</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for h in equity_holdings %}
+              <tr>
+                <td class="symbol">{{ h.tradingsymbol }}</td>
+                <td>{{ h.exchange }}</td>
+                <td class="num">{{ h.quantity }}</td>
+                <td class="num">{{ h.average_price|inr }}</td>
+                <td class="num">{{ h.last_price|inr }}</td>
+                <td class="num">{{ h.invested|inr }}</td>
+                <td class="num">{{ h.current|inr }}</td>
+                <td class="num {{ h.pnl|sign_class }}">{{ h.pnl|inr }}</td>
+                <td class="num {{ h.day_change_percentage|sign_class }}">
+                  {{ h.day_change_percentage|pct }}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="card empty">No equity holdings found in your Zerodha account.</div>
+    {% endif %}
+  </section>
+
+  {# ---------------- Mutual Fund Holdings ---------------- #}
+  <section class="panel" data-panel="mf">
+    {% if mf_error %}
+      <div class="alert warning">{{ mf_error }}</div>
+    {% endif %}
+
+    {% if mf_holdings %}
+      <div class="summary">
+        <div class="stat">
+          <div class="label">Funds</div>
+          <div class="value">{{ mf_holdings|length }}</div>
+        </div>
+        <div class="stat">
+          <div class="label">Invested</div>
+          <div class="value">{{ mf_totals.invested|inr }}</div>
+        </div>
+        <div class="stat">
+          <div class="label">Current</div>
+          <div class="value">{{ mf_totals.current|inr }}</div>
+        </div>
+        <div class="stat">
+          <div class="label">Total P&amp;L</div>
+          <div class="value {{ mf_totals.pnl|sign_class }}">
+            {{ mf_totals.pnl|inr }}
+          </div>
+        </div>
+      </div>
+      <div class="card" style="padding: 0; overflow: hidden;">
+        <table>
+          <thead>
+            <tr>
+              <th>Fund</th>
+              <th>Folio</th>
+              <th class="num">Units</th>
+              <th class="num">Avg NAV</th>
+              <th class="num">Last NAV</th>
+              <th class="num">Invested</th>
+              <th class="num">Current</th>
+              <th class="num">P&amp;L</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for h in mf_holdings %}
+              <tr>
+                <td class="symbol">{{ h.fund }}</td>
+                <td>{{ h.folio }}</td>
+                <td class="num">{{ h.units|units }}</td>
+                <td class="num">{{ h.average_price|units }}</td>
+                <td class="num">{{ h.last_price|units }}</td>
+                <td class="num">{{ h.invested|inr }}</td>
+                <td class="num">{{ h.current|inr }}</td>
+                <td class="num {{ h.pnl|sign_class }}">{{ h.pnl|inr }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% elif not mf_error %}
+      <div class="card empty">No mutual fund holdings found in your Zerodha account.</div>
+    {% endif %}
+  </section>
+
+  {# ---------------- Equity Positions ---------------- #}
+  <section class="panel" data-panel="positions-equity">
+    {% if equity_positions %}
+      <div class="summary">
+        <div class="stat">
+          <div class="label">Open positions</div>
+          <div class="value">{{ equity_positions|length }}</div>
+        </div>
+        <div class="stat">
+          <div class="label">Total P&amp;L</div>
+          <div class="value {{ equity_position_totals.pnl|sign_class }}">
+            {{ equity_position_totals.pnl|inr }}
+          </div>
+        </div>
+        <div class="stat">
+          <div class="label">Total M2M</div>
+          <div class="value {{ equity_position_totals.m2m|sign_class }}">
+            {{ equity_position_totals.m2m|inr }}
+          </div>
+        </div>
+      </div>
+      <div class="card" style="padding: 0; overflow: hidden;">
+        <table>
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Exch</th>
+              <th>Prod</th>
+              <th class="num">Qty</th>
+              <th class="num">Avg</th>
+              <th class="num">LTP</th>
+              <th class="num">P&amp;L</th>
+              <th class="num">M2M</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for p in equity_positions %}
+              <tr>
+                <td class="symbol">{{ p.tradingsymbol }}</td>
+                <td>{{ p.exchange }}</td>
+                <td>{{ p.product }}</td>
+                <td class="num">{{ p.quantity }}</td>
+                <td class="num">{{ p.average_price|inr }}</td>
+                <td class="num">{{ p.last_price|inr }}</td>
+                <td class="num {{ p.pnl|sign_class }}">{{ p.pnl|inr }}</td>
+                <td class="num {{ p.m2m|sign_class }}">{{ p.m2m|inr }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="card empty">No open equity positions (NSE / BSE).</div>
+    {% endif %}
+  </section>
+
+  {# ---------------- F&O Positions ---------------- #}
+  <section class="panel" data-panel="positions-fno">
+    {% if fno_positions %}
+      <div class="summary">
+        <div class="stat">
+          <div class="label">Open positions</div>
+          <div class="value">{{ fno_positions|length }}</div>
+        </div>
+        <div class="stat">
+          <div class="label">Total P&amp;L</div>
+          <div class="value {{ fno_position_totals.pnl|sign_class }}">
+            {{ fno_position_totals.pnl|inr }}
+          </div>
+        </div>
+        <div class="stat">
+          <div class="label">Total M2M</div>
+          <div class="value {{ fno_position_totals.m2m|sign_class }}">
+            {{ fno_position_totals.m2m|inr }}
+          </div>
+        </div>
+      </div>
+      <div class="card" style="padding: 0; overflow: hidden;">
+        <table>
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Exch</th>
+              <th>Prod</th>
+              <th class="num">Qty</th>
+              <th class="num">Avg</th>
+              <th class="num">LTP</th>
+              <th class="num">P&amp;L</th>
+              <th class="num">M2M</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for p in fno_positions %}
+              <tr>
+                <td class="symbol">{{ p.tradingsymbol }}</td>
+                <td>{{ p.exchange }}</td>
+                <td>{{ p.product }}</td>
+                <td class="num">{{ p.quantity }}</td>
+                <td class="num">{{ p.average_price|inr }}</td>
+                <td class="num">{{ p.last_price|inr }}</td>
+                <td class="num {{ p.pnl|sign_class }}">{{ p.pnl|inr }}</td>
+                <td class="num {{ p.m2m|sign_class }}">{{ p.m2m|inr }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="card empty">No open F&amp;O / derivatives positions.</div>
+    {% endif %}
+  </section>
+
+  {# ---------------- Cash Balance ---------------- #}
+  <section class="panel" data-panel="cash">
+    <div class="summary">
+      <div class="stat">
+        <div class="label">Available cash</div>
+        <div class="value">{{ cash.available_cash|inr }}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Live balance</div>
+        <div class="value">{{ cash.live_balance|inr }}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Utilised</div>
+        <div class="value">{{ cash.utilised|inr }}</div>
+      </div>
+    </div>
+    <div class="alert">
+      Sourced from
+      <a href="https://kite.trade/docs/connect/v3/user/#funds-and-margins" target="_blank" rel="noopener">
+        <code>GET /user/margins/equity</code>
+      </a>.
+      <strong>Available cash</strong> is free cash for new trades;
+      <strong>Live balance</strong> includes intraday MTM updates;
+      <strong>Utilised</strong> is margin currently locked by open positions / orders.
+    </div>
+  </section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (function () {
+    const tabs = document.querySelectorAll('.tab');
+    const panels = document.querySelectorAll('.panel');
+    tabs.forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        const target = tab.dataset.tab;
+        tabs.forEach(function (t) { t.classList.toggle('active', t === tab); });
+        panels.forEach(function (p) {
+          p.classList.toggle('active', p.dataset.panel === target);
+        });
+      });
+    });
+  })();
+</script>
+{% endblock %}

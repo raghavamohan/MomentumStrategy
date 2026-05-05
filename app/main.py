@@ -1,4 +1,9 @@
-"""Entry point: render the current Zerodha account snapshot.
+"""CLI entry point: render the current Zerodha account snapshot as ASCII tables.
+
+This module is the **command-line** entry point. The same data is also
+available in a tabbed browser dashboard via :mod:`app.web`
+(``python -m app.web``); both interfaces share authentication code
+(:mod:`app.auth`) and the on-disk access-token cache.
 
 Run with::
 
@@ -35,7 +40,9 @@ Sections produced
    (HTTP: `GET /user/margins/{segment} <https://kite.trade/docs/connect/v3/user/#funds-and-margins>`_)
    called with ``segment="equity"``.
 
-Authentication is handled by :mod:`app.auth`.
+Authentication is handled by :mod:`app.auth` (specifically
+:func:`app.auth.get_kite_client`, which runs the interactive terminal
+login flow).
 
 References
 ----------
@@ -44,6 +51,7 @@ References
 * pykiteconnect source:     https://github.com/zerodha/pykiteconnect
 * Exchange & segment codes: https://kite.trade/docs/connect/v3/exchange/
 * Mutual Funds endpoints:   https://kite.trade/docs/connect/v3/mutual-funds/
+* Web counterpart (FastAPI dashboard): :mod:`app.web`
 """
 
 from __future__ import annotations

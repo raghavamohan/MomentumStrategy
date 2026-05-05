@@ -19,6 +19,21 @@ username/password flow available to third-party apps. The sequence is:
 4. The ``access_token`` is valid until approximately **6 AM IST the next
    trading day**, after which a fresh login is required.
 
+Two callers use this module
+---------------------------
+* The CLI entry point (:mod:`app.main`) calls :func:`get_kite_client`,
+  which runs the full interactive flow on the terminal: prints the
+  login URL, asks the user to paste the ``request_token``.
+* The web dashboard (:mod:`app.web`) wires the same flow to HTTP
+  routes; it uses the lower-level helpers exported here
+  (:func:`load_credentials`, :func:`load_cached_access_token`,
+  :func:`save_cached_access_token`, :func:`build_authenticated_client`,
+  :func:`validate_kite_session`) and provides its own ``/callback``
+  handler instead of the terminal prompt.
+
+Both callers share the same on-disk token cache so logging in via either
+interface satisfies both for the rest of the trading day.
+
 References
 ----------
 * Login flow (HTTP):    https://kite.trade/docs/connect/v3/user/#login-flow
@@ -31,19 +46,6 @@ References
 * ``TokenException``:    https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.exceptions.TokenException
 * Source of pykiteconnect: https://github.com/zerodha/pykiteconnect
 
-What this module does
----------------------
-Wraps the flow above for a CLI script:
-
-* Reads ``KITE_API_KEY`` and ``KITE_API_SECRET`` from a local ``.env``
-  file via ``python-dotenv``.
-* Reuses a previously generated ``access_token`` cached at
-  ``<project_root>/.access_token.json`` if it still works (validated by
-  a cheap ``kite.profile()`` call).
-* Otherwise prints the Kite login URL, prompts the user to paste the
-  ``request_token`` from the redirected URL, exchanges it for a fresh
-  ``access_token``, and updates the cache.
-
 Security notes
 --------------
 * ``.env`` and ``.access_token.json`` are listed in ``.gitignore`` and
@@ -51,8 +53,8 @@ Security notes
   grant full read/trade access to the Zerodha account.
 * The access token is stored in plaintext on disk because Kite Connect
   itself rotates it daily. For a hardened deployment, replace
-  ``_load_cached_access_token`` / ``_save_cached_access_token`` with an
-  OS keychain (e.g. ``keyring``) or an encrypted store.
+  :func:`load_cached_access_token` / :func:`save_cached_access_token`
+  with an OS keychain (e.g. ``keyring``) or an encrypted store.
 """
 
 from __future__ import annotations
@@ -77,7 +79,31 @@ cache is invalidated lazily when a real API call raises
 """
 
 
-def _load_cached_access_token() -> str | None:
+def load_credentials() -> tuple[str, str]:
+    """Read ``KITE_API_KEY`` and ``KITE_API_SECRET`` from ``.env``.
+
+    Returns
+    -------
+    tuple[str, str]
+        ``(api_key, api_secret)``.
+
+    Raises
+    ------
+    SystemExit
+        If either credential is missing or blank in ``.env``.
+    """
+    load_dotenv(PROJECT_ROOT / ".env")
+    api_key = os.getenv("KITE_API_KEY", "").strip()
+    api_secret = os.getenv("KITE_API_SECRET", "").strip()
+    if not api_key or not api_secret:
+        raise SystemExit(
+            "KITE_API_KEY and/or KITE_API_SECRET are not set. "
+            f"Edit {PROJECT_ROOT / '.env'} and fill them in."
+        )
+    return api_key, api_secret
+
+
+def load_cached_access_token() -> str | None:
     """Return the cached access token if one is on disk and parseable.
 
     Returns ``None`` if the cache file is missing, unreadable, malformed,
@@ -93,7 +119,7 @@ def _load_cached_access_token() -> str | None:
     return token if isinstance(token, str) and token else None
 
 
-def _save_cached_access_token(access_token: str) -> None:
+def save_cached_access_token(access_token: str) -> None:
     """Persist a freshly generated access token to disk for reuse."""
     TOKEN_CACHE_PATH.write_text(
         json.dumps({"access_token": access_token}, indent=2),
@@ -101,8 +127,36 @@ def _save_cached_access_token(access_token: str) -> None:
     )
 
 
+def build_authenticated_client(api_key: str, access_token: str) -> KiteConnect:
+    """Construct a :class:`KiteConnect` client with the access token attached.
+
+    Does not make any network calls; pair with :func:`validate_kite_session`
+    if you need to confirm the token is still alive.
+    """
+    kite = KiteConnect(api_key=api_key)
+    kite.set_access_token(access_token)
+    return kite
+
+
+def validate_kite_session(kite: KiteConnect) -> bool:
+    """Return ``True`` iff ``kite``'s access token is still valid.
+
+    Issues a cheap, idempotent
+    `KiteConnect.profile <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.profile>`_
+    call. ``profile`` is used as the validation probe because it is
+    read-only, has no side effects, and returns immediately for a
+    healthy session. If Kite returns an auth error, pykiteconnect raises
+    ``TokenException`` and this helper returns ``False``.
+    """
+    try:
+        kite.profile()
+        return True
+    except TokenException:
+        return False
+
+
 def _interactive_login(kite: KiteConnect, api_secret: str) -> str:
-    """Run the interactive Kite Connect login on the terminal.
+    """Run the interactive Kite Connect login on the terminal (CLI flow).
 
     Prints the login URL produced by
     `KiteConnect.login_url <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.login_url>`_,
@@ -110,23 +164,9 @@ def _interactive_login(kite: KiteConnect, api_secret: str) -> str:
     on the redirect, and exchanges it for an ``access_token`` via
     `KiteConnect.generate_session <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.generate_session>`_.
 
-    The new token is cached via :func:`_save_cached_access_token` so that
-    subsequent runs in the same trading day skip the browser step.
-
-    Parameters
-    ----------
-    kite:
-        A :class:`KiteConnect` client already initialised with the
-        ``api_key`` (no access token yet).
-    api_secret:
-        The matching API secret from
-        https://developers.kite.trade. Required by ``generate_session``
-        to derive the access token.
-
-    Returns
-    -------
-    str
-        The freshly generated access token.
+    The new token is cached via :func:`save_cached_access_token` so that
+    subsequent runs (CLI or web) within the same trading day skip the
+    browser step.
 
     Raises
     ------
@@ -148,64 +188,42 @@ def _interactive_login(kite: KiteConnect, api_secret: str) -> str:
 
     session = kite.generate_session(request_token, api_secret=api_secret)
     access_token = session["access_token"]
-    _save_cached_access_token(access_token)
+    save_cached_access_token(access_token)
     return access_token
 
 
 def get_kite_client() -> KiteConnect:
-    """Return an authenticated :class:`KiteConnect` client.
-
-    The returned client has its ``access_token`` already set and is ready
-    to call portfolio / market-data endpoints such as
-    `holdings <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.holdings>`_,
-    `positions <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.positions>`_,
-    and
-    `margins <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.margins>`_.
+    """Return an authenticated :class:`KiteConnect` client (CLI flow).
 
     Behaviour:
 
-    1. Loads ``KITE_API_KEY`` and ``KITE_API_SECRET`` from the project's
-       ``.env`` file using ``python-dotenv``.
-    2. If a cached access token exists, attaches it and validates with a
-       cheap call to
-       `KiteConnect.profile <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.profile>`_.
-       ``profile`` is used as the validation probe because it is read-only,
-       has no side effects, and returns immediately for a healthy session.
-    3. If validation fails with
-       `TokenException <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.exceptions.TokenException>`_,
-       (typically because the token has expired overnight) the
-       interactive login flow runs, the new token is cached, and a
-       client is returned with the fresh token attached.
+    1. Loads ``KITE_API_KEY`` and ``KITE_API_SECRET`` via
+       :func:`load_credentials`.
+    2. If a cached access token exists, attaches it via
+       :func:`build_authenticated_client` and probes with
+       :func:`validate_kite_session`.
+    3. If validation fails (token expired overnight) the interactive
+       terminal login runs, the new token is cached, and a client is
+       returned with the fresh token attached.
+
+    The web dashboard does **not** use this function (it cannot prompt
+    on a terminal); see :mod:`app.web` for the HTTP equivalent.
 
     Raises
     ------
     SystemExit
-        If ``KITE_API_KEY`` or ``KITE_API_SECRET`` is missing/blank in
-        ``.env``, or if the user aborts the interactive login.
+        If credentials are missing in ``.env`` or the user aborts the
+        interactive login.
     """
-    load_dotenv(PROJECT_ROOT / ".env")
+    api_key, api_secret = load_credentials()
 
-    api_key = os.getenv("KITE_API_KEY", "").strip()
-    api_secret = os.getenv("KITE_API_SECRET", "").strip()
-
-    if not api_key or not api_secret:
-        raise SystemExit(
-            "KITE_API_KEY and/or KITE_API_SECRET are not set. "
-            f"Edit {PROJECT_ROOT / '.env'} and fill them in."
-        )
+    cached_token = load_cached_access_token()
+    if cached_token:
+        kite = build_authenticated_client(api_key, cached_token)
+        if validate_kite_session(kite):
+            return kite
 
     kite = KiteConnect(api_key=api_key)
-
-    cached_token = _load_cached_access_token()
-    if cached_token:
-        kite.set_access_token(cached_token)
-        try:
-            kite.profile()
-            return kite
-        except TokenException:
-            # Cached token has expired. Fall through to interactive login.
-            pass
-
     access_token = _interactive_login(kite, api_secret)
     kite.set_access_token(access_token)
     return kite

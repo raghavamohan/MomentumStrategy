@@ -1,0 +1,262 @@
+{#
+  Base layout for every page in the MomentumStrategy dashboard.
+
+  Provides:
+    * HTML5 document skeleton with viewport metadata.
+    * Inline CSS for the dark-mode theme, tabs, summary cards, and tables.
+    * Shared footer with links to Kite Connect docs / pykiteconnect source.
+
+  Child templates (templates/index.html, templates/dashboard.html) extend
+  this file via Jinja2 `{% extends "base.html" %}` and fill in the
+  `title`, `content`, and (optional) `scripts` blocks.
+
+  Rendered by FastAPI from `app/web.py` via `Jinja2Templates`.
+#}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}MomentumStrategy{% endblock %}</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --surface: #1e293b;
+      --surface-2: #273449;
+      --border: #334155;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --positive: #22c55e;
+      --negative: #ef4444;
+      --neutral: #94a3b8;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                   "Helvetica Neue", Arial, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { color: var(--accent-hover); text-decoration: underline; }
+
+    .layout {
+      max-width: 1300px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 24px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .topbar h1 {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+    .topbar .subtitle {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 4px;
+    }
+    .topbar .right { display: flex; align-items: center; gap: 16px; }
+
+    .button {
+      display: inline-block;
+      padding: 10px 18px;
+      background: var(--accent);
+      color: #fff;
+      border-radius: 6px;
+      font-weight: 500;
+      cursor: pointer;
+      border: none;
+      font-size: 14px;
+    }
+    .button:hover {
+      background: var(--accent-hover);
+      text-decoration: none;
+      color: #fff;
+    }
+    .button.secondary {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .button.secondary:hover {
+      background: var(--surface-2);
+      color: var(--text);
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+
+    .alert {
+      background: var(--surface-2);
+      border-left: 4px solid var(--accent);
+      padding: 12px 16px;
+      margin-bottom: 16px;
+      border-radius: 4px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .alert.warning { border-left-color: #f59e0b; }
+    .alert.error { border-left-color: var(--negative); }
+
+    .tabs {
+      display: flex;
+      gap: 4px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 16px;
+      overflow-x: auto;
+    }
+    .tab {
+      padding: 10px 16px;
+      background: transparent;
+      color: var(--muted);
+      border: none;
+      cursor: pointer;
+      font-size: 14px;
+      font-family: inherit;
+      border-bottom: 2px solid transparent;
+      white-space: nowrap;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active {
+      color: var(--text);
+      border-bottom-color: var(--accent);
+    }
+    .tab .count {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 1px 7px;
+      font-size: 11px;
+      background: var(--surface-2);
+      color: var(--muted);
+      border-radius: 10px;
+    }
+    .tab.active .count {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .panel { display: none; }
+    .panel.active { display: block; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th, td {
+      padding: 10px 12px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    th {
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      font-size: 11px;
+      letter-spacing: 0.05em;
+      background: var(--surface-2);
+    }
+    tbody tr:hover { background: rgba(255, 255, 255, 0.02); }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    td.symbol { font-weight: 500; }
+
+    .positive { color: var(--positive); }
+    .negative { color: var(--negative); }
+    .neutral  { color: var(--neutral); }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .summary .stat {
+      background: var(--surface-2);
+      padding: 12px 16px;
+      border-radius: 6px;
+    }
+    .summary .stat .label {
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 4px;
+    }
+    .summary .stat .value {
+      font-size: 18px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .empty {
+      color: var(--muted);
+      padding: 24px;
+      text-align: center;
+      font-style: italic;
+    }
+
+    .login-card {
+      max-width: 480px;
+      margin: 80px auto;
+      text-align: center;
+    }
+    .login-card h2 {
+      margin-top: 0;
+      font-size: 24px;
+    }
+    .login-card p {
+      color: var(--muted);
+      margin-bottom: 24px;
+    }
+
+    .footer {
+      margin-top: 32px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 12px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    {% block content %}{% endblock %}
+
+    <div class="footer">
+      Powered by
+      <a href="https://kite.trade/docs/connect/v3/" target="_blank" rel="noopener">Kite Connect API</a>
+      via
+      <a href="https://github.com/zerodha/pykiteconnect" target="_blank" rel="noopener">pykiteconnect</a>
+      &middot;
+      <a href="https://github.com/raghavamohan/MomentumStrategy" target="_blank" rel="noopener">source</a>
+    </div>
+  </div>
+  {% block scripts %}{% endblock %}
+</body>
+</html>
