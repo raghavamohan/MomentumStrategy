@@ -1,7 +1,8 @@
 # MomentumStrategy
 
-A small Python CLI that lists all equity holdings in your Zerodha account
-using the official [Kite Connect](https://kite.trade) Python client
+A small Python CLI that lists all equity holdings and the current cash
+balance in your Zerodha account using the official
+[Kite Connect](https://kite.trade) Python client
 ([pykiteconnect](https://github.com/zerodha/pykiteconnect)).
 
 ## What it does
@@ -10,6 +11,8 @@ using the official [Kite Connect](https://kite.trade) Python client
 - Calls `kite.holdings()` and prints a table of every stock you own with:
   symbol, exchange, quantity, average price, last price, invested value,
   current value, P&L, and day change %.
+- Calls `kite.margins(segment="equity")` and prints the available cash,
+  live balance, and utilised margin for the equity segment.
 - Caches the daily access token in `.access_token.json` so you don't have to
   log in again until it expires (Kite tokens die at ~6 AM the next trading day).
 
@@ -85,9 +88,9 @@ holdings table is printed.
 
 ## Notes
 
-- This script only reads. It calls `kite.holdings()` and `kite.profile()` (the
-  latter just to validate the cached token). It does not place, modify, or
-  cancel any orders.
+- This script only reads. It calls `kite.holdings()`, `kite.margins()` and
+  `kite.profile()` (the last only to validate the cached token). It does not
+  place, modify, or cancel any orders.
 - Mutual fund holdings are not included; use `kite.mf_holdings()` if you want
   those too.
 - Open intraday / F&O positions are not included; use `kite.positions()` for those.

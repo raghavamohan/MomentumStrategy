@@ -1,4 +1,5 @@
-"""List all equity holdings in the user's Zerodha account.
+"""List all equity holdings and the current cash balance in the user's
+Zerodha account.
 
 Run with:
     python -m app.main
@@ -34,12 +35,14 @@ def _row(holding: dict) -> list:
     ]
 
 
-def main() -> None:
-    kite = get_kite_client()
+def _print_holdings(kite) -> None:
     holdings = kite.holdings()
 
+    print()
+    print("=== Equity Holdings ===")
+
     if not holdings:
-        print("\nNo equity holdings found in your Zerodha account.")
+        print("No equity holdings found in your Zerodha account.")
         return
 
     rows = [_row(h) for h in holdings]
@@ -76,6 +79,29 @@ def main() -> None:
     print(f"Invested: {total_invested:>14,.2f}")
     print(f"Current : {total_current:>14,.2f}")
     print(f"P&L     : {total_pnl:>14,.2f}")
+
+
+def _print_cash_balance(kite) -> None:
+    margins = kite.margins(segment="equity") or {}
+    available = margins.get("available", {}) or {}
+    utilised = margins.get("utilised", {}) or {}
+
+    available_cash = float(available.get("cash") or 0.0)
+    live_balance = float(available.get("live_balance") or 0.0)
+    utilised_debits = float(utilised.get("debits") or 0.0)
+
+    print()
+    print("=== Equity Cash Balance ===")
+    print()
+    print(f"Available cash: {available_cash:>14,.2f}")
+    print(f"Live balance  : {live_balance:>14,.2f}")
+    print(f"Utilised      : {utilised_debits:>14,.2f}")
+
+
+def main() -> None:
+    kite = get_kite_client()
+    _print_holdings(kite)
+    _print_cash_balance(kite)
 
 
 if __name__ == "__main__":
