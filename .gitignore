@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtualenv
+.venv/
+venv/
+.venc/
+
+# Local secrets / runtime state
+.env
+.access_token.json
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
