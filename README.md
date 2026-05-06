@@ -68,6 +68,7 @@ Then edit [`.env`](.env) and fill in your credentials:
 ```
 KITE_API_KEY=your_api_key_here
 KITE_API_SECRET=your_api_secret_here
+DASHBOARD_REFRESH_SECONDS=2
 ```
 
 `.env` is gitignored, so it will not be committed.

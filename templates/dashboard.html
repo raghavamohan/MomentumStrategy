@@ -353,6 +353,14 @@
 {% block scripts %}
 <script>
   (function () {
+    const AUTO_REFRESH_MS = {{ refresh_interval_ms }};
+
+    setInterval(function () {
+      if (!document.hidden) {
+        window.location.reload();
+      }
+    }, AUTO_REFRESH_MS);
+
     const tabs = document.querySelectorAll('.tab');
     const panels = document.querySelectorAll('.panel');
     tabs.forEach(function (tab) {

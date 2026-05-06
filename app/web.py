@@ -87,6 +87,7 @@ from app.auth import (
     save_cached_access_token,
     validate_kite_session,
 )
+from app.live_prices import live_price_stream
 
 
 TEMPLATES_DIR = PROJECT_ROOT / "templates"
@@ -94,6 +95,20 @@ SESSION_SECRET_FILE = PROJECT_ROOT / ".session_secret"
 
 DASHBOARD_HOST = "127.0.0.1"
 DASHBOARD_PORT = 5000
+
+
+def _dashboard_refresh_interval_ms() -> int:
+    """Read dashboard auto-refresh interval from env (seconds -> milliseconds)."""
+    raw = os.getenv("DASHBOARD_REFRESH_SECONDS", "2").strip()
+    try:
+        seconds = float(raw)
+    except ValueError:
+        seconds = 2.0
+    seconds = max(1.0, seconds)
+    return int(seconds * 1000)
+
+
+_DASHBOARD_REFRESH_INTERVAL_MS = _dashboard_refresh_interval_ms()
 
 
 def _session_secret() -> str:
@@ -229,7 +244,13 @@ def _decorate_holding(h: dict) -> dict:
     quantity = (h.get("quantity") or 0) + (h.get("t1_quantity") or 0)
     avg = float(h.get("average_price") or 0.0)
     ltp = float(h.get("last_price") or 0.0)
-    pnl = float(h.get("pnl") or 0.0)
+    live_ltp_applied = bool(h.get("_live_ltp_applied"))
+    pnl = (ltp - avg) * quantity if live_ltp_applied else float(h.get("pnl") or 0.0)
+    close_price = float(h.get("close_price") or 0.0)
+    if live_ltp_applied and close_price > 0:
+        day_change_percentage = ((ltp - close_price) / close_price) * 100.0
+    else:
+        day_change_percentage = float(h.get("day_change_percentage") or 0.0)
     return {
         "tradingsymbol": h.get("tradingsymbol", ""),
         "exchange": h.get("exchange", ""),
@@ -239,7 +260,7 @@ def _decorate_holding(h: dict) -> dict:
         "invested": avg * quantity,
         "current": ltp * quantity,
         "pnl": pnl,
-        "day_change_percentage": float(h.get("day_change_percentage") or 0.0),
+        "day_change_percentage": day_change_percentage,
     }
 
 
@@ -272,14 +293,24 @@ def _decorate_mf(h: dict) -> dict:
 
 def _decorate_position(p: dict) -> dict:
     """Enrich a Kite positions entry."""
+    qty = int(p.get("quantity") or 0)
+    ltp = float(p.get("last_price") or 0.0)
+    live_ltp_applied = bool(p.get("_live_ltp_applied"))
+    if live_ltp_applied:
+        buy_value = float(p.get("buy_value") or 0.0)
+        sell_value = float(p.get("sell_value") or 0.0)
+        multiplier = float(p.get("multiplier") or 1.0)
+        pnl = (sell_value - buy_value) + (qty * ltp * multiplier)
+    else:
+        pnl = float(p.get("pnl") or 0.0)
     return {
         "tradingsymbol": p.get("tradingsymbol", ""),
         "exchange": p.get("exchange", ""),
         "product": p.get("product", ""),
-        "quantity": int(p.get("quantity") or 0),
+        "quantity": qty,
         "average_price": float(p.get("average_price") or 0.0),
-        "last_price": float(p.get("last_price") or 0.0),
-        "pnl": float(p.get("pnl") or 0.0),
+        "last_price": ltp,
+        "pnl": pnl,
         "m2m": float(p.get("m2m") or 0.0),
     }
 
@@ -287,6 +318,16 @@ def _decorate_position(p: dict) -> dict:
 def _summarise(rows: list[dict], *fields: str) -> dict:
     """Return a dict with sums of the named numeric fields across ``rows``."""
     return {field: sum(float(r.get(field) or 0.0) for r in rows) for field in fields}
+
+
+def _overlay_live_ltp(row: dict, live_ltp_by_token: dict[int, float]) -> dict:
+    """Return row with websocket LTP overlaid when available."""
+    out = dict(row)
+    token = int(out.get("instrument_token") or 0)
+    if token > 0 and token in live_ltp_by_token:
+        out["last_price"] = float(live_ltp_by_token[token])
+        out["_live_ltp_applied"] = True
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -367,6 +408,7 @@ async def logout(request: Request):
     """Clear the browser session and remove the cached Kite access token."""
     request.session.clear()
     clear_cached_access_token()
+    live_price_stream.close()
     return RedirectResponse("/", status_code=303)
 
 
@@ -387,6 +429,7 @@ async def dashboard(request: Request):
         margins_raw = kite.margins(segment="equity") or {}
     except TokenException:
         request.session.clear()
+        live_price_stream.close()
         return RedirectResponse("/", status_code=303)
 
     mf_error: str | None = None
@@ -400,8 +443,31 @@ async def dashboard(request: Request):
             "want this section."
         )
 
+    net_positions = positions_raw.get("net", []) or []
+    open_net = [p for p in net_positions if int(p.get("quantity") or 0) != 0]
+
+    live_ltp_by_token: dict[int, float] = {}
+    access_token = load_cached_access_token()
+    if access_token:
+        try:
+            api_key, _ = load_credentials()
+            live_price_stream.ensure_running(api_key, access_token)
+            tokens = {
+                int(h.get("instrument_token") or 0)
+                for h in equity_raw
+            } | {
+                int(p.get("instrument_token") or 0)
+                for p in open_net
+            }
+            tokens = {t for t in tokens if t > 0}
+            live_price_stream.subscribe(tokens)
+            live_ltp_by_token = live_price_stream.snapshot_ltp(tokens)
+        except Exception:
+            # Keep dashboard resilient if websocket setup fails.
+            live_ltp_by_token = {}
+
     equity_holdings = sorted(
-        (_decorate_holding(h) for h in equity_raw),
+        (_decorate_holding(_overlay_live_ltp(h, live_ltp_by_token)) for h in equity_raw),
         key=lambda r: r["tradingsymbol"],
     )
     mf_holdings = sorted(
@@ -409,14 +475,20 @@ async def dashboard(request: Request):
         key=lambda r: r["fund"],
     )
 
-    net_positions = positions_raw.get("net", []) or []
-    open_net = [p for p in net_positions if int(p.get("quantity") or 0) != 0]
     equity_positions = sorted(
-        (_decorate_position(p) for p in open_net if p.get("exchange") in EQUITY_EXCHANGES),
+        (
+            _decorate_position(_overlay_live_ltp(p, live_ltp_by_token))
+            for p in open_net
+            if p.get("exchange") in EQUITY_EXCHANGES
+        ),
         key=lambda r: r["tradingsymbol"],
     )
     fno_positions = sorted(
-        (_decorate_position(p) for p in open_net if p.get("exchange") in FNO_EXCHANGES),
+        (
+            _decorate_position(_overlay_live_ltp(p, live_ltp_by_token))
+            for p in open_net
+            if p.get("exchange") in FNO_EXCHANGES
+        ),
         key=lambda r: r["tradingsymbol"],
     )
 
@@ -451,6 +523,7 @@ async def dashboard(request: Request):
         "fno_positions": fno_positions,
         "fno_position_totals": fno_position_totals,
         "cash": cash,
+        "refresh_interval_ms": _DASHBOARD_REFRESH_INTERVAL_MS,
         "portfolio_summary": {
             "total_invested": total_invested,
             "total_current": total_current,
@@ -485,6 +558,12 @@ def main() -> None:
         reload=False,
         log_level="info",
     )
+
+
+@app.on_event("shutdown")
+async def _shutdown_live_price_stream() -> None:
+    """Ensure websocket thread is closed when FastAPI exits."""
+    live_price_stream.close()
 
 
 if __name__ == "__main__":
