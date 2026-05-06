@@ -11,9 +11,10 @@ then open http://127.0.0.1:5000/ in your browser.
 Routes
 ------
 ``GET /``
-    Landing page. If the browser already has an authenticated session
-    and a cached access token is on disk, redirects to ``/dashboard``;
-    otherwise shows a "Login with Zerodha" button.
+    Landing page. If the session is authenticated (or the on-disk Kite
+    access token is still valid—same cache as the CLI—restores the
+    session and redirects to ``/dashboard``); otherwise shows a "Login
+    with Zerodha" button.
 
 ``GET /login``
     Redirects the browser to Kite's login URL (``KiteConnect.login_url()``).
@@ -62,6 +63,7 @@ References
 
 from __future__ import annotations
 
+import os
 import secrets
 
 from fastapi import FastAPI, Request
@@ -77,10 +79,33 @@ from app.auth import (
     load_cached_access_token,
     load_credentials,
     save_cached_access_token,
+    validate_kite_session,
 )
 
 
 TEMPLATES_DIR = PROJECT_ROOT / "templates"
+SESSION_SECRET_FILE = PROJECT_ROOT / ".session_secret"
+
+
+def _session_secret() -> str:
+    """Stable signing key so session cookies survive server restarts.
+
+    Prefer ``SESSION_SECRET`` in the environment; otherwise read or create
+    ``.session_secret`` in the project root (gitignored).
+    """
+    env = os.getenv("SESSION_SECRET", "").strip()
+    if env:
+        return env
+    if SESSION_SECRET_FILE.exists():
+        raw = SESSION_SECRET_FILE.read_text(encoding="utf-8").strip()
+        if raw:
+            return raw
+    secret = secrets.token_hex(32)
+    SESSION_SECRET_FILE.write_text(secret + "\n", encoding="utf-8")
+    return secret
+
+
+_SESSION_SECRET = _session_secret()
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
@@ -134,13 +159,11 @@ templates.env.filters["sign_class"] = _sign_class
 
 app = FastAPI(title="MomentumStrategy Dashboard", docs_url=None, redoc_url=None)
 
-# A new secret is generated on every process start, which means existing
-# session cookies are invalidated on restart. That's fine for a local
-# single-user dev tool; for a longer-lived deployment, persist this
-# secret (e.g. SESSION_SECRET env var).
+# Persisted secret so the signed session cookie remains valid across
+# process restarts (see ``_session_secret``).
 app.add_middleware(
     SessionMiddleware,
-    secret_key=secrets.token_hex(32),
+    secret_key=_SESSION_SECRET,
     same_site="lax",
     https_only=False,
 )
@@ -166,6 +189,30 @@ def _kite_for_request() -> KiteConnect | None:
         return None
     api_key, _ = load_credentials()
     return build_authenticated_client(api_key, token)
+
+
+def _restore_session_if_token_valid(request: Request) -> bool:
+    """Ensure ``request.session`` reflects a valid Kite token if one exists on disk.
+
+    After a server restart the cookie may still be valid (persistent
+    session secret); if not, a stored access token is probed with
+    :func:`~app.auth.validate_kite_session` and the session is marked
+    authenticated when Kite still accepts it (until daily expiry).
+    """
+    token = load_cached_access_token()
+    if request.session.get("authenticated"):
+        if token:
+            return True
+        request.session.clear()
+        return False
+    if not token:
+        return False
+    api_key, _ = load_credentials()
+    kite = build_authenticated_client(api_key, token)
+    if not validate_kite_session(kite):
+        return False
+    request.session["authenticated"] = True
+    return True
 
 
 def _decorate_holding(h: dict) -> dict:
@@ -247,7 +294,7 @@ async def favicon():
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     """Landing page. Redirects to /dashboard if already authenticated."""
-    if request.session.get("authenticated") and load_cached_access_token():
+    if _restore_session_if_token_valid(request):
         return RedirectResponse("/dashboard", status_code=303)
     return templates.TemplateResponse(request, "index.html")
 
@@ -316,7 +363,7 @@ async def logout(request: Request):
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request):
     """Render the tabbed dashboard with all account snapshot sections."""
-    if not request.session.get("authenticated"):
+    if not _restore_session_if_token_valid(request):
         return RedirectResponse("/", status_code=303)
 
     kite = _kite_for_request()

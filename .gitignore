@@ -12,6 +12,7 @@ venv/
 # Local secrets / runtime state
 .env
 .access_token.json
+.session_secret
 
 # Editor / OS
 .vscode/
