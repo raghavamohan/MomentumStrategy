@@ -6,7 +6,8 @@ Run with::
     # or:
     uvicorn app.web:app --host 127.0.0.1 --port 5000
 
-then open http://127.0.0.1:5000/ in your browser.
+``python -m app.web`` starts Uvicorn and opens the dashboard URL in your
+default browser. When using the ``uvicorn`` CLI, open the URL manually.
 
 Routes
 ------
@@ -65,6 +66,9 @@ from __future__ import annotations
 
 import os
 import secrets
+import threading
+import time
+import webbrowser
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -85,6 +89,9 @@ from app.auth import (
 
 TEMPLATES_DIR = PROJECT_ROOT / "templates"
 SESSION_SECRET_FILE = PROJECT_ROOT / ".session_secret"
+
+DASHBOARD_HOST = "127.0.0.1"
+DASHBOARD_PORT = 5000
 
 
 def _session_secret() -> str:
@@ -453,13 +460,25 @@ async def dashboard(request: Request):
 
 
 def main() -> None:
-    """Run the dashboard with ``uvicorn`` on http://127.0.0.1:5000/."""
+    """Run the dashboard with ``uvicorn`` on the configured host and port.
+
+    Opens the default browser to the entry URL after a short delay so the
+    socket is listening (only for ``python -m app.web``, not ``uvicorn`` CLI).
+    """
     import uvicorn
+
+    url = f"http://{DASHBOARD_HOST}:{DASHBOARD_PORT}/"
+
+    def _open_browser() -> None:
+        time.sleep(1.0)
+        webbrowser.open(url)
+
+    threading.Thread(target=_open_browser, daemon=True).start()
 
     uvicorn.run(
         "app.web:app",
-        host="127.0.0.1",
-        port=5000,
+        host=DASHBOARD_HOST,
+        port=DASHBOARD_PORT,
         reload=False,
         log_level="info",
     )
