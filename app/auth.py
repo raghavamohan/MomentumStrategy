@@ -127,6 +127,18 @@ def save_cached_access_token(access_token: str) -> None:
     )
 
 
+def clear_cached_access_token() -> None:
+    """Remove the on-disk access token file, if present.
+
+    Used by the web ``/logout`` flow so a full Zerodha login is required
+    again. The CLI will also need to re-authenticate after this.
+    """
+    try:
+        TOKEN_CACHE_PATH.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def build_authenticated_client(api_key: str, access_token: str) -> KiteConnect:
     """Construct a :class:`KiteConnect` client with the access token attached.
 

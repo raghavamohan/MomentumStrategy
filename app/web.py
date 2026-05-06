@@ -50,8 +50,9 @@ Routes
     cleared and the user is bounced back to ``/`` to log in again.
 
 ``GET /logout``
-    Clears the session cookie and returns to ``/``. Does **not** delete
-    the cached access token (so the CLI can keep using it).
+    Clears the session cookie, deletes the on-disk Kite access token
+    (``.access_token.json``), and returns to ``/`` so the user must log in
+    to Zerodha again (shared with the CLI).
 
 References
 ----------
@@ -80,6 +81,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.auth import (
     PROJECT_ROOT,
     build_authenticated_client,
+    clear_cached_access_token,
     load_cached_access_token,
     load_credentials,
     save_cached_access_token,
@@ -362,8 +364,9 @@ async def callback(
 
 @app.get("/logout")
 async def logout(request: Request):
-    """Clear the session cookie. Leaves the on-disk token cache intact."""
+    """Clear the browser session and remove the cached Kite access token."""
     request.session.clear()
+    clear_cached_access_token()
     return RedirectResponse("/", status_code=303)
 
 
