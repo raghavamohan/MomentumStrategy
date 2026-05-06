@@ -75,11 +75,13 @@ import os
 import secrets
 import threading
 import time
+import warnings
 import webbrowser
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
+import keyring
 from kiteconnect import KiteConnect
 from kiteconnect.exceptions import PermissionException, TokenException
 from starlette.middleware.sessions import SessionMiddleware
@@ -99,6 +101,8 @@ from app.live_prices import live_price_stream
 
 TEMPLATES_DIR = PROJECT_ROOT / "templates"
 SESSION_SECRET_FILE = PROJECT_ROOT / ".session_secret"
+SESSION_SECRET_KEYRING_SERVICE = "MomentumStrategy"
+SESSION_SECRET_KEYRING_ACCOUNT = "dashboard-session-secret"
 
 DASHBOARD_HOST = "127.0.0.1"
 DASHBOARD_PORT = 5000
@@ -121,18 +125,57 @@ _DASHBOARD_REFRESH_INTERVAL_MS = _dashboard_refresh_interval_ms()
 def _session_secret() -> str:
     """Stable signing key so session cookies survive server restarts.
 
-    Prefer ``SESSION_SECRET`` in the environment; otherwise read or create
-    ``.session_secret`` in the project root (gitignored).
+    Prefer ``SESSION_SECRET`` in the environment; otherwise read/store the
+    secret in the OS keychain using ``keyring``.
+
+    Legacy support: if an older plaintext ``.session_secret`` file exists,
+    migrate it into keychain and remove the file.
     """
     env = os.getenv("SESSION_SECRET", "").strip()
     if env:
         return env
+
+    # Migrate legacy plaintext secret once, then remove the file.
     if SESSION_SECRET_FILE.exists():
-        raw = SESSION_SECRET_FILE.read_text(encoding="utf-8").strip()
-        if raw:
-            return raw
+        try:
+            raw = SESSION_SECRET_FILE.read_text(encoding="utf-8").strip()
+            if raw:
+                keyring.set_password(
+                    SESSION_SECRET_KEYRING_SERVICE,
+                    SESSION_SECRET_KEYRING_ACCOUNT,
+                    raw,
+                )
+                SESSION_SECRET_FILE.unlink(missing_ok=True)
+                return raw
+        except Exception:
+            # Ignore migration failures; proceed with keyring lookup/generation.
+            pass
+
+    try:
+        stored = keyring.get_password(
+            SESSION_SECRET_KEYRING_SERVICE,
+            SESSION_SECRET_KEYRING_ACCOUNT,
+        )
+        if stored:
+            return stored.strip()
+    except Exception:
+        # If keyring backend is unavailable, fall through to an in-memory secret.
+        pass
+
     secret = secrets.token_hex(32)
-    SESSION_SECRET_FILE.write_text(secret + "\n", encoding="utf-8")
+    try:
+        keyring.set_password(
+            SESSION_SECRET_KEYRING_SERVICE,
+            SESSION_SECRET_KEYRING_ACCOUNT,
+            secret,
+        )
+    except Exception:
+        warnings.warn(
+            "No usable OS keyring backend found; using non-persistent session "
+            "secret for this run. Set SESSION_SECRET or install a keyring backend "
+            "to persist login sessions across restarts.",
+            RuntimeWarning,
+        )
     return secret
 
 
