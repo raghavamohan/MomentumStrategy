@@ -65,7 +65,7 @@ from __future__ import annotations
 import secrets
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from kiteconnect import KiteConnect
 from kiteconnect.exceptions import PermissionException, TokenException
@@ -236,6 +236,12 @@ def _summarise(rows: list[dict], *fields: str) -> dict:
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """Browsers request this automatically; no asset is shipped."""
+    return Response(status_code=204)
 
 
 @app.get("/", response_class=HTMLResponse)
