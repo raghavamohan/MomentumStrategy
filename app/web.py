@@ -49,7 +49,7 @@ Routes
       LTP snapshots on equity/F&O instrument tokens used in the current view.
 
     Dashboard auto-refresh interval is controlled by
-    ``DASHBOARD_REFRESH_SECONDS`` (defaults to 2s, minimum 1s).
+    ``DASHBOARD_REFRESH_SECONDS`` (defaults to 1s, minimum 1s).
 
     If the cached token has expired (``TokenException``), the session is
     cleared and the user is bounced back to ``/`` to log in again.
@@ -105,11 +105,11 @@ DASHBOARD_PORT = 5000
 
 def _dashboard_refresh_interval_ms() -> int:
     """Read dashboard auto-refresh interval from env (seconds -> milliseconds)."""
-    raw = os.getenv("DASHBOARD_REFRESH_SECONDS", "2").strip()
+    raw = os.getenv("DASHBOARD_REFRESH_SECONDS", "1").strip()
     try:
         seconds = float(raw)
     except ValueError:
-        seconds = 2.0
+        seconds = 1.0
     seconds = max(1.0, seconds)
     return int(seconds * 1000)
 

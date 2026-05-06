@@ -42,7 +42,7 @@ There are two interfaces, sharing the same authentication flow and token cache:
   have to log in again until it expires (Kite tokens die at ~6 AM IST
   the next trading day). The CLI and web dashboard share this cache.
 - Auto-refreshes the dashboard every `DASHBOARD_REFRESH_SECONDS`
-  (default `2` seconds; minimum `1` second).
+  (default `1` second; minimum `1` second).
 
 ## Prerequisites
 
@@ -74,7 +74,7 @@ Then edit [`.env`](.env) and fill in your credentials:
 ```
 KITE_API_KEY=your_api_key_here
 KITE_API_SECRET=your_api_secret_here
-DASHBOARD_REFRESH_SECONDS=2
+DASHBOARD_REFRESH_SECONDS=1
 ```
 
 `.env` is gitignored, so it will not be committed.

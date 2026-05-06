@@ -43,35 +43,36 @@
     <div>
       <h1>MomentumStrategy</h1>
       <div class="subtitle">Live snapshot from Kite Connect</div>
+      <div class="subtitle" id="last-updated-indicator">Last updated: --</div>
     </div>
     <div class="right">
-      <a class="button secondary" href="/dashboard">Refresh</a>
       <a class="button secondary" href="/logout">Logout</a>
     </div>
   </div>
 
-  <div class="summary">
-    <div class="stat">
-      <div class="label">Total Invested (Equity + MF)</div>
-      <div class="value">{{ portfolio_summary.total_invested|inr }}</div>
-    </div>
-    <div class="stat">
-      <div class="label">Current Value (Equity + MF)</div>
-      <div class="value">{{ portfolio_summary.total_current|inr }}</div>
-    </div>
-    <div class="stat">
-      <div class="label">Overall P&amp;L</div>
-      <div class="value {{ portfolio_summary.overall_pnl|sign_class }}">
-        {{ portfolio_summary.overall_pnl|inr }}
+  <div id="dashboard-root">
+    <div class="summary">
+      <div class="stat">
+        <div class="label">Total Invested (Equity + MF)</div>
+        <div class="value">{{ portfolio_summary.total_invested|inr }}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Current Value (Equity + MF)</div>
+        <div class="value">{{ portfolio_summary.total_current|inr }}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Overall P&amp;L</div>
+        <div class="value {{ portfolio_summary.overall_pnl|sign_class }}">
+          {{ portfolio_summary.overall_pnl|inr }}
+        </div>
+      </div>
+      <div class="stat">
+        <div class="label">Open Positions P&amp;L</div>
+        <div class="value {{ portfolio_summary.positions_pnl|sign_class }}">
+          {{ portfolio_summary.positions_pnl|inr }}
+        </div>
       </div>
     </div>
-    <div class="stat">
-      <div class="label">Open Positions P&amp;L</div>
-      <div class="value {{ portfolio_summary.positions_pnl|sign_class }}">
-        {{ portfolio_summary.positions_pnl|inr }}
-      </div>
-    </div>
-  </div>
 
   <div class="tabs" role="tablist">
     <button class="tab active" data-tab="equity" role="tab">
@@ -89,8 +90,8 @@
     <button class="tab" data-tab="cash" role="tab">Cash Balance</button>
   </div>
 
-  {# ---------------- Equity Holdings ---------------- #}
-  <section class="panel active" data-panel="equity">
+    {# ---------------- Equity Holdings ---------------- #}
+    <section class="panel active" data-panel="equity">
     {% if equity_holdings %}
       <div class="summary">
         <div class="stat">
@@ -149,10 +150,10 @@
     {% else %}
       <div class="card empty">No equity holdings found in your Zerodha account.</div>
     {% endif %}
-  </section>
+    </section>
 
-  {# ---------------- Mutual Fund Holdings ---------------- #}
-  <section class="panel" data-panel="mf">
+    {# ---------------- Mutual Fund Holdings ---------------- #}
+    <section class="panel" data-panel="mf">
     {% if mf_error %}
       <div class="alert warning">{{ mf_error }}</div>
     {% endif %}
@@ -211,10 +212,10 @@
     {% elif not mf_error %}
       <div class="card empty">No mutual fund holdings found in your Zerodha account.</div>
     {% endif %}
-  </section>
+    </section>
 
-  {# ---------------- Equity Positions ---------------- #}
-  <section class="panel" data-panel="positions-equity">
+    {# ---------------- Equity Positions ---------------- #}
+    <section class="panel" data-panel="positions-equity">
     {% if equity_positions %}
       <div class="summary">
         <div class="stat">
@@ -267,10 +268,10 @@
     {% else %}
       <div class="card empty">No open equity positions (NSE / BSE).</div>
     {% endif %}
-  </section>
+    </section>
 
-  {# ---------------- F&O Positions ---------------- #}
-  <section class="panel" data-panel="positions-fno">
+    {# ---------------- F&O Positions ---------------- #}
+    <section class="panel" data-panel="positions-fno">
     {% if fno_positions %}
       <div class="summary">
         <div class="stat">
@@ -323,10 +324,10 @@
     {% else %}
       <div class="card empty">No open F&amp;O / derivatives positions.</div>
     {% endif %}
-  </section>
+    </section>
 
-  {# ---------------- Cash Balance ---------------- #}
-  <section class="panel" data-panel="cash">
+    {# ---------------- Cash Balance ---------------- #}
+    <section class="panel" data-panel="cash">
     <div class="summary">
       <div class="stat">
         <div class="label">Available cash</div>
@@ -350,31 +351,90 @@
       <strong>Live balance</strong> includes intraday MTM updates;
       <strong>Utilised</strong> is margin currently locked by open positions / orders.
     </div>
-  </section>
+    </section>
+  </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
   (function () {
     const AUTO_REFRESH_MS = {{ refresh_interval_ms }};
+    let isRefreshing = false;
+    const updatedIndicator = document.getElementById('last-updated-indicator');
 
-    setInterval(function () {
-      if (!document.hidden) {
-        window.location.reload();
+    function stampUpdatedNow() {
+      if (!updatedIndicator) {
+        return;
       }
-    }, AUTO_REFRESH_MS);
+      const now = new Date();
+      const hh = String(now.getHours()).padStart(2, '0');
+      const mm = String(now.getMinutes()).padStart(2, '0');
+      const ss = String(now.getSeconds()).padStart(2, '0');
+      updatedIndicator.textContent = 'Last updated: ' + hh + ':' + mm + ':' + ss;
+    }
 
-    const tabs = document.querySelectorAll('.tab');
-    const panels = document.querySelectorAll('.panel');
-    tabs.forEach(function (tab) {
-      tab.addEventListener('click', function () {
-        const target = tab.dataset.tab;
-        tabs.forEach(function (t) { t.classList.toggle('active', t === tab); });
-        panels.forEach(function (p) {
-          p.classList.toggle('active', p.dataset.panel === target);
+    function activateTab(target) {
+      const tabs = document.querySelectorAll('.tab');
+      const panels = document.querySelectorAll('.panel');
+      tabs.forEach(function (tab) {
+        tab.classList.toggle('active', tab.dataset.tab === target);
+      });
+      panels.forEach(function (panel) {
+        panel.classList.toggle('active', panel.dataset.panel === target);
+      });
+    }
+
+    function getActiveTab() {
+      const active = document.querySelector('.tab.active');
+      return active ? active.dataset.tab : 'equity';
+    }
+
+    function bindTabs() {
+      const tabs = document.querySelectorAll('.tab');
+      tabs.forEach(function (tab) {
+        tab.addEventListener('click', function () {
+          activateTab(tab.dataset.tab);
         });
       });
-    });
+    }
+
+    async function refreshDashboard() {
+      if (isRefreshing || document.hidden) {
+        return;
+      }
+      isRefreshing = true;
+
+      const activeTab = getActiveTab();
+      try {
+        const response = await fetch('/dashboard', { cache: 'no-store' });
+        if (!response.ok) {
+          return;
+        }
+        const html = await response.text();
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, 'text/html');
+        const nextRoot = doc.getElementById('dashboard-root');
+        const currentRoot = document.getElementById('dashboard-root');
+
+        if (!nextRoot || !currentRoot) {
+          window.location.assign('/');
+          return;
+        }
+
+        currentRoot.innerHTML = nextRoot.innerHTML;
+        bindTabs();
+        activateTab(activeTab);
+        stampUpdatedNow();
+      } catch (_err) {
+        // Ignore transient refresh errors and retry on next interval.
+      } finally {
+        isRefreshing = false;
+      }
+    }
+
+    bindTabs();
+    stampUpdatedNow();
+    setInterval(refreshDashboard, AUTO_REFRESH_MS);
   })();
 </script>
 {% endblock %}
