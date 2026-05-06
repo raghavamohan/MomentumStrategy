@@ -65,6 +65,7 @@ from tabulate import tabulate
 from kiteconnect.exceptions import PermissionException
 
 from app.auth import get_kite_client
+from app.instruments import get_cash_equity_name_lookups, symbol_with_company_name
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +87,11 @@ from app.auth import get_kite_client
 # ---------------------------------------------------------------------------
 
 
-def _row(holding: dict) -> list:
+def _row(
+    holding: dict,
+    token_to_name: dict[int, str],
+    symbol_to_name: dict[tuple[str, str], str],
+) -> list:
     """Map a single Kite ``holdings`` entry to a printable table row.
 
     The total quantity shown adds ``quantity`` (settled) and
@@ -102,9 +107,16 @@ def _row(holding: dict) -> list:
     invested = avg_price * quantity
     current = last_price * quantity
 
+    symbol_label = symbol_with_company_name(
+        symbol=str(holding.get("tradingsymbol", "")),
+        exchange=str(holding.get("exchange", "")),
+        instrument_token=int(holding.get("instrument_token") or 0),
+        token_to_name=token_to_name,
+        symbol_to_name=symbol_to_name,
+    )
+
     return [
-        holding.get("tradingsymbol", ""),
-        holding.get("exchange", ""),
+        symbol_label,
         quantity,
         avg_price,
         last_price,
@@ -130,12 +142,12 @@ def _print_holdings(kite) -> tuple[float, float, float]:
         print("No equity holdings found in your Zerodha account.")
         return (0.0, 0.0, 0.0)
 
-    rows = [_row(h) for h in holdings]
+    token_to_name, symbol_to_name = get_cash_equity_name_lookups(kite)
+    rows = [_row(h, token_to_name, symbol_to_name) for h in holdings]
     rows.sort(key=lambda r: r[0])
 
     headers = [
         "Symbol",
-        "Exch",
         "Qty",
         "Avg",
         "LTP",
@@ -151,13 +163,13 @@ def _print_holdings(kite) -> tuple[float, float, float]:
             rows,
             headers=headers,
             tablefmt="github",
-            floatfmt=(".0f", "", ".0f", ",.2f", ",.2f", ",.2f", ",.2f", ",.2f", ",.2f"),
+            floatfmt=(".0f", ".0f", ",.2f", ",.2f", ",.2f", ",.2f", ",.2f", ",.2f"),
         )
     )
 
-    total_invested = sum(r[5] for r in rows)
-    total_current = sum(r[6] for r in rows)
-    total_pnl = sum(r[7] for r in rows)
+    total_invested = sum(r[4] for r in rows)
+    total_current = sum(r[5] for r in rows)
+    total_pnl = sum(r[6] for r in rows)
 
     print()
     print(f"Holdings: {len(rows)} stock(s)")
@@ -318,7 +330,11 @@ FNO_EXCHANGES = {"NFO", "BFO", "CDS", "BCD", "MCX"}
 """Exchanges treated as F&O / derivatives positions in the output."""
 
 
-def _position_row(position: dict) -> list:
+def _position_row(
+    position: dict,
+    token_to_name: dict[int, str],
+    symbol_to_name: dict[tuple[str, str], str],
+) -> list:
     """Map a single Kite ``positions`` entry to a printable row.
 
     Fields used (full schema at
@@ -348,8 +364,15 @@ def _position_row(position: dict) -> list:
     ltp = float(position.get("last_price") or 0.0)
     pnl = float(position.get("pnl") or 0.0)
     m2m = float(position.get("m2m") or 0.0)
+    symbol_label = symbol_with_company_name(
+        symbol=str(position.get("tradingsymbol", "")),
+        exchange=str(position.get("exchange", "")),
+        instrument_token=int(position.get("instrument_token") or 0),
+        token_to_name=token_to_name,
+        symbol_to_name=symbol_to_name,
+    )
     return [
-        position.get("tradingsymbol", ""),
+        symbol_label,
         position.get("exchange", ""),
         position.get("product", ""),
         qty,
@@ -360,7 +383,12 @@ def _position_row(position: dict) -> list:
     ]
 
 
-def _print_position_table(title: str, positions: list[dict]) -> None:
+def _print_position_table(
+    title: str,
+    positions: list[dict],
+    token_to_name: dict[int, str],
+    symbol_to_name: dict[tuple[str, str], str],
+) -> None:
     """Render one positions table with subtotals."""
     print()
     print(f"=== {title} ===")
@@ -369,7 +397,7 @@ def _print_position_table(title: str, positions: list[dict]) -> None:
         print("(no open positions)")
         return
 
-    rows = [_position_row(p) for p in positions]
+    rows = [_position_row(p, token_to_name, symbol_to_name) for p in positions]
     rows.sort(key=lambda r: r[0])
 
     headers = ["Symbol", "Exch", "Prod", "Qty", "Avg", "LTP", "P&L", "M2M"]
@@ -408,6 +436,7 @@ def _print_positions(kite) -> float:
     net_positions = positions.get("net", []) or []
 
     open_positions = [p for p in net_positions if int(p.get("quantity") or 0) != 0]
+    token_to_name, symbol_to_name = get_cash_equity_name_lookups(kite)
 
     equity = [p for p in open_positions if p.get("exchange") in EQUITY_EXCHANGES]
     fno = [p for p in open_positions if p.get("exchange") in FNO_EXCHANGES]
@@ -417,10 +446,15 @@ def _print_positions(kite) -> float:
         if p.get("exchange") not in EQUITY_EXCHANGES and p.get("exchange") not in FNO_EXCHANGES
     ]
 
-    _print_position_table("Positions: Equity (NSE / BSE)", equity)
-    _print_position_table("Positions: F&O / Derivatives (NFO / BFO / CDS / BCD / MCX)", fno)
+    _print_position_table("Positions: Equity (NSE / BSE)", equity, token_to_name, symbol_to_name)
+    _print_position_table(
+        "Positions: F&O / Derivatives (NFO / BFO / CDS / BCD / MCX)",
+        fno,
+        token_to_name,
+        symbol_to_name,
+    )
     if other:
-        _print_position_table("Positions: Other", other)
+        _print_position_table("Positions: Other", other, token_to_name, symbol_to_name)
 
     return sum(float(p.get("pnl") or 0.0) for p in open_positions)
 

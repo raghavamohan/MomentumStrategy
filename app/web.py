@@ -93,6 +93,7 @@ from app.auth import (
     save_cached_access_token,
     validate_kite_session,
 )
+from app.instruments import get_cash_equity_name_lookups, symbol_with_company_name
 from app.live_prices import live_price_stream
 
 
@@ -245,7 +246,11 @@ def _restore_session_if_token_valid(request: Request) -> bool:
     return True
 
 
-def _decorate_holding(h: dict) -> dict:
+def _decorate_holding(
+    h: dict,
+    token_to_name: dict[int, str],
+    symbol_to_name: dict[tuple[str, str], str],
+) -> dict:
     """Enrich a Kite holdings entry with derived fields used by the template."""
     quantity = (h.get("quantity") or 0) + (h.get("t1_quantity") or 0)
     avg = float(h.get("average_price") or 0.0)
@@ -257,8 +262,17 @@ def _decorate_holding(h: dict) -> dict:
         day_change_percentage = ((ltp - close_price) / close_price) * 100.0
     else:
         day_change_percentage = float(h.get("day_change_percentage") or 0.0)
+    symbol = str(h.get("tradingsymbol", "")).strip()
+    symbol_label = symbol_with_company_name(
+        symbol=symbol,
+        exchange=str(h.get("exchange", "")),
+        instrument_token=int(h.get("instrument_token") or 0),
+        token_to_name=token_to_name,
+        symbol_to_name=symbol_to_name,
+    )
     return {
-        "tradingsymbol": h.get("tradingsymbol", ""),
+        "tradingsymbol": symbol,
+        "symbol_label": symbol_label,
         "exchange": h.get("exchange", ""),
         "quantity": quantity,
         "average_price": avg,
@@ -297,7 +311,11 @@ def _decorate_mf(h: dict) -> dict:
     }
 
 
-def _decorate_position(p: dict) -> dict:
+def _decorate_position(
+    p: dict,
+    token_to_name: dict[int, str],
+    symbol_to_name: dict[tuple[str, str], str],
+) -> dict:
     """Enrich a Kite positions entry."""
     qty = int(p.get("quantity") or 0)
     ltp = float(p.get("last_price") or 0.0)
@@ -309,8 +327,17 @@ def _decorate_position(p: dict) -> dict:
         pnl = (sell_value - buy_value) + (qty * ltp * multiplier)
     else:
         pnl = float(p.get("pnl") or 0.0)
+    symbol = str(p.get("tradingsymbol", "")).strip()
+    symbol_label = symbol_with_company_name(
+        symbol=symbol,
+        exchange=str(p.get("exchange", "")),
+        instrument_token=int(p.get("instrument_token") or 0),
+        token_to_name=token_to_name,
+        symbol_to_name=symbol_to_name,
+    )
     return {
-        "tradingsymbol": p.get("tradingsymbol", ""),
+        "tradingsymbol": symbol,
+        "symbol_label": symbol_label,
         "exchange": p.get("exchange", ""),
         "product": p.get("product", ""),
         "quantity": qty,
@@ -472,8 +499,17 @@ async def dashboard(request: Request):
             # Keep dashboard resilient if websocket setup fails.
             live_ltp_by_token = {}
 
+    equity_token_to_name, equity_symbol_to_name = get_cash_equity_name_lookups(kite)
+
     equity_holdings = sorted(
-        (_decorate_holding(_overlay_live_ltp(h, live_ltp_by_token)) for h in equity_raw),
+        (
+            _decorate_holding(
+                _overlay_live_ltp(h, live_ltp_by_token),
+                equity_token_to_name,
+                equity_symbol_to_name,
+            )
+            for h in equity_raw
+        ),
         key=lambda r: r["tradingsymbol"],
     )
     mf_holdings = sorted(
@@ -483,7 +519,11 @@ async def dashboard(request: Request):
 
     equity_positions = sorted(
         (
-            _decorate_position(_overlay_live_ltp(p, live_ltp_by_token))
+            _decorate_position(
+                _overlay_live_ltp(p, live_ltp_by_token),
+                equity_token_to_name,
+                equity_symbol_to_name,
+            )
             for p in open_net
             if p.get("exchange") in EQUITY_EXCHANGES
         ),
@@ -491,7 +531,11 @@ async def dashboard(request: Request):
     )
     fno_positions = sorted(
         (
-            _decorate_position(_overlay_live_ltp(p, live_ltp_by_token))
+            _decorate_position(
+                _overlay_live_ltp(p, live_ltp_by_token),
+                equity_token_to_name,
+                equity_symbol_to_name,
+            )
             for p in open_net
             if p.get("exchange") in FNO_EXCHANGES
         ),

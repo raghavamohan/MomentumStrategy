@@ -117,8 +117,7 @@
         <table>
           <thead>
             <tr>
-              <th>Symbol</th>
-              <th>Exch</th>
+              <th>Company</th>
               <th class="num">Qty</th>
               <th class="num">Avg</th>
               <th class="num">LTP</th>
@@ -131,8 +130,7 @@
           <tbody>
             {% for h in equity_holdings %}
               <tr>
-                <td class="symbol">{{ h.tradingsymbol }}</td>
-                <td>{{ h.exchange }}</td>
+                <td class="symbol">{{ h.symbol_label }}</td>
                 <td class="num">{{ h.quantity }}</td>
                 <td class="num">{{ h.average_price|inr }}</td>
                 <td class="num">{{ h.last_price|inr }}</td>
@@ -239,7 +237,7 @@
         <table>
           <thead>
             <tr>
-              <th>Symbol</th>
+              <th>Company</th>
               <th>Exch</th>
               <th>Prod</th>
               <th class="num">Qty</th>
@@ -252,7 +250,7 @@
           <tbody>
             {% for p in equity_positions %}
               <tr>
-                <td class="symbol">{{ p.tradingsymbol }}</td>
+                <td class="symbol">{{ p.symbol_label }}</td>
                 <td>{{ p.exchange }}</td>
                 <td>{{ p.product }}</td>
                 <td class="num">{{ p.quantity }}</td>
@@ -308,7 +306,7 @@
           <tbody>
             {% for p in fno_positions %}
               <tr>
-                <td class="symbol">{{ p.tradingsymbol }}</td>
+                <td class="symbol">{{ p.symbol_label }}</td>
                 <td>{{ p.exchange }}</td>
                 <td>{{ p.product }}</td>
                 <td class="num">{{ p.quantity }}</td>
@@ -360,6 +358,7 @@
   (function () {
     const AUTO_REFRESH_MS = {{ refresh_interval_ms }};
     let isRefreshing = false;
+    let selectedTab = 'equity';
     const updatedIndicator = document.getElementById('last-updated-indicator');
 
     function stampUpdatedNow() {
@@ -374,6 +373,7 @@
     }
 
     function activateTab(target) {
+      selectedTab = target;
       const tabs = document.querySelectorAll('.tab');
       const panels = document.querySelectorAll('.panel');
       tabs.forEach(function (tab) {
@@ -385,6 +385,9 @@
     }
 
     function getActiveTab() {
+      if (selectedTab) {
+        return selectedTab;
+      }
       const active = document.querySelector('.tab.active');
       return active ? active.dataset.tab : 'equity';
     }
@@ -404,7 +407,10 @@
       }
       isRefreshing = true;
 
-      const activeTab = getActiveTab();
+      // Use latest user-selected tab to avoid races with in-flight refresh.
+      // If the user clicks while fetch is pending, selectedTab is updated by
+      // the click handler and respected after DOM replacement.
+      const requestedTab = getActiveTab();
       try {
         const response = await fetch('/dashboard', { cache: 'no-store' });
         if (!response.ok) {
@@ -423,7 +429,9 @@
 
         currentRoot.innerHTML = nextRoot.innerHTML;
         bindTabs();
-        activateTab(activeTab);
+        // Re-apply whichever tab is currently selected at this moment.
+        // Fall back to requestedTab when no newer click occurred.
+        activateTab(selectedTab || requestedTab);
         stampUpdatedNow();
       } catch (_err) {
         // Ignore transient refresh errors and retry on next interval.
@@ -433,6 +441,7 @@
     }
 
     bindTabs();
+    selectedTab = getActiveTab();
     stampUpdatedNow();
     setInterval(refreshDashboard, AUTO_REFRESH_MS);
   })();
