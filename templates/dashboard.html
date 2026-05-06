@@ -2,7 +2,8 @@
   Tabbed account dashboard.
 
   Rendered by `app/web.py` GET /dashboard once per request after the
-  view fetches the four Kite Connect data sets:
+  view fetches the four Kite Connect data sets and overlays live LTPs
+  (when available) from the Kite WebSocket stream:
 
     * equity_holdings     <- KiteConnect.holdings()
         https://kite.trade/docs/connect/v3/portfolio/#holdings
@@ -22,8 +23,10 @@
     * One <section class="panel"> per tab, only one visible at a time.
     * Per-tab summary cards (counts, totals) above each table.
 
-  Tab switching is handled by a tiny vanilla JS block at the bottom of
-  this file.
+  The page auto-refreshes every `refresh_interval_ms` milliseconds
+  (from `DASHBOARD_REFRESH_SECONDS` env in app.web), while the tab is
+  visible. Tab switching is handled by a tiny vanilla JS block at the
+  bottom of this file.
 
   Custom Jinja2 filters used (registered in `app/web.py`):
     * `inr`        - format number as NN,NNN.NN

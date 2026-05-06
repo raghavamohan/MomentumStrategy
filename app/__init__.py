@@ -16,8 +16,8 @@ Entry points
 
 ``python -m app.web``
     Starts the local FastAPI dashboard at http://127.0.0.1:5000/. The
-    dashboard renders all four sections as tabs in a single page. See
-    :mod:`app.web`.
+    dashboard renders all four sections as tabs in a single page and
+    overlays live equity/F&O LTP via Kite WebSocket. See :mod:`app.web`.
 
 Both entry points share the same authentication code (:mod:`app.auth`)
 and the same on-disk access-token cache, so logging in via either

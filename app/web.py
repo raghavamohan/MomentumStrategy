@@ -45,6 +45,11 @@ Routes
       ``PermissionException`` is caught and surfaced as a notice).
     * ``KiteConnect.positions()``    -> ``GET /portfolio/positions``
     * ``KiteConnect.margins("equity")`` -> ``GET /user/margins/equity``
+    * ``KiteTicker`` (WebSocket)     -> ``wss://ws.kite.trade`` for live
+      LTP snapshots on equity/F&O instrument tokens used in the current view.
+
+    Dashboard auto-refresh interval is controlled by
+    ``DASHBOARD_REFRESH_SECONDS`` (defaults to 2s, minimum 1s).
 
     If the cached token has expired (``TokenException``), the session is
     cleared and the user is bounced back to ``/`` to log in again.
@@ -58,6 +63,7 @@ References
 ----------
 * Kite Connect HTTP API:    https://kite.trade/docs/connect/v3/
 * pykiteconnect v4 API ref: https://kite.trade/docs/pykiteconnect/v4/
+* Kite WebSocket streaming: https://kite.trade/docs/connect/v3/websocket/
 * FastAPI:                  https://fastapi.tiangolo.com/
 * Starlette SessionMiddleware:
   https://www.starlette.io/middleware/#sessionmiddleware
