@@ -17,11 +17,11 @@
 #}
 {% extends "base.html" %}
 
-{% block title %}Sign in &middot; MomentumStrategy{% endblock %}
+{% block title %}Sign in &middot; {{ dashboard_name }}{% endblock %}
 
 {% block content %}
   <div class="card login-card">
-    <h2>MomentumStrategy</h2>
+    <h2>{{ dashboard_name }}</h2>
     <p>
       A local dashboard for your Zerodha account. Sign in with Kite Connect to
       view your equity holdings, mutual fund holdings, open positions, and

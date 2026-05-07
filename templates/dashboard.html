@@ -35,13 +35,16 @@
 #}
 {% extends "base.html" %}
 
-{% block title %}Dashboard &middot; MomentumStrategy{% endblock %}
+{% block title %}Dashboard &middot; {{ dashboard_name }}{% endblock %}
 
 {% block content %}
   <div class="topbar">
-    <div>
-      <h1>MomentumStrategy</h1>
-      <div class="subtitle">Live snapshot from Kite Connect</div>
+    <div class="topbar-main">
+      <h1>{{ dashboard_name }}</h1>
+      <div class="subtitle nifty-quote">
+        <span id="nifty-live-price">NIFTY 50: --</span>
+        <span id="nifty-live-change" class="nifty-change"></span>
+      </div>
       <div class="subtitle" id="last-updated-indicator">Last updated: --</div>
     </div>
     <div class="right">
@@ -433,6 +436,8 @@
     const SNAPSHOT_MS = {{ snapshot_interval_ms }};
     let isRefreshing = false;
     let selectedTab = 'equity';
+    const niftyPriceEl = document.getElementById('nifty-live-price');
+    const niftyChangeEl = document.getElementById('nifty-live-change');
     const updatedIndicator = document.getElementById('last-updated-indicator');
 
     function readBootstrap() {
@@ -448,6 +453,57 @@
     }
 
     let bootstrap = readBootstrap();
+
+    function niftyLtpFromBootstrap() {
+      const v = bootstrap.niftyLtp;
+      if (v == null || v === '') {
+        return NaN;
+      }
+      const n = Number(v);
+      return Number.isFinite(n) ? n : NaN;
+    }
+
+    function renderNiftyQuote(ltp) {
+      if (!niftyPriceEl || !niftyChangeEl) {
+        return;
+      }
+      const prevRaw = bootstrap.niftyPrevClose;
+      const prevClose =
+        prevRaw != null && prevRaw !== '' ? Number(prevRaw) : NaN;
+
+      if (!Number.isFinite(ltp)) {
+        niftyPriceEl.textContent = 'NIFTY 50: --';
+        niftyChangeEl.textContent = '';
+        niftyChangeEl.className = 'nifty-change';
+        return;
+      }
+
+      niftyPriceEl.textContent = 'NIFTY 50: ' + formatInr(ltp);
+
+      if (!Number.isFinite(prevClose) || prevClose <= 0) {
+        niftyChangeEl.textContent = '';
+        niftyChangeEl.className = 'nifty-change';
+        return;
+      }
+
+      const chg = ltp - prevClose;
+      const pct = (chg / prevClose) * 100;
+      const same =
+        Math.round(ltp * 100) === Math.round(prevClose * 100);
+      let tone = 'flat';
+      if (!same) {
+        tone = ltp > prevClose ? 'up' : 'down';
+      }
+
+      const chgStr =
+        (chg > 0 ? '+' : '') +
+        formatInr(chg);
+      const pctStr =
+        (pct > 0 ? '+' : '') +
+        formatPct(pct);
+      niftyChangeEl.textContent = ' (' + chgStr + ', ' + pctStr + ')';
+      niftyChangeEl.className = 'nifty-change nifty-change-' + tone;
+    }
 
     function stampUpdatedNow() {
       if (!updatedIndicator) {
@@ -713,6 +769,10 @@
             updatePositionRow(tr, price);
           });
       });
+      const niftyToken = String(bootstrap.niftyToken || '');
+      if (niftyToken && Object.prototype.hasOwnProperty.call(ltpMap, niftyToken)) {
+        renderNiftyQuote(Number(ltpMap[niftyToken]));
+      }
       recalcSummaries();
       reapplyPersistedTableSorts();
     }
@@ -870,6 +930,7 @@
 
         currentRoot.innerHTML = nextRoot.innerHTML;
         bootstrap = readBootstrap();
+        renderNiftyQuote(niftyLtpFromBootstrap());
         bindTabs();
         activateTab(selectedTab || requestedTab);
         applyDefaultInvestedSort();
@@ -885,6 +946,7 @@
     selectedTab = getActiveTab();
     applyDefaultInvestedSort();
     stampUpdatedNow();
+    renderNiftyQuote(niftyLtpFromBootstrap());
     recalcSummaries();
     connectLivePrices();
     window.setInterval(refreshDashboardSnapshot, SNAPSHOT_MS);

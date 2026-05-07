@@ -91,6 +91,7 @@ import webbrowser
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
+from dotenv import load_dotenv
 import keyring
 from kiteconnect import KiteConnect
 from kiteconnect.exceptions import PermissionException, TokenException
@@ -137,6 +138,15 @@ def _dashboard_snapshot_interval_ms() -> int:
 
 
 _DASHBOARD_SNAPSHOT_INTERVAL_MS = _dashboard_snapshot_interval_ms()
+
+
+def _dashboard_display_name() -> str:
+    """Dashboard/product display name from env with a friendly default."""
+    load_dotenv(PROJECT_ROOT / ".env")
+    return os.getenv("KITE_DASHBOARD_NAME", "").strip() or "Raghava`s Porfolio"
+
+
+_DASHBOARD_DISPLAY_NAME = _dashboard_display_name()
 
 
 def _session_secret() -> str:
@@ -262,7 +272,7 @@ async def _lifespan(_: FastAPI):
 
 
 app = FastAPI(
-    title="MomentumStrategy Dashboard",
+    title=f"{_DASHBOARD_DISPLAY_NAME} Dashboard",
     docs_url=None,
     redoc_url=None,
     lifespan=_lifespan,
@@ -284,6 +294,8 @@ app.add_middleware(
 
 EQUITY_EXCHANGES = {"NSE", "BSE"}
 FNO_EXCHANGES = {"NFO", "BFO", "CDS", "BCD", "MCX"}
+NIFTY_50_INSTRUMENT_TOKEN = 256265
+NIFTY_50_QUOTE_KEY = "NSE:NIFTY 50"
 
 
 def _kite_for_request() -> KiteConnect | None:
@@ -466,7 +478,11 @@ async def index(request: Request):
     """Landing page. Redirects to /dashboard if already authenticated."""
     if _restore_session_if_token_valid(request):
         return RedirectResponse("/dashboard", status_code=303)
-    return templates.TemplateResponse(request, "index.html")
+    return templates.TemplateResponse(
+        request,
+        "index.html",
+        {"dashboard_name": _DASHBOARD_DISPLAY_NAME},
+    )
 
 
 @app.get("/login")
@@ -494,7 +510,10 @@ async def callback(
         return templates.TemplateResponse(
             request,
             "index.html",
-            {"error": f"Login was cancelled (status={status})."},
+            {
+                "error": f"Login was cancelled (status={status}).",
+                "dashboard_name": _DASHBOARD_DISPLAY_NAME,
+            },
             status_code=400,
         )
 
@@ -502,7 +521,10 @@ async def callback(
         return templates.TemplateResponse(
             request,
             "index.html",
-            {"error": "Missing request_token in callback URL."},
+            {
+                "error": "Missing request_token in callback URL.",
+                "dashboard_name": _DASHBOARD_DISPLAY_NAME,
+            },
             status_code=400,
         )
 
@@ -514,7 +536,10 @@ async def callback(
         return templates.TemplateResponse(
             request,
             "index.html",
-            {"error": f"Login failed: {exc}"},
+            {
+                "error": f"Login failed: {exc}",
+                "dashboard_name": _DASHBOARD_DISPLAY_NAME,
+            },
             status_code=401,
         )
 
@@ -664,6 +689,7 @@ async def dashboard(request: Request):
     open_net = [p for p in net_positions if int(p.get("quantity") or 0) != 0]
 
     live_ltp_by_token: dict[int, float] = {}
+    nifty_live_price: float | None = None
     access_token = load_cached_access_token()
     if access_token:
         try:
@@ -676,12 +702,30 @@ async def dashboard(request: Request):
                 int(p.get("instrument_token") or 0)
                 for p in open_net
             }
+            tokens.add(NIFTY_50_INSTRUMENT_TOKEN)
             tokens = {t for t in tokens if t > 0}
             live_price_stream.subscribe(tokens)
             live_ltp_by_token = live_price_stream.snapshot_ltp(tokens)
+            nifty_live_price = live_ltp_by_token.get(NIFTY_50_INSTRUMENT_TOKEN)
         except Exception:
             # Keep dashboard resilient if websocket setup fails.
             live_ltp_by_token = {}
+            nifty_live_price = None
+
+    nifty_prev_close: float | None = None
+    try:
+        quote = kite.quote([NIFTY_50_QUOTE_KEY]) or {}
+        nifty_data = quote.get(NIFTY_50_QUOTE_KEY) or {}
+        ohlc = nifty_data.get("ohlc") or {}
+        raw_prev = ohlc.get("close")
+        if raw_prev is not None:
+            nifty_prev_close = float(raw_prev)
+        if nifty_live_price is None:
+            raw_ltp = nifty_data.get("last_price")
+            if raw_ltp is not None:
+                nifty_live_price = float(raw_ltp)
+    except Exception:
+        pass
 
     equity_token_to_name, equity_symbol_to_name = get_cash_equity_name_lookups(kite)
 
@@ -753,9 +797,13 @@ async def dashboard(request: Request):
         },
         "portfolioInvestedTotal": total_invested,
         "equityInvestedTotal": equity_totals["invested"],
+        "niftyToken": NIFTY_50_INSTRUMENT_TOKEN,
+        "niftyLtp": nifty_live_price,
+        "niftyPrevClose": nifty_prev_close,
     }
     context = {
         "request": request,
+        "dashboard_name": _DASHBOARD_DISPLAY_NAME,
         "equity_holdings": equity_holdings,
         "equity_totals": equity_totals,
         "mf_holdings": mf_holdings,
