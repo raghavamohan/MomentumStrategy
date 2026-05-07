@@ -9,14 +9,17 @@ current state of your Zerodha account using the official
 - Mutual fund holdings (units per folio with NAV and P&L).
 - Open positions, separated into equity (NSE / BSE) and F&O / derivatives.
 - Equity segment cash balance (available cash, live balance, utilised).
+- Overall portfolio summary (invested/current totals and consolidated P&L
+  across holdings, mutual funds, and open positions).
 
 There are two interfaces, sharing the same authentication flow and token cache:
 
-- **CLI** — `python -m app.main`. Prints the four sections as ASCII
-  tables, suitable for terminals and scripting.
+- **CLI** — `python -m app.main`. Prints these sections as ASCII tables (five
+  blocks, including the portfolio summary), suitable for terminals and scripting.
 - **Web dashboard** — `python -m app.web`. Starts a FastAPI server on
-  http://127.0.0.1:5000/ with one tab per category in a single page and
-  overlays live equity/F&O prices via Kite WebSocket (`KiteTicker`).
+  http://127.0.0.1:5000/ with portfolio summary cards, one tab per category on
+  a single page, and live equity/F&O prices overlaid via Kite WebSocket
+  (`KiteTicker`).
 
 ## What it does
 
@@ -41,6 +44,13 @@ There are two interfaces, sharing the same authentication flow and token cache:
 - Caches the daily access token in `.access_token.json` so you don't
   have to log in again until it expires (Kite tokens die at ~6 AM IST
   the next trading day). The CLI and web dashboard share this cache.
+- Keeps the **browser session cookie** valid across server restarts by
+  signing it with a stable secret: use env `SESSION_SECRET`, or the app
+  stores one in the OS keychain via `keyring` (Windows Credential Manager,
+  macOS Keychain, etc.). A legacy plaintext `.session_secret` file is
+  migrated into the keychain when present. If no backend is available,
+  you may see a **RuntimeWarning** and sessions reset on restart unless
+  you set `SESSION_SECRET`.
 - Streams live LTP ticks to the browser over ``WS /ws/live-prices`` and
   updates holdings/positions rows client-side without reloading the page.
 - Periodically re-fetches a full HTML snapshot on ``GET /dashboard`` every
@@ -85,6 +95,9 @@ KITE_API_SECRET=your_api_secret_here
 DASHBOARD_SNAPSHOT_SECONDS=120
 ```
 
+Optional for the web dashboard: `SESSION_SECRET` (stable cookie signing across
+restarts). If omitted, the app prefers the OS keychain; see `.env.example`.
+
 `.env` is gitignored, so it will not be committed.
 
 ## Run — Web dashboard (recommended)
@@ -94,15 +107,19 @@ python -m app.web
 ```
 
 `python -m app.web` sets a **5 second** graceful shutdown timeout so Ctrl+C
-does not wait indefinitely on open WebSocket connections. If you start Uvicorn
-yourself (``uvicorn app.web:app --host 127.0.0.1 --port 5000``), pass
-``--timeout-graceful-shutdown 5`` (or similar) for the same behaviour.
+does not wait indefinitely on open WebSocket connections. It also **opens your
+default browser** to the dashboard URL after about one second (only when using
+``python -m app.web``). If you start Uvicorn yourself
+(``uvicorn app.web:app --host 127.0.0.1 --port 5000``), open the URL manually
+and pass ``--timeout-graceful-shutdown 5`` (or similar) for the same shutdown
+behaviour.
 
-This starts a FastAPI server on http://127.0.0.1:5000/. Open that URL
-in your browser, click **Login with Zerodha**, complete the Zerodha
+This starts a FastAPI server on http://127.0.0.1:5000/. If the browser did not
+open, visit that URL, click **Login with Zerodha**, complete the Zerodha
 sign-in, and you'll be redirected to the dashboard.
 
-The dashboard is a single page with five tabs:
+The dashboard is a single page: **summary cards** at the top (total invested,
+current value, overall P&L, open positions P&L), then five tabs:
 
 1. **Equity Holdings** — table of demat stocks with totals.
 2. **Mutual Funds** — table of MF folios with NAVs and totals.
@@ -138,7 +155,7 @@ Paste request_token here:
 
 Open the URL, log in to Zerodha, copy the `request_token` from the
 redirect URL's query string, and paste it back into the terminal. After
-that, the four sections are printed.
+that, all sections (including the portfolio summary) are printed.
 
 ## Project layout
 
@@ -190,6 +207,8 @@ External documentation for everything this app talks to:
 | `app/main.py:_print_positions` · `app/web.py:/dashboard` | `KiteConnect.positions()`                | `GET /portfolio/positions`     | <https://kite.trade/docs/connect/v3/portfolio/#positions> · <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.positions>                  |
 | `app/main.py:_print_cash_balance` · `app/web.py:/dashboard` | `KiteConnect.margins("equity")`       | `GET /user/margins/equity`     | <https://kite.trade/docs/connect/v3/user/#funds-and-margins> · <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.margins>                 |
 | `app/live_prices.py` · `app/web.py:/dashboard` | `KiteTicker.subscribe()` / `set_mode("ltp")` | `wss://ws.kite.trade` | <https://kite.trade/docs/connect/v3/websocket/> · <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteTicker> |
+| `app/web.py` WebSocket `/ws/live-prices` | (ticks from existing `KiteTicker` stream) | Browser ← JSON LTP deltas | Same WebSocket docs as above (feed is shared with server-side LTP cache). |
+| `app/web.py:/favicon.ico` | (no Kite call) | `GET /favicon.ico` → **204** | Browsers request this automatically; empty response avoids 404 noise. |
 | MF section (error)                  | `kiteconnect.exceptions.PermissionException` | (raised on 403 when MF API not enabled) | <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.exceptions.PermissionException>                                                            |
 
 ### Login flow used by `app/web.py`
