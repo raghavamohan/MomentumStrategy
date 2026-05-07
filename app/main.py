@@ -61,13 +61,45 @@ References
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
+from typing import Any
 
 from tabulate import tabulate
 
-from kiteconnect.exceptions import DataException, NetworkException, PermissionException
+from kiteconnect.exceptions import (
+    DataException,
+    KiteException,
+    NetworkException,
+    PermissionException,
+    TokenException,
+)
 
 from app.auth import get_kite_client
 from app.instruments import get_cash_equity_name_lookups, symbol_with_company_name
+
+
+def _is_transient_service_unavailable(exc: Exception) -> bool:
+    """Return True for transient upstream outages worth a quick retry."""
+    code = getattr(exc, "code", None)
+    msg = str(exc).lower()
+    return code == 503 or "503" in msg or "service unavailable" in msg
+
+
+def _call_with_transient_retry(
+    fn: Callable[[], Any],
+    *,
+    retries: int = 1,
+    retry_delay_seconds: float = 1.0,
+) -> Any:
+    """Call ``fn`` with a single transient-retry guard for 503-like failures."""
+    for attempt in range(retries + 1):
+        try:
+            return fn()
+        except (NetworkException, DataException) as exc:
+            if attempt < retries and _is_transient_service_unavailable(exc):
+                time.sleep(retry_delay_seconds)
+                continue
+            raise
 
 
 # ---------------------------------------------------------------------------
@@ -135,10 +167,16 @@ def _print_holdings(kite) -> tuple[float, float, float]:
     Calls ``kite.holdings()`` once and renders the result. See:
     https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.holdings
     """
-    holdings = kite.holdings()
-
     print()
     print("=== Equity Holdings ===")
+    try:
+        holdings = _call_with_transient_retry(lambda: kite.holdings() or {})
+    except KiteException as exc:
+        print(f"Unable to fetch equity holdings right now: {exc}")
+        return (0.0, 0.0, 0.0)
+    except Exception as exc:  # noqa: BLE001 - final guard for CLI resilience
+        print(f"Unexpected error while fetching equity holdings: {exc}")
+        return (0.0, 0.0, 0.0)
 
     if not holdings:
         print("No equity holdings found in your Zerodha account.")
@@ -261,13 +299,19 @@ def _print_mf_holdings(kite) -> tuple[float, float, float]:
     print("=== Mutual Fund Holdings ===")
 
     try:
-        holdings = kite.mf_holdings()
+        holdings = _call_with_transient_retry(lambda: kite.mf_holdings() or [])
     except PermissionException:
         print(
             "Mutual Funds API not enabled on this Kite Connect app. "
             "Enable the MF module at https://developers.kite.trade if you "
             "want this section."
         )
+        return (0.0, 0.0, 0.0)
+    except KiteException as exc:
+        print(f"Unable to fetch mutual fund holdings right now: {exc}")
+        return (0.0, 0.0, 0.0)
+    except Exception as exc:  # noqa: BLE001 - final guard for CLI resilience
+        print(f"Unexpected error while fetching mutual fund holdings: {exc}")
         return (0.0, 0.0, 0.0)
 
     if not holdings:
@@ -434,7 +478,16 @@ def _print_positions(kite) -> float:
     Closed positions are filtered out so the output reflects the user's
     current market exposure.
     """
-    positions = kite.positions() or {}
+    print()
+    print("=== Open Positions ===")
+    try:
+        positions = _call_with_transient_retry(lambda: kite.positions() or {})
+    except KiteException as exc:
+        print(f"Unable to fetch positions right now: {exc}")
+        return 0.0
+    except Exception as exc:  # noqa: BLE001 - final guard for CLI resilience
+        print(f"Unexpected error while fetching positions: {exc}")
+        return 0.0
     net_positions = positions.get("net", []) or []
 
     open_positions = [p for p in net_positions if int(p.get("quantity") or 0) != 0]
@@ -495,28 +548,23 @@ def _print_cash_balance(kite) -> None:
     Calls ``kite.margins(segment="equity")``. See:
     https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.margins
     """
-    def _is_transient_service_unavailable(exc: Exception) -> bool:
-        code = getattr(exc, "code", None)
-        msg = str(exc).lower()
-        return code == 503 or "503" in msg or "service unavailable" in msg
-
-    margins: dict = {}
-    for attempt in (1, 2):
-        try:
-            margins = kite.margins(segment="equity") or {}
-            break
-        except (NetworkException, DataException) as exc:
-            if attempt == 1 and _is_transient_service_unavailable(exc):
-                time.sleep(1.0)
-                continue
-            print()
-            print("=== Equity Cash Balance ===")
-            print()
-            print(
-                "Cash balance is temporarily unavailable from Kite API "
-                f"({exc}). Try again in a minute."
-            )
-            return
+    try:
+        margins = _call_with_transient_retry(lambda: kite.margins(segment="equity") or {})
+    except KiteException as exc:
+        print()
+        print("=== Equity Cash Balance ===")
+        print()
+        print(
+            "Cash balance is temporarily unavailable from Kite API "
+            f"({exc}). Try again in a minute."
+        )
+        return
+    except Exception as exc:  # noqa: BLE001 - final guard for CLI resilience
+        print()
+        print("=== Equity Cash Balance ===")
+        print()
+        print(f"Unexpected error while fetching cash balance: {exc}")
+        return
 
     available = margins.get("available", {}) or {}
     utilised = margins.get("utilised", {}) or {}
@@ -549,15 +597,28 @@ def _print_overall_summary(
 
 def main() -> None:
     """Authenticate and emit the account-snapshot sections."""
-    kite = get_kite_client()
-    eq_invested, eq_current, eq_pnl = _print_holdings(kite)
-    mf_invested, mf_current, mf_pnl = _print_mf_holdings(kite)
-    positions_pnl = _print_positions(kite)
-    _print_cash_balance(kite)
-    total_invested = eq_invested + mf_invested
-    total_current = eq_current + mf_current
-    overall_pnl = eq_pnl + mf_pnl + positions_pnl
-    _print_overall_summary(total_invested, total_current, overall_pnl)
+    try:
+        kite = get_kite_client()
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001 - show friendly startup failure
+        raise SystemExit(f"Authentication failed: {exc}") from exc
+
+    try:
+        eq_invested, eq_current, eq_pnl = _print_holdings(kite)
+        mf_invested, mf_current, mf_pnl = _print_mf_holdings(kite)
+        positions_pnl = _print_positions(kite)
+        _print_cash_balance(kite)
+        total_invested = eq_invested + mf_invested
+        total_current = eq_current + mf_current
+        overall_pnl = eq_pnl + mf_pnl + positions_pnl
+        _print_overall_summary(total_invested, total_current, overall_pnl)
+    except TokenException as exc:
+        raise SystemExit(
+            "Your Kite session expired during data fetch. "
+            "Please rerun and login again. "
+            f"Details: {exc}"
+        ) from exc
 
 
 if __name__ == "__main__":
