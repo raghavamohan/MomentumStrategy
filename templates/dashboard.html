@@ -51,45 +51,95 @@
 
   <div id="dashboard-root">
     <textarea id="dashboard-bootstrap" hidden readonly>{{ dashboard_bootstrap_json }}</textarea>
-    <div class="summary">
-      <div class="stat">
-        <div class="label">Total Invested (Equity + MF)</div>
-        <div class="value" id="stat-portfolio-invested">{{ portfolio_summary.total_invested|inr }}</div>
-      </div>
-      <div class="stat">
-        <div class="label">Current Value (Equity + MF)</div>
-        <div class="value" id="stat-portfolio-current">{{ portfolio_summary.total_current|inr }}</div>
-      </div>
-      <div class="stat">
-        <div class="label">Overall P&amp;L</div>
-        <div class="value {{ portfolio_summary.overall_pnl|sign_class }}" id="stat-portfolio-overall-pnl">
-          {{ portfolio_summary.overall_pnl|inr }}
+    <div class="dashboard-shell">
+      <aside class="card side-nav" aria-label="Dashboard sections">
+        <div class="side-nav-title">Sections</div>
+        <div class="section-nav">
+          <button class="section-nav-link" data-section="profile" type="button">User Profile</button>
+          <button class="section-nav-link active" data-section="portfolio" type="button">Users Portfolio</button>
+          <button class="section-nav-link" data-section="watchlist" type="button">Watch List</button>
         </div>
-      </div>
-      <div class="stat">
-        <div class="label">Open Positions P&amp;L</div>
-        <div class="value {{ portfolio_summary.positions_pnl|sign_class }}" id="stat-portfolio-positions-pnl">
-          {{ portfolio_summary.positions_pnl|inr }}
-        </div>
-      </div>
-    </div>
+      </aside>
 
-  <div class="tabs" role="tablist">
-    <button class="tab active" data-tab="equity" role="tab">
-      Equity Holdings <span class="count">{{ equity_holdings|length }}</span>
-    </button>
-    <button class="tab" data-tab="mf" role="tab">
-      Mutual Funds <span class="count">{{ mf_holdings|length }}</span>
-    </button>
-    <button class="tab" data-tab="positions-equity" role="tab">
-      Equity Positions <span class="count">{{ equity_positions|length }}</span>
-    </button>
-    <button class="tab" data-tab="positions-fno" role="tab">
-      F&amp;O Positions <span class="count">{{ fno_positions|length }}</span>
-    </button>
-    <button class="tab" data-tab="cash" role="tab">Cash Balance</button>
-  </div>
+      <div class="dashboard-main">
+        <section class="section-panel" data-section-panel="profile">
+          <div class="card">
+            <h2 style="margin-top: 0;">User Profile</h2>
+            <p style="color: var(--muted); margin-top: 0;">
+              Profile details are fetched from your authenticated Kite account session.
+            </p>
+            <div class="meta-list">
+              <div class="meta-item">
+                <div class="label">Name</div>
+                <div class="value">{{ user_profile.name }}</div>
+              </div>
+              <div class="meta-item">
+                <div class="label">User ID</div>
+                <div class="value">{{ user_profile.user_id }}</div>
+              </div>
+              <div class="meta-item">
+                <div class="label">Email</div>
+                <div class="value">{{ user_profile.email }}</div>
+              </div>
+              <div class="meta-item">
+                <div class="label">Broker</div>
+                <div class="value">{{ user_profile.broker }}</div>
+              </div>
+              <div class="meta-item">
+                <div class="label">Account Type</div>
+                <div class="value">{{ user_profile.user_type }}</div>
+              </div>
+              <div class="meta-item">
+                <div class="label">Enabled Products</div>
+                <div class="value">{{ user_profile.products|join(", ") if user_profile.products else "--" }}</div>
+              </div>
+              <div class="meta-item">
+                <div class="label">Enabled Exchanges</div>
+                <div class="value">{{ user_profile.exchanges|join(", ") if user_profile.exchanges else "--" }}</div>
+              </div>
+            </div>
+          </div>
+        </section>
 
+        <section class="section-panel active" data-section-panel="portfolio">
+          <div class="summary">
+            <div class="stat">
+              <div class="label">Total Invested (Equity + MF)</div>
+              <div class="value" id="stat-portfolio-invested">{{ portfolio_summary.total_invested|inr }}</div>
+            </div>
+            <div class="stat">
+              <div class="label">Current Value (Equity + MF)</div>
+              <div class="value" id="stat-portfolio-current">{{ portfolio_summary.total_current|inr }}</div>
+            </div>
+            <div class="stat">
+              <div class="label">Overall P&amp;L</div>
+              <div class="value {{ portfolio_summary.overall_pnl|sign_class }}" id="stat-portfolio-overall-pnl">
+                {{ portfolio_summary.overall_pnl|inr }}
+              </div>
+            </div>
+            <div class="stat">
+              <div class="label">Open Positions P&amp;L</div>
+              <div class="value {{ portfolio_summary.positions_pnl|sign_class }}" id="stat-portfolio-positions-pnl">
+                {{ portfolio_summary.positions_pnl|inr }}
+              </div>
+            </div>
+          </div>
+
+          <div class="tabs" role="tablist">
+            <button class="tab active" data-tab="equity" role="tab">
+              Equity Holdings <span class="count">{{ equity_holdings|length }}</span>
+            </button>
+            <button class="tab" data-tab="mf" role="tab">
+              Mutual Funds <span class="count">{{ mf_holdings|length }}</span>
+            </button>
+            <button class="tab" data-tab="positions-equity" role="tab">
+              Equity Positions <span class="count">{{ equity_positions|length }}</span>
+            </button>
+            <button class="tab" data-tab="positions-fno" role="tab">
+              F&amp;O Positions <span class="count">{{ fno_positions|length }}</span>
+            </button>
+            <button class="tab" data-tab="cash" role="tab">Cash Balance</button>
+          </div>
     {# ---------------- Equity Holdings ---------------- #}
     <section class="panel active" data-panel="equity">
     {% if equity_holdings %}
@@ -424,6 +474,69 @@
       <strong>Utilised</strong> is margin currently locked by open positions / orders.
     </div>
     </section>
+
+        </section>
+
+        <section class="section-panel" data-section-panel="watchlist">
+          <div class="summary">
+            <div class="stat">
+              <div class="label">Watch List Symbols</div>
+              <div class="value">{{ watch_list|length }}</div>
+            </div>
+            <div class="stat">
+              <div class="label">Indices</div>
+              <div class="value">{{ watch_list|selectattr("segment", "equalto", "Index")|list|length }}</div>
+            </div>
+            <div class="stat">
+              <div class="label">Stocks</div>
+              <div class="value">{{ watch_list|selectattr("segment", "equalto", "Equity")|list|length }}</div>
+            </div>
+          </div>
+          {% if watch_list %}
+            <div class="card" style="padding: 0; overflow: hidden;">
+              <table data-table-sort-key="watch-list" data-default-sort-col="4" data-default-sort-type="pct">
+                <thead>
+                  <tr>
+                    <th class="sortable" scope="col">
+                      <button type="button" class="th-sort" data-sort-type="text">Symbol <span class="sort-ind" aria-hidden="true"></span></button>
+                    </th>
+                    <th class="sortable" scope="col">
+                      <button type="button" class="th-sort" data-sort-type="text">Segment <span class="sort-ind" aria-hidden="true"></span></button>
+                    </th>
+                    <th class="num sortable" scope="col">
+                      <button type="button" class="th-sort" data-sort-type="inr">LTP <span class="sort-ind" aria-hidden="true"></span></button>
+                    </th>
+                    <th class="num sortable" scope="col">
+                      <button type="button" class="th-sort" data-sort-type="inr">Change <span class="sort-ind" aria-hidden="true"></span></button>
+                    </th>
+                    <th class="num sortable" scope="col">
+                      <button type="button" class="th-sort" data-sort-type="pct">Change % <span class="sort-ind" aria-hidden="true"></span></button>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for item in watch_list %}
+                    <tr
+                      class="live-watch"
+                      data-token="{{ item.instrument_token }}"
+                      data-prev="{{ item.prev_close }}"
+                    >
+                      <td class="symbol">{{ item.label }}</td>
+                      <td>{{ item.segment }}</td>
+                      <td class="num js-watch-ltp">{{ item.last_price|inr }}</td>
+                      <td class="num js-watch-change {{ item.change|sign_class }}">{{ item.change|inr }}</td>
+                      <td class="num js-watch-change-pct {{ item.change_pct|sign_class }}">{{ item.change_pct|pct }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          {% else %}
+            <div class="card empty">Watch List is empty. Add symbols in the next iteration.</div>
+          {% endif %}
+        </section>
+      </div>
+    </div>
   </div>
 {% endblock %}
 
@@ -434,6 +547,7 @@
     const TABLE_SORT_STORAGE_PREFIX = 'momentumDashboard:tableSort:';
     let isRefreshing = false;
     let selectedTab = 'equity';
+    let selectedSection = 'portfolio';
     const indexQuotesBar = document.getElementById('index-quotes-bar');
     const updatedIndicator = document.getElementById('last-updated-indicator');
 
@@ -732,6 +846,35 @@
       }
     }
 
+    function updateWatchRow(tr, ltp) {
+      if (!Number.isFinite(ltp)) {
+        return;
+      }
+      const prev = parseFloat(tr.dataset.prev);
+      const ltpEl = tr.querySelector('.js-watch-ltp');
+      const changeEl = tr.querySelector('.js-watch-change');
+      const changePctEl = tr.querySelector('.js-watch-change-pct');
+
+      if (ltpEl) {
+        ltpEl.textContent = formatInr(ltp);
+      }
+      if (!Number.isFinite(prev) || prev <= 0) {
+        return;
+      }
+      const change = ltp - prev;
+      const changePct = (change / prev) * 100;
+      if (changeEl) {
+        changeEl.textContent = formatInr(change);
+        changeEl.classList.remove('positive', 'negative', 'neutral');
+        changeEl.classList.add(signClass(change));
+      }
+      if (changePctEl) {
+        changePctEl.textContent = formatPct(changePct);
+        changePctEl.classList.remove('positive', 'negative', 'neutral');
+        changePctEl.classList.add(signClass(changePct));
+      }
+    }
+
     function numericSortKey(text) {
       const raw = String(text || '')
         .replace(/,/g, '')
@@ -936,6 +1079,9 @@
         document.querySelectorAll(sel).forEach(function (tr) {
           updateHoldingRow(tr, price);
         });
+        document.querySelectorAll('tr.live-watch[data-token="' + tok + '"]').forEach(function (tr) {
+          updateWatchRow(tr, price);
+        });
         document
           .querySelectorAll('tr.live-position[data-token="' + tok + '"]')
           .forEach(function (tr) {
@@ -1056,8 +1202,8 @@
 
     function activateTab(target) {
       selectedTab = target;
-      const tabs = document.querySelectorAll('.tab');
-      const panels = document.querySelectorAll('.panel');
+      const tabs = document.querySelectorAll('.section-panel[data-section-panel="portfolio"] .tab');
+      const panels = document.querySelectorAll('.section-panel[data-section-panel="portfolio"] .panel');
       tabs.forEach(function (tab) {
         tab.classList.toggle('active', tab.dataset.tab === target);
       });
@@ -1070,15 +1216,44 @@
       if (selectedTab) {
         return selectedTab;
       }
-      const active = document.querySelector('.tab.active');
+      const active = document.querySelector('.section-panel[data-section-panel="portfolio"] .tab.active');
       return active ? active.dataset.tab : 'equity';
     }
 
     function bindTabs() {
-      const tabs = document.querySelectorAll('.tab');
+      const tabs = document.querySelectorAll('.section-panel[data-section-panel="portfolio"] .tab');
       tabs.forEach(function (tab) {
         tab.addEventListener('click', function () {
           activateTab(tab.dataset.tab);
+        });
+      });
+    }
+
+    function activateSection(target) {
+      selectedSection = target;
+      const navItems = document.querySelectorAll('.section-nav-link');
+      const sections = document.querySelectorAll('.section-panel');
+      navItems.forEach(function (item) {
+        item.classList.toggle('active', item.dataset.section === target);
+      });
+      sections.forEach(function (section) {
+        section.classList.toggle('active', section.dataset.sectionPanel === target);
+      });
+    }
+
+    function getActiveSection() {
+      if (selectedSection) {
+        return selectedSection;
+      }
+      const active = document.querySelector('.section-nav-link.active');
+      return active ? active.dataset.section : 'portfolio';
+    }
+
+    function bindSections() {
+      const navItems = document.querySelectorAll('.section-nav-link');
+      navItems.forEach(function (item) {
+        item.addEventListener('click', function () {
+          activateSection(item.dataset.section);
         });
       });
     }
@@ -1088,6 +1263,7 @@
         return;
       }
       isRefreshing = true;
+      const requestedSection = getActiveSection();
       const requestedTab = getActiveTab();
       try {
         const response = await fetch('/dashboard', { cache: 'no-store' });
@@ -1108,6 +1284,8 @@
         currentRoot.innerHTML = nextRoot.innerHTML;
         bootstrap = readBootstrap();
         renderIndexQuotes();
+        bindSections();
+        activateSection(selectedSection || requestedSection);
         bindTabs();
         activateTab(selectedTab || requestedTab);
         applyInitialTableSorts();
@@ -1130,6 +1308,8 @@
       }, 120);
     });
 
+    bindSections();
+    selectedSection = getActiveSection();
     bindTabs();
     selectedTab = getActiveTab();
     applyInitialTableSorts();

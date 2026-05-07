@@ -218,6 +218,93 @@
       margin-bottom: 16px;
     }
 
+    .dashboard-shell {
+      display: grid;
+      grid-template-columns: 240px minmax(0, 1fr);
+      gap: 16px;
+      align-items: start;
+    }
+    .side-nav {
+      position: sticky;
+      top: 20px;
+      padding: 12px;
+    }
+    .side-nav-title {
+      margin: 4px 8px 12px;
+      font-size: 11px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .section-nav {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .section-nav-link {
+      width: 100%;
+      text-align: left;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text);
+      border-radius: 8px;
+      padding: 10px 12px;
+      cursor: pointer;
+      font: inherit;
+      transition: border-color 0.15s, background-color 0.15s;
+    }
+    .section-nav-link:hover {
+      background: var(--surface-2);
+      border-color: var(--border);
+    }
+    .section-nav-link.active {
+      background: rgba(59, 130, 246, 0.18);
+      border-color: rgba(59, 130, 246, 0.8);
+      color: #dbeafe;
+      font-weight: 600;
+    }
+    .section-panel { display: none; }
+    .section-panel.active { display: block; }
+    .meta-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }
+    .meta-item {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 12px;
+    }
+    .meta-item .label {
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 4px;
+    }
+    .meta-item .value {
+      font-size: 14px;
+      font-weight: 600;
+      word-break: break-word;
+    }
+    @media (max-width: 980px) {
+      .dashboard-shell {
+        grid-template-columns: 1fr;
+      }
+      .side-nav {
+        position: static;
+      }
+      .section-nav {
+        flex-direction: row;
+        overflow-x: auto;
+      }
+      .section-nav-link {
+        white-space: nowrap;
+      }
+    }
+
     .alert {
       background: var(--surface-2);
       border-left: 4px solid var(--accent);

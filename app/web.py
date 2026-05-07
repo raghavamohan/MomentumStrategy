@@ -730,6 +730,11 @@ async def dashboard(request: Request):
             "want this section."
         )
 
+    try:
+        profile_raw = kite.profile() or {}
+    except Exception:
+        profile_raw = {}
+
     net_positions = positions_raw.get("net", []) or []
     open_net = [p for p in net_positions if int(p.get("quantity") or 0) != 0]
 
@@ -862,6 +867,22 @@ async def dashboard(request: Request):
     holdings_pnl = equity_totals["pnl"] + mf_totals["pnl"]
     positions_pnl = equity_position_totals["pnl"] + fno_position_totals["pnl"]
     overall_pnl = holdings_pnl + positions_pnl
+    user_profile = {
+        "name": str(
+            profile_raw.get("user_name")
+            or profile_raw.get("user_shortname")
+            or _DASHBOARD_DISPLAY_NAME
+        ),
+        "user_id": str(profile_raw.get("user_id") or "--"),
+        "email": str(profile_raw.get("email") or "--"),
+        "broker": str(profile_raw.get("broker") or "Zerodha"),
+        "user_type": str(profile_raw.get("user_type") or "--"),
+        "products": list(profile_raw.get("products") or []),
+        "exchanges": list(profile_raw.get("exchanges") or []),
+    }
+
+    # Watch list entries will be user-managed in a future iteration.
+    watch_list: list[dict[str, Any]] = []
 
     dashboard_bootstrap = {
         "mfTotals": {
@@ -895,6 +916,8 @@ async def dashboard(request: Request):
             "positions_pnl": positions_pnl,
             "overall_pnl": overall_pnl,
         },
+        "user_profile": user_profile,
+        "watch_list": watch_list,
     }
     return templates.TemplateResponse(request, "dashboard.html", context)
 
