@@ -251,6 +251,10 @@ templates.env.filters["sign_class"] = _sign_class
 @asynccontextmanager
 async def _lifespan(_: FastAPI):
     try:
+        logger.info(
+            "Startup note: live dashboard prices require Kite WebSocket market data "
+            "to be enabled for this API key in developers.kite.trade."
+        )
         yield
     finally:
         # Ensure websocket/ticker thread is closed when FastAPI exits.
