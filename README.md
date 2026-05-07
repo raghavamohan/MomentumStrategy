@@ -72,10 +72,10 @@ There are two interfaces, sharing the same authentication flow and token cache:
       your Kite Connect app to **`http://127.0.0.1:5000/callback`**.
       Zerodha allows `http://127.0.0.1` and `http://localhost` URLs for
       development.
-    - For the **CLI** alone, the Redirect URL can be anything you
-      control (e.g. `https://127.0.0.1`); you just copy the
-      `request_token` from the redirected URL and paste it back into
-      the terminal.
+    - For the **CLI**, use a local HTTP redirect URL (for automatic token
+      capture), for example **`http://127.0.0.1:5000/callback`**.
+      You can override it with `KITE_REDIRECT_URL` in `.env`.
+      If auto-capture is unavailable, CLI falls back to manual paste.
 
 ## Setup
 
@@ -93,6 +93,8 @@ Then edit [`.env`](.env) and fill in your credentials:
 KITE_API_KEY=your_api_key_here
 KITE_API_SECRET=your_api_secret_here
 DASHBOARD_SNAPSHOT_SECONDS=120
+# optional for CLI auto request_token capture
+KITE_REDIRECT_URL=http://127.0.0.1:5000/callback
 ```
 
 Optional for the web dashboard: `SESSION_SECRET` (stable cookie signing across
@@ -139,14 +141,24 @@ the on-disk token cache so both dashboard and CLI require a fresh Zerodha login.
 python -m app.main
 ```
 
-On the first run (and once per day after the access token expires), you
-will see something like:
+On the first run (and once per day after the access token expires), CLI
+opens the login URL in your default browser and tries to capture
+`request_token` automatically from the local callback endpoint configured
+by `KITE_REDIRECT_URL` (default: `http://127.0.0.1:5000/callback`).
+
+You will see something like:
 
 ```
 Kite Connect login required.
 1) Open this URL in your browser and log in to Zerodha:
    https://kite.trade/connect/login?api_key=...&v=3
+   (Opened automatically in your default browser.)
 
+Redirect URL for CLI auto-capture: http://127.0.0.1:5000/callback
+Attempting automatic request_token capture...
+
+# if auto-capture fails, CLI falls back to:
+Automatic capture unavailable. Falling back to manual entry.
 2) After login Zerodha redirects to your app's Redirect URL.
    Copy the value of the `request_token` query parameter from
    that redirected URL (it looks like ?request_token=XXXX&...).
@@ -154,9 +166,8 @@ Kite Connect login required.
 Paste request_token here:
 ```
 
-Open the URL, log in to Zerodha, copy the `request_token` from the
-redirect URL's query string, and paste it back into the terminal. After
-that, all sections (including the portfolio summary) are printed.
+After authentication succeeds, all sections (including the portfolio
+summary) are printed.
 
 ## Project layout
 
@@ -247,11 +258,13 @@ sequenceDiagram
     participant C as MomentumStrategy CLI
     participant Z as Zerodha (kite.trade)
     C->>C: load KITE_API_KEY / KITE_API_SECRET from .env
-    C->>U: print login_url(api_key)
+    C->>C: start local callback listener (KITE_REDIRECT_URL)
+    C->>U: print/open login_url(api_key)
     U->>Z: GET https://kite.trade/connect/login?api_key=...
     U->>Z: log in + approve access
-    Z->>U: 302 redirect to Redirect URL?request_token=XXXX
-    U->>C: paste request_token into terminal
+    Z->>U: 302 redirect to local callback?request_token=XXXX
+    U->>C: callback delivers request_token automatically
+    C->>C: if callback unavailable -> prompt manual paste fallback
     C->>Z: POST /session/token (request_token + api_secret)
     Z->>C: { access_token, ... }
     C->>C: cache access_token in .access_token.json

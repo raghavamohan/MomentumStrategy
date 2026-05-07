@@ -60,9 +60,11 @@ References
 
 from __future__ import annotations
 
+import time
+
 from tabulate import tabulate
 
-from kiteconnect.exceptions import PermissionException
+from kiteconnect.exceptions import DataException, PermissionException
 
 from app.auth import get_kite_client
 from app.instruments import get_cash_equity_name_lookups, symbol_with_company_name
@@ -493,7 +495,28 @@ def _print_cash_balance(kite) -> None:
     Calls ``kite.margins(segment="equity")``. See:
     https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.margins
     """
-    margins = kite.margins(segment="equity") or {}
+    def _is_transient_service_unavailable(exc: DataException) -> bool:
+        msg = str(exc).lower()
+        return "503" in msg or "service unavailable" in msg
+
+    margins: dict = {}
+    for attempt in (1, 2):
+        try:
+            margins = kite.margins(segment="equity") or {}
+            break
+        except DataException as exc:
+            if attempt == 1 and _is_transient_service_unavailable(exc):
+                time.sleep(1.0)
+                continue
+            print()
+            print("=== Equity Cash Balance ===")
+            print()
+            print(
+                "Cash balance is temporarily unavailable from Kite API "
+                f"({exc}). Try again in a minute."
+            )
+            return
+
     available = margins.get("available", {}) or {}
     utilised = margins.get("utilised", {}) or {}
 

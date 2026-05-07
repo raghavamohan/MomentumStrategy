@@ -62,6 +62,11 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import threading
+import time
+import webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 
 from dotenv import load_dotenv
 from kiteconnect import KiteConnect
@@ -172,8 +177,10 @@ def _interactive_login(kite: KiteConnect, api_secret: str) -> str:
 
     Prints the login URL produced by
     `KiteConnect.login_url <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.login_url>`_,
-    waits for the user to paste the ``request_token`` returned by Zerodha
-    on the redirect, and exchanges it for an ``access_token`` via
+    attempts to auto-capture the ``request_token`` from a local HTTP
+    callback (configured via ``KITE_REDIRECT_URL``; defaults to
+    ``http://127.0.0.1:5000/callback``), then falls back to manual paste
+    if auto-capture is unavailable, and exchanges the token for an ``access_token`` via
     `KiteConnect.generate_session <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.generate_session>`_.
 
     The new token is cached via :func:`save_cached_access_token` so that
@@ -185,18 +192,93 @@ def _interactive_login(kite: KiteConnect, api_secret: str) -> str:
     SystemExit
         If the user submits an empty ``request_token``.
     """
+    login_url = kite.login_url()
+    redirect_url = os.getenv("KITE_REDIRECT_URL", "http://127.0.0.1:5000/callback").strip()
+
+    def _capture_request_token_from_redirect(timeout_seconds: int = 180) -> str | None:
+        parsed = urlparse(redirect_url)
+        if parsed.scheme.lower() != "http":
+            return None
+        if parsed.hostname not in {"127.0.0.1", "localhost"}:
+            return None
+
+        listen_host = parsed.hostname or "127.0.0.1"
+        listen_port = parsed.port or 80
+        expected_path = parsed.path or "/"
+        received: dict[str, str | None] = {"request_token": None, "status": None}
+        done = threading.Event()
+
+        class _CallbackHandler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 - stdlib handler signature
+                req = urlparse(self.path)
+                if req.path != expected_path:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+
+                query = parse_qs(req.query)
+                received["request_token"] = (query.get("request_token") or [None])[0]
+                received["status"] = (query.get("status") or [None])[0]
+
+                has_token = bool(received["request_token"])
+                self.send_response(200 if has_token else 400)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.end_headers()
+                if has_token:
+                    self.wfile.write(
+                        b"Authentication complete. You can close this tab and return to the terminal."
+                    )
+                else:
+                    self.wfile.write(
+                        b"Request token missing in callback. Return to terminal for fallback login."
+                    )
+                done.set()
+
+            def log_message(self, format: str, *args) -> None:  # noqa: A003 - stdlib name
+                return
+
+        try:
+            server = ThreadingHTTPServer((listen_host, listen_port), _CallbackHandler)
+        except OSError:
+            return None
+
+        try:
+            server.timeout = 0.5
+            deadline = time.time() + max(1, timeout_seconds)
+            while time.time() < deadline and not done.is_set():
+                server.handle_request()
+        finally:
+            server.server_close()
+
+        if received["status"] and received["status"] != "success":
+            return None
+        token = received["request_token"]
+        return token.strip() if isinstance(token, str) and token.strip() else None
+
     print()
     print("Kite Connect login required.")
     print("1) Open this URL in your browser and log in to Zerodha:")
-    print(f"   {kite.login_url()}")
+    print(f"   {login_url}")
+    try:
+        webbrowser.open(login_url)
+        print("   (Opened automatically in your default browser.)")
+    except Exception:
+        pass
     print()
-    print("2) After login Zerodha redirects to your app's Redirect URL.")
-    print("   Copy the value of the `request_token` query parameter from")
-    print("   that redirected URL (it looks like ?request_token=XXXX&...).")
-    print()
-    request_token = input("Paste request_token here: ").strip()
+    print(f"Redirect URL for CLI auto-capture: {redirect_url}")
+    print("Attempting automatic request_token capture...")
+    request_token = _capture_request_token_from_redirect()
+
     if not request_token:
-        raise SystemExit("No request_token provided. Aborting.")
+        print()
+        print("Automatic capture unavailable. Falling back to manual entry.")
+        print("2) After login Zerodha redirects to your app's Redirect URL.")
+        print("   Copy the value of the `request_token` query parameter from")
+        print("   that redirected URL (it looks like ?request_token=XXXX&...).")
+        print()
+        request_token = input("Paste request_token here: ").strip()
+        if not request_token:
+            raise SystemExit("No request_token provided. Aborting.")
 
     session = kite.generate_session(request_token, api_secret=api_secret)
     access_token = session["access_token"]
