@@ -127,10 +127,11 @@ current value, overall P&L, open positions P&L), then five tabs:
 4. **F&O Positions** — open NFO / BFO / CDS / BCD / MCX positions.
 5. **Cash Balance** — available cash, live balance, utilised.
 
-Click **Refresh** to force an immediate re-fetch. The page also
-auto-refreshes at the configured interval. Click **Logout** to clear the
-browser session **and** delete the on-disk token cache so both dashboard
-and CLI require a fresh Zerodha login.
+The page automatically re-fetches a full HTML snapshot at the interval set by
+``DASHBOARD_SNAPSHOT_SECONDS`` (mutual funds, cash, margins, and structural
+changes); live LTP and row-level P&L updates arrive over WebSocket between
+those snapshots. Click **Logout** to clear the browser session **and** delete
+the on-disk token cache so both dashboard and CLI require a fresh Zerodha login.
 
 ## Run — CLI
 
