@@ -80,6 +80,7 @@ import json
 import logging
 import os
 from collections.abc import MutableMapping
+from contextlib import asynccontextmanager
 from typing import Any
 import secrets
 import threading
@@ -247,7 +248,21 @@ templates.env.filters["sign_class"] = _sign_class
 # FastAPI app + session middleware
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="MomentumStrategy Dashboard", docs_url=None, redoc_url=None)
+@asynccontextmanager
+async def _lifespan(_: FastAPI):
+    try:
+        yield
+    finally:
+        # Ensure websocket/ticker thread is closed when FastAPI exits.
+        live_price_stream.close()
+
+
+app = FastAPI(
+    title="MomentumStrategy Dashboard",
+    docs_url=None,
+    redoc_url=None,
+    lifespan=_lifespan,
+)
 
 # Persisted secret so the signed session cookie remains valid across
 # process restarts (see ``_session_secret``).
@@ -784,12 +799,6 @@ def main() -> None:
         log_level="info",
         timeout_graceful_shutdown=5,
     )
-
-
-@app.on_event("shutdown")
-async def _shutdown_live_price_stream() -> None:
-    """Ensure websocket thread is closed when FastAPI exits."""
-    live_price_stream.close()
 
 
 if __name__ == "__main__":
