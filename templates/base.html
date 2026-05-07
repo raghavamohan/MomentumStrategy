@@ -139,6 +139,19 @@
       white-space: nowrap;
     }
     .topbar .index-quote-title {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 0 4px;
+      white-space: nowrap;
+    }
+    .topbar .index-quote-label {
+      white-space: nowrap;
+    }
+    .topbar .index-quote-value {
+      display: inline-block;
+      min-width: 8ch;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
       white-space: nowrap;
     }
     .topbar .index-quote-sep {
@@ -153,9 +166,12 @@
       padding-inline-end: 0.45em;
     }
     .topbar .nifty-quote .nifty-change {
-      margin-left: 8px;
+      display: inline-block;
+      min-width: 14ch;
+      margin-left: 6px;
       font-weight: 600;
       font-variant-numeric: tabular-nums;
+      text-align: left;
       white-space: nowrap;
     }
     .topbar .nifty-quote .nifty-change-up { color: var(--positive); }
@@ -276,6 +292,13 @@
     tbody tr:hover { background: rgba(255, 255, 255, 0.02); }
     td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
     td.symbol { font-weight: 500; }
+    th.live-col-ltp, td.live-col-ltp { width: 10ch; }
+    th.live-col-pnl, td.live-col-pnl { width: 12ch; }
+    td.live-col-ltp,
+    td.live-col-pnl {
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
 
     th.sortable {
       padding: 0;

@@ -126,7 +126,7 @@
               <th class="num sortable" scope="col">
                 <button type="button" class="th-sort" data-sort-type="inr">Avg <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
-              <th class="num sortable" scope="col">
+              <th class="num sortable live-col-ltp" scope="col">
                 <button type="button" class="th-sort" data-sort-type="inr">LTP <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
               <th class="num sortable" scope="col">
@@ -135,7 +135,7 @@
               <th class="num sortable" scope="col">
                 <button type="button" class="th-sort" data-sort-type="inr">Current <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
-              <th class="num sortable" scope="col">
+              <th class="num sortable live-col-pnl" scope="col">
                 <button type="button" class="th-sort" data-sort-type="inr">P&amp;L <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
               <th class="num sortable" scope="col">
@@ -155,10 +155,10 @@
                 <td class="symbol">{{ h.symbol_label }}</td>
                 <td class="num">{{ h.quantity }}</td>
                 <td class="num">{{ h.average_price|inr }}</td>
-                <td class="num js-holding-ltp">{{ h.last_price|inr }}</td>
+                <td class="num js-holding-ltp live-col-ltp">{{ h.last_price|inr }}</td>
                 <td class="num">{{ h.invested|inr }}</td>
                 <td class="num js-holding-current">{{ h.current|inr }}</td>
-                <td class="num js-holding-pnl {{ h.pnl|sign_class }}">{{ h.pnl|inr }}</td>
+                <td class="num js-holding-pnl live-col-pnl {{ h.pnl|sign_class }}">{{ h.pnl|inr }}</td>
                 <td class="num js-holding-day {{ h.day_change_percentage|sign_class }}">
                   {{ h.day_change_percentage|pct }}
                 </td>
@@ -287,10 +287,10 @@
               <th class="num sortable" scope="col">
                 <button type="button" class="th-sort" data-sort-type="inr">Avg <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
-              <th class="num sortable" scope="col">
+              <th class="num sortable live-col-ltp" scope="col">
                 <button type="button" class="th-sort" data-sort-type="inr">LTP <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
-              <th class="num sortable" scope="col">
+              <th class="num sortable live-col-pnl" scope="col">
                 <button type="button" class="th-sort" data-sort-type="inr">P&amp;L <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
               <th class="num sortable" scope="col">
@@ -313,8 +313,8 @@
                 <td>{{ p.product }}</td>
                 <td class="num">{{ p.quantity }}</td>
                 <td class="num">{{ p.average_price|inr }}</td>
-                <td class="num js-pos-ltp">{{ p.last_price|inr }}</td>
-                <td class="num js-pos-pnl {{ p.pnl|sign_class }}">{{ p.pnl|inr }}</td>
+                <td class="num js-pos-ltp live-col-ltp">{{ p.last_price|inr }}</td>
+                <td class="num js-pos-pnl live-col-pnl {{ p.pnl|sign_class }}">{{ p.pnl|inr }}</td>
                 <td class="num {{ p.m2m|sign_class }}">{{ p.m2m|inr }}</td>
               </tr>
             {% endfor %}
@@ -363,10 +363,10 @@
               <th class="num sortable" scope="col">
                 <button type="button" class="th-sort" data-sort-type="inr">Avg <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
-              <th class="num sortable" scope="col">
+              <th class="num sortable live-col-ltp" scope="col">
                 <button type="button" class="th-sort" data-sort-type="inr">LTP <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
-              <th class="num sortable" scope="col">
+              <th class="num sortable live-col-pnl" scope="col">
                 <button type="button" class="th-sort" data-sort-type="inr">P&amp;L <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
               <th class="num sortable" scope="col">
@@ -389,8 +389,8 @@
                 <td>{{ p.product }}</td>
                 <td class="num">{{ p.quantity }}</td>
                 <td class="num">{{ p.average_price|inr }}</td>
-                <td class="num js-pos-ltp">{{ p.last_price|inr }}</td>
-                <td class="num js-pos-pnl {{ p.pnl|sign_class }}">{{ p.pnl|inr }}</td>
+                <td class="num js-pos-ltp live-col-ltp">{{ p.last_price|inr }}</td>
+                <td class="num js-pos-pnl live-col-pnl {{ p.pnl|sign_class }}">{{ p.pnl|inr }}</td>
                 <td class="num {{ p.m2m|sign_class }}">{{ p.m2m|inr }}</td>
               </tr>
             {% endfor %}
@@ -463,17 +463,29 @@
       if (!titleEl || !changeEl) {
         return;
       }
+      let labelEl = titleEl.querySelector('.index-quote-label');
+      let valueEl = titleEl.querySelector('.index-quote-value');
+      if (!labelEl || !valueEl) {
+        titleEl.textContent = '';
+        labelEl = document.createElement('span');
+        labelEl.className = 'index-quote-label';
+        valueEl = document.createElement('span');
+        valueEl.className = 'index-quote-value';
+        titleEl.appendChild(labelEl);
+        titleEl.appendChild(valueEl);
+      }
+      labelEl.textContent = label + ':';
       const prevRaw = prevClose;
       const prev = prevRaw != null && prevRaw !== '' ? Number(prevRaw) : NaN;
 
       if (!Number.isFinite(ltp)) {
-        titleEl.textContent = label + ': --';
+        valueEl.textContent = '--';
         changeEl.textContent = '';
         changeEl.className = 'nifty-change';
         return;
       }
 
-      titleEl.textContent = label + ': ' + formatInr(ltp);
+      valueEl.textContent = formatInr(ltp);
 
       if (!Number.isFinite(prev) || prev <= 0) {
         changeEl.textContent = '';
