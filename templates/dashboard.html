@@ -18,15 +18,14 @@
         https://kite.trade/docs/connect/v3/user/#funds-and-margins
 
   Layout:
-    * Topbar with title, Refresh and Logout buttons.
-    * Tab nav (5 tabs, accessible buttons with role="tab").
-    * One <section class="panel"> per tab, only one visible at a time.
-    * Per-tab summary cards (counts, totals) above each table.
+  * Topbar with title and Logout button.
+  * Tab nav (5 tabs, accessible buttons with role="tab").
+  * One <section class="panel"> per tab, only one visible at a time.
+  * Per-tab summary cards (counts, totals) above each table.
 
-  The page auto-refreshes every `refresh_interval_ms` milliseconds
-  (from `DASHBOARD_REFRESH_SECONDS` env in app.web), while the tab is
-  visible. Tab switching is handled by a tiny vanilla JS block at the
-  bottom of this file.
+  Live LTP / derived P&amp;L updates arrive over ``WS /ws/live-prices``.
+  A full REST snapshot (MF, cash, structure) runs every
+  ``snapshot_interval_ms`` from ``DASHBOARD_SNAPSHOT_SECONDS`` (see app.web).
 
   Custom Jinja2 filters used (registered in `app/web.py`):
     * `inr`        - format number as NN,NNN.NN
@@ -51,24 +50,25 @@
   </div>
 
   <div id="dashboard-root">
+    <textarea id="dashboard-bootstrap" hidden readonly>{{ dashboard_bootstrap_json }}</textarea>
     <div class="summary">
       <div class="stat">
         <div class="label">Total Invested (Equity + MF)</div>
-        <div class="value">{{ portfolio_summary.total_invested|inr }}</div>
+        <div class="value" id="stat-portfolio-invested">{{ portfolio_summary.total_invested|inr }}</div>
       </div>
       <div class="stat">
         <div class="label">Current Value (Equity + MF)</div>
-        <div class="value">{{ portfolio_summary.total_current|inr }}</div>
+        <div class="value" id="stat-portfolio-current">{{ portfolio_summary.total_current|inr }}</div>
       </div>
       <div class="stat">
         <div class="label">Overall P&amp;L</div>
-        <div class="value {{ portfolio_summary.overall_pnl|sign_class }}">
+        <div class="value {{ portfolio_summary.overall_pnl|sign_class }}" id="stat-portfolio-overall-pnl">
           {{ portfolio_summary.overall_pnl|inr }}
         </div>
       </div>
       <div class="stat">
         <div class="label">Open Positions P&amp;L</div>
-        <div class="value {{ portfolio_summary.positions_pnl|sign_class }}">
+        <div class="value {{ portfolio_summary.positions_pnl|sign_class }}" id="stat-portfolio-positions-pnl">
           {{ portfolio_summary.positions_pnl|inr }}
         </div>
       </div>
@@ -100,15 +100,15 @@
         </div>
         <div class="stat">
           <div class="label">Invested</div>
-          <div class="value">{{ equity_totals.invested|inr }}</div>
+          <div class="value" id="equity-holdings-stat-invested">{{ equity_totals.invested|inr }}</div>
         </div>
         <div class="stat">
           <div class="label">Current</div>
-          <div class="value">{{ equity_totals.current|inr }}</div>
+          <div class="value" id="equity-holdings-stat-current">{{ equity_totals.current|inr }}</div>
         </div>
         <div class="stat">
           <div class="label">Total P&amp;L</div>
-          <div class="value {{ equity_totals.pnl|sign_class }}">
+          <div class="value {{ equity_totals.pnl|sign_class }}" id="equity-holdings-stat-pnl">
             {{ equity_totals.pnl|inr }}
           </div>
         </div>
@@ -129,15 +129,21 @@
           </thead>
           <tbody>
             {% for h in equity_holdings %}
-              <tr>
+              <tr
+                class="live-row live-holding"
+                data-token="{{ h.instrument_token }}"
+                data-qty="{{ h.quantity }}"
+                data-avg="{{ h.average_price }}"
+                data-close="{{ h.close_price }}"
+              >
                 <td class="symbol">{{ h.symbol_label }}</td>
                 <td class="num">{{ h.quantity }}</td>
                 <td class="num">{{ h.average_price|inr }}</td>
-                <td class="num">{{ h.last_price|inr }}</td>
+                <td class="num js-holding-ltp">{{ h.last_price|inr }}</td>
                 <td class="num">{{ h.invested|inr }}</td>
-                <td class="num">{{ h.current|inr }}</td>
-                <td class="num {{ h.pnl|sign_class }}">{{ h.pnl|inr }}</td>
-                <td class="num {{ h.day_change_percentage|sign_class }}">
+                <td class="num js-holding-current">{{ h.current|inr }}</td>
+                <td class="num js-holding-pnl {{ h.pnl|sign_class }}">{{ h.pnl|inr }}</td>
+                <td class="num js-holding-day {{ h.day_change_percentage|sign_class }}">
                   {{ h.day_change_percentage|pct }}
                 </td>
               </tr>
@@ -222,13 +228,13 @@
         </div>
         <div class="stat">
           <div class="label">Total P&amp;L</div>
-          <div class="value {{ equity_position_totals.pnl|sign_class }}">
+          <div class="value {{ equity_position_totals.pnl|sign_class }}" id="equity-pos-panel-pnl">
             {{ equity_position_totals.pnl|inr }}
           </div>
         </div>
         <div class="stat">
           <div class="label">Total M2M</div>
-          <div class="value {{ equity_position_totals.m2m|sign_class }}">
+          <div class="value {{ equity_position_totals.m2m|sign_class }}" id="equity-pos-panel-m2m">
             {{ equity_position_totals.m2m|inr }}
           </div>
         </div>
@@ -249,14 +255,22 @@
           </thead>
           <tbody>
             {% for p in equity_positions %}
-              <tr>
+              <tr
+                class="live-row live-position"
+                data-token="{{ p.instrument_token }}"
+                data-qty="{{ p.quantity }}"
+                data-buy="{{ p.buy_value }}"
+                data-sell="{{ p.sell_value }}"
+                data-mult="{{ p.multiplier }}"
+                data-market="equity"
+              >
                 <td class="symbol">{{ p.symbol_label }}</td>
                 <td>{{ p.exchange }}</td>
                 <td>{{ p.product }}</td>
                 <td class="num">{{ p.quantity }}</td>
                 <td class="num">{{ p.average_price|inr }}</td>
-                <td class="num">{{ p.last_price|inr }}</td>
-                <td class="num {{ p.pnl|sign_class }}">{{ p.pnl|inr }}</td>
+                <td class="num js-pos-ltp">{{ p.last_price|inr }}</td>
+                <td class="num js-pos-pnl {{ p.pnl|sign_class }}">{{ p.pnl|inr }}</td>
                 <td class="num {{ p.m2m|sign_class }}">{{ p.m2m|inr }}</td>
               </tr>
             {% endfor %}
@@ -278,13 +292,13 @@
         </div>
         <div class="stat">
           <div class="label">Total P&amp;L</div>
-          <div class="value {{ fno_position_totals.pnl|sign_class }}">
+          <div class="value {{ fno_position_totals.pnl|sign_class }}" id="fno-pos-panel-pnl">
             {{ fno_position_totals.pnl|inr }}
           </div>
         </div>
         <div class="stat">
           <div class="label">Total M2M</div>
-          <div class="value {{ fno_position_totals.m2m|sign_class }}">
+          <div class="value {{ fno_position_totals.m2m|sign_class }}" id="fno-pos-panel-m2m">
             {{ fno_position_totals.m2m|inr }}
           </div>
         </div>
@@ -305,14 +319,22 @@
           </thead>
           <tbody>
             {% for p in fno_positions %}
-              <tr>
+              <tr
+                class="live-row live-position"
+                data-token="{{ p.instrument_token }}"
+                data-qty="{{ p.quantity }}"
+                data-buy="{{ p.buy_value }}"
+                data-sell="{{ p.sell_value }}"
+                data-mult="{{ p.multiplier }}"
+                data-market="fno"
+              >
                 <td class="symbol">{{ p.symbol_label }}</td>
                 <td>{{ p.exchange }}</td>
                 <td>{{ p.product }}</td>
                 <td class="num">{{ p.quantity }}</td>
                 <td class="num">{{ p.average_price|inr }}</td>
-                <td class="num">{{ p.last_price|inr }}</td>
-                <td class="num {{ p.pnl|sign_class }}">{{ p.pnl|inr }}</td>
+                <td class="num js-pos-ltp">{{ p.last_price|inr }}</td>
+                <td class="num js-pos-pnl {{ p.pnl|sign_class }}">{{ p.pnl|inr }}</td>
                 <td class="num {{ p.m2m|sign_class }}">{{ p.m2m|inr }}</td>
               </tr>
             {% endfor %}
@@ -356,10 +378,24 @@
 {% block scripts %}
 <script>
   (function () {
-    const AUTO_REFRESH_MS = {{ refresh_interval_ms }};
+    const SNAPSHOT_MS = {{ snapshot_interval_ms }};
     let isRefreshing = false;
     let selectedTab = 'equity';
     const updatedIndicator = document.getElementById('last-updated-indicator');
+
+    function readBootstrap() {
+      const el = document.getElementById('dashboard-bootstrap');
+      if (!el || !el.value) {
+        return {};
+      }
+      try {
+        return JSON.parse(el.value);
+      } catch (_e) {
+        return {};
+      }
+    }
+
+    let bootstrap = readBootstrap();
 
     function stampUpdatedNow() {
       if (!updatedIndicator) {
@@ -369,7 +405,220 @@
       const hh = String(now.getHours()).padStart(2, '0');
       const mm = String(now.getMinutes()).padStart(2, '0');
       const ss = String(now.getSeconds()).padStart(2, '0');
-      updatedIndicator.textContent = 'Last updated: ' + hh + ':' + mm + ':' + ss;
+      updatedIndicator.textContent = 'Snapshot refreshed: ' + hh + ':' + mm + ':' + ss;
+    }
+
+    function formatInr(value) {
+      return Number(value).toLocaleString('en-US', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
+    }
+
+    function formatPct(value) {
+      return (
+        Number(value).toLocaleString('en-US', {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        }) + '%'
+      );
+    }
+
+    function signClass(value) {
+      const v = Number(value);
+      if (!Number.isFinite(v) || v === 0) {
+        return 'neutral';
+      }
+      return v > 0 ? 'positive' : 'negative';
+    }
+
+    function setSignStat(id, value) {
+      const el = document.getElementById(id);
+      if (!el) {
+        return;
+      }
+      el.textContent = formatInr(value);
+      el.classList.remove('positive', 'negative', 'neutral');
+      el.classList.add(signClass(value));
+    }
+
+    function setPlainStat(id, value) {
+      const el = document.getElementById(id);
+      if (!el) {
+        return;
+      }
+      el.textContent = formatInr(value);
+    }
+
+    function updateHoldingRow(tr, ltp) {
+      const qty = parseFloat(tr.dataset.qty);
+      const avg = parseFloat(tr.dataset.avg);
+      const close = parseFloat(tr.dataset.close);
+      if (!Number.isFinite(ltp) || !Number.isFinite(qty)) {
+        return;
+      }
+      const current = ltp * qty;
+      const pnl = (ltp - avg) * qty;
+      const dayPct =
+        Number.isFinite(close) && close > 0 ? ((ltp - close) / close) * 100 : 0;
+
+      const ltpEl = tr.querySelector('.js-holding-ltp');
+      const curEl = tr.querySelector('.js-holding-current');
+      const pnlEl = tr.querySelector('.js-holding-pnl');
+      const dayEl = tr.querySelector('.js-holding-day');
+      if (ltpEl) {
+        ltpEl.textContent = formatInr(ltp);
+      }
+      if (curEl) {
+        curEl.textContent = formatInr(current);
+      }
+      if (pnlEl) {
+        pnlEl.textContent = formatInr(pnl);
+        pnlEl.classList.remove('positive', 'negative', 'neutral');
+        pnlEl.classList.add(signClass(pnl));
+      }
+      if (dayEl) {
+        dayEl.textContent = formatPct(dayPct);
+        dayEl.classList.remove('positive', 'negative', 'neutral');
+        dayEl.classList.add(signClass(dayPct));
+      }
+    }
+
+    function updatePositionRow(tr, ltp) {
+      const qty = parseInt(tr.dataset.qty, 10);
+      const buy = parseFloat(tr.dataset.buy);
+      const sell = parseFloat(tr.dataset.sell);
+      const mult = parseFloat(tr.dataset.mult);
+      if (!Number.isFinite(ltp) || !Number.isFinite(qty)) {
+        return;
+      }
+      const pnl = (sell - buy) + qty * ltp * mult;
+      const ltpEl = tr.querySelector('.js-pos-ltp');
+      const pnlEl = tr.querySelector('.js-pos-pnl');
+      if (ltpEl) {
+        ltpEl.textContent = formatInr(ltp);
+      }
+      if (pnlEl) {
+        pnlEl.textContent = formatInr(pnl);
+        pnlEl.classList.remove('positive', 'negative', 'neutral');
+        pnlEl.classList.add(signClass(pnl));
+      }
+    }
+
+    function applyLtpMap(ltpMap) {
+      Object.keys(ltpMap).forEach(function (tok) {
+        const price = ltpMap[tok];
+        const sel = 'tr.live-holding[data-token="' + tok + '"]';
+        document.querySelectorAll(sel).forEach(function (tr) {
+          updateHoldingRow(tr, price);
+        });
+        document
+          .querySelectorAll('tr.live-position[data-token="' + tok + '"]')
+          .forEach(function (tr) {
+            updatePositionRow(tr, price);
+          });
+      });
+      recalcSummaries();
+    }
+
+    function recalcSummaries() {
+      const mf = bootstrap.mfTotals || { invested: 0, current: 0, pnl: 0 };
+
+      let equityCurrentSum = 0;
+      let equityPnlSum = 0;
+      document.querySelectorAll('tr.live-holding[data-token]').forEach(function (tr) {
+        const qty = parseFloat(tr.dataset.qty);
+        const avg = parseFloat(tr.dataset.avg);
+        const ltpCell = tr.querySelector('.js-holding-ltp');
+        if (!ltpCell) {
+          return;
+        }
+        const ltp = parseFloat(ltpCell.textContent.replace(/,/g, ''));
+        if (!Number.isFinite(ltp) || !Number.isFinite(qty)) {
+          return;
+        }
+        equityCurrentSum += ltp * qty;
+        equityPnlSum += (ltp - avg) * qty;
+      });
+
+      const holdingsPnl = mf.pnl + equityPnlSum;
+      const totalCurrent = mf.current + equityCurrentSum;
+
+      let eqPosPnl = 0;
+      document.querySelectorAll('tr.live-position[data-market="equity"]').forEach(function (tr) {
+        const cell = tr.querySelector('.js-pos-pnl');
+        if (!cell) {
+          return;
+        }
+        const v = parseFloat(cell.textContent.replace(/,/g, ''));
+        if (Number.isFinite(v)) {
+          eqPosPnl += v;
+        }
+      });
+
+      let fnoPosPnl = 0;
+      document.querySelectorAll('tr.live-position[data-market="fno"]').forEach(function (tr) {
+        const cell = tr.querySelector('.js-pos-pnl');
+        if (!cell) {
+          return;
+        }
+        const v = parseFloat(cell.textContent.replace(/,/g, ''));
+        if (Number.isFinite(v)) {
+          fnoPosPnl += v;
+        }
+      });
+
+      const positionsPnl = eqPosPnl + fnoPosPnl;
+      const overall = holdingsPnl + positionsPnl;
+
+      const investedTotal =
+        bootstrap.portfolioInvestedTotal != null
+          ? bootstrap.portfolioInvestedTotal
+          : mf.invested + (bootstrap.equityInvestedTotal || 0);
+
+      setPlainStat('stat-portfolio-invested', investedTotal);
+      setPlainStat('stat-portfolio-current', totalCurrent);
+      setSignStat('stat-portfolio-overall-pnl', overall);
+      setSignStat('stat-portfolio-positions-pnl', positionsPnl);
+
+      const eqInv = bootstrap.equityInvestedTotal;
+      if (eqInv != null) {
+        setPlainStat('equity-holdings-stat-invested', eqInv);
+      }
+      setPlainStat('equity-holdings-stat-current', equityCurrentSum);
+      setSignStat('equity-holdings-stat-pnl', equityPnlSum);
+
+      setSignStat('equity-pos-panel-pnl', eqPosPnl);
+      setSignStat('fno-pos-panel-pnl', fnoPosPnl);
+    }
+
+    let liveWsReconnectTimer = null;
+    function scheduleLiveWsReconnect() {
+      if (liveWsReconnectTimer != null) {
+        return;
+      }
+      liveWsReconnectTimer = window.setTimeout(function () {
+        liveWsReconnectTimer = null;
+        connectLivePrices();
+      }, 3000);
+    }
+
+    function connectLivePrices() {
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const url = proto + '//' + window.location.host + '/ws/live-prices';
+      const ws = new WebSocket(url);
+      ws.onmessage = function (ev) {
+        try {
+          const data = JSON.parse(ev.data);
+          if (data && data.ltp) {
+            applyLtpMap(data.ltp);
+          }
+        } catch (_err) {}
+      };
+      ws.onclose = scheduleLiveWsReconnect;
+      ws.onerror = function () {
+        scheduleLiveWsReconnect();
+      };
     }
 
     function activateTab(target) {
@@ -401,15 +650,11 @@
       });
     }
 
-    async function refreshDashboard() {
+    async function refreshDashboardSnapshot() {
       if (isRefreshing || document.hidden) {
         return;
       }
       isRefreshing = true;
-
-      // Use latest user-selected tab to avoid races with in-flight refresh.
-      // If the user clicks while fetch is pending, selectedTab is updated by
-      // the click handler and respected after DOM replacement.
       const requestedTab = getActiveTab();
       try {
         const response = await fetch('/dashboard', { cache: 'no-store' });
@@ -428,13 +673,12 @@
         }
 
         currentRoot.innerHTML = nextRoot.innerHTML;
+        bootstrap = readBootstrap();
         bindTabs();
-        // Re-apply whichever tab is currently selected at this moment.
-        // Fall back to requestedTab when no newer click occurred.
         activateTab(selectedTab || requestedTab);
         stampUpdatedNow();
+        recalcSummaries();
       } catch (_err) {
-        // Ignore transient refresh errors and retry on next interval.
       } finally {
         isRefreshing = false;
       }
@@ -443,7 +687,9 @@
     bindTabs();
     selectedTab = getActiveTab();
     stampUpdatedNow();
-    setInterval(refreshDashboard, AUTO_REFRESH_MS);
+    recalcSummaries();
+    connectLivePrices();
+    window.setInterval(refreshDashboardSnapshot, SNAPSHOT_MS);
   })();
 </script>
 {% endblock %}

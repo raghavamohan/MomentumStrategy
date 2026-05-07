@@ -12,9 +12,52 @@ https://kite.trade/docs/connect/v3/websocket/
 
 from __future__ import annotations
 
+import logging
+import os
 import threading
+from collections.abc import Callable
 
 from kiteconnect import KiteTicker
+
+logger = logging.getLogger(__name__)
+
+
+def dashboard_ws_debug_enabled() -> bool:
+    """True when ``DASHBOARD_DEBUG_WS`` env requests verbose WebSocket/tick diagnostics."""
+    return os.getenv("DASHBOARD_DEBUG_WS", "").strip().lower() in ("1", "true", "yes")
+
+
+def _configure_kite_ticker_logging() -> None:
+    """pykiteconnect logs every failed/retry at ERROR on ``kiteconnect.ticker`` — suppress unless debug."""
+    if dashboard_ws_debug_enabled():
+        return
+    logging.getLogger("kiteconnect.ticker").setLevel(logging.CRITICAL)
+
+
+_configure_kite_ticker_logging()
+
+TickListener = Callable[[dict[int, float]], None]
+
+
+def _kite_ws_reason_text(reason: object) -> str:
+    if reason is None:
+        return ""
+    if isinstance(reason, (bytes, bytearray)):
+        return bytes(reason).decode("utf-8", errors="replace")
+    return str(reason)
+
+
+def _kite_ws_auth_failure(code: object, reason: object) -> bool:
+    """True if Kite WebSocket failure is auth / token (stop reconnect storm)."""
+    text = f"{code} {_kite_ws_reason_text(reason)}".strip()
+    lower = text.lower()
+    return (
+        "403" in text
+        or "forbidden" in lower
+        or ("upgrade failed" in lower and "403" in text)
+        or ("invalid" in lower and "token" in lower)
+        or ("incorrect" in lower and "access_token" in lower)
+    )
 
 
 class LivePriceStream:
@@ -29,6 +72,35 @@ class LivePriceStream:
         self._ltp_by_token: dict[int, float] = {}
         self._connected = False
         self._tick_event = threading.Event()
+        self._listeners: list[TickListener] = []
+
+    def _halt_ticker_on_auth_failure(self, ticker: KiteTicker, detail: str = "") -> None:
+        """Stop KiteTicker reconnect loop and drop client so a new login can reconnect."""
+        with self._lock:
+            if self._ticker is not ticker:
+                return
+        try:
+            ticker.stop_retry()
+        except Exception:
+            pass
+        try:
+            ticker.close()
+        except Exception:
+            pass
+        with self._lock:
+            if self._ticker is not ticker:
+                return
+            logger.warning(
+                "Kite ticker WebSocket rejected the session (expired or invalid access token). "
+                "Stopping live quote reconnects; log in again to refresh. Reason: %s",
+                (detail[:300] if detail else "auth failure"),
+            )
+            self._ticker = None
+            self._api_key = None
+            self._access_token = None
+            self._subscribed_tokens.clear()
+            self._ltp_by_token.clear()
+            self._connected = False
 
     def ensure_running(self, api_key: str, access_token: str) -> None:
         """Start websocket (or rotate it) for the current access token."""
@@ -45,7 +117,13 @@ class LivePriceStream:
             self._api_key = api_key
             self._access_token = access_token
             self._connected = False
-            self._ticker = KiteTicker(api_key, access_token)
+            # Cap auto-retries so a bad token cannot spam the reactor for long if halt lags.
+            self._ticker = KiteTicker(
+                api_key,
+                access_token,
+                reconnect_max_tries=8,
+                reconnect_max_delay=30,
+            )
             self._wire_callbacks_locked(self._ticker)
             self._ticker.connect(threaded=True)
 
@@ -101,22 +179,32 @@ class LivePriceStream:
         def _on_ticks(_ws, ticks):
             if not ticks:
                 return
+            updates: dict[int, float] = {}
             with self._lock:
                 for tick in ticks:
                     token = int(tick.get("instrument_token") or 0)
                     ltp = tick.get("last_price")
                     if token > 0 and ltp is not None:
-                        self._ltp_by_token[token] = float(ltp)
+                        fv = float(ltp)
+                        self._ltp_by_token[token] = fv
+                        updates[token] = fv
             self._tick_event.set()
             self._tick_event.clear()
+            self._notify_tick_listeners(updates)
 
-        def _on_close(_ws, _code, _reason):
+        def _on_close(_ws, code, reason):
             with self._lock:
                 self._connected = False
+            if _kite_ws_auth_failure(code, reason):
+                detail = _kite_ws_reason_text(reason) or str(code)
+                self._halt_ticker_on_auth_failure(ticker, detail)
 
-        def _on_error(_ws, _code, _reason):
+        def _on_error(_ws, code, reason):
             with self._lock:
                 self._connected = False
+            if _kite_ws_auth_failure(code, reason):
+                detail = _kite_ws_reason_text(reason) or str(code)
+                self._halt_ticker_on_auth_failure(ticker, detail)
 
         ticker.on_connect = _on_connect
         ticker.on_ticks = _on_ticks
@@ -135,6 +223,31 @@ class LivePriceStream:
         self._connected = False
         self._subscribed_tokens.clear()
         self._ltp_by_token.clear()
+
+    def add_tick_listener(self, callback: TickListener) -> None:
+        """Register a callback invoked on each tick batch with ``{token: ltp}`` deltas."""
+        with self._lock:
+            self._listeners.append(callback)
+
+    def remove_tick_listener(self, callback: TickListener) -> None:
+        """Unregister a listener added via :meth:`add_tick_listener`."""
+        with self._lock:
+            try:
+                self._listeners.remove(callback)
+            except ValueError:
+                pass
+
+    def _notify_tick_listeners(self, updates: dict[int, float]) -> None:
+        if not updates:
+            return
+        with self._lock:
+            listeners = tuple(self._listeners)
+        for fn in listeners:
+            try:
+                fn(updates)
+            except Exception:
+                if dashboard_ws_debug_enabled():
+                    logger.exception("Tick listener callback failed")
 
 
 live_price_stream = LivePriceStream()

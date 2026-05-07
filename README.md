@@ -41,8 +41,16 @@ There are two interfaces, sharing the same authentication flow and token cache:
 - Caches the daily access token in `.access_token.json` so you don't
   have to log in again until it expires (Kite tokens die at ~6 AM IST
   the next trading day). The CLI and web dashboard share this cache.
-- Auto-refreshes the dashboard every `DASHBOARD_REFRESH_SECONDS`
-  (default `1` second; minimum `1` second).
+- Streams live LTP ticks to the browser over ``WS /ws/live-prices`` and
+  updates holdings/positions rows client-side without reloading the page.
+- Periodically re-fetches a full HTML snapshot on ``GET /dashboard`` every
+  ``DASHBOARD_SNAPSHOT_SECONDS`` (default **120** seconds; minimum **10**)
+  so mutual funds, cash/margins, and structural changes stay in sync. If
+  ``DASHBOARD_SNAPSHOT_SECONDS`` is unset, ``DASHBOARD_REFRESH_SECONDS`` is
+  used as a fallback for that interval (legacy).
+- Outbound live ticks are **coalesced** on the asyncio loop (fewer frames
+  when the market is busy). Set ``DASHBOARD_DEBUG_WS=1`` for verbose logs
+  if the WebSocket bridge or tick listeners misbehave.
 
 ## Prerequisites
 
@@ -74,7 +82,7 @@ Then edit [`.env`](.env) and fill in your credentials:
 ```
 KITE_API_KEY=your_api_key_here
 KITE_API_SECRET=your_api_secret_here
-DASHBOARD_REFRESH_SECONDS=1
+DASHBOARD_SNAPSHOT_SECONDS=120
 ```
 
 `.env` is gitignored, so it will not be committed.
@@ -84,6 +92,11 @@ DASHBOARD_REFRESH_SECONDS=1
 ```powershell
 python -m app.web
 ```
+
+`python -m app.web` sets a **5 second** graceful shutdown timeout so Ctrl+C
+does not wait indefinitely on open WebSocket connections. If you start Uvicorn
+yourself (``uvicorn app.web:app --host 127.0.0.1 --port 5000``), pass
+``--timeout-graceful-shutdown 5`` (or similar) for the same behaviour.
 
 This starts a FastAPI server on http://127.0.0.1:5000/. Open that URL
 in your browser, click **Login with Zerodha**, complete the Zerodha

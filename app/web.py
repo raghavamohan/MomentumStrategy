@@ -48,8 +48,12 @@ Routes
     * ``KiteTicker`` (WebSocket)     -> ``wss://ws.kite.trade`` for live
       LTP snapshots on equity/F&O instrument tokens used in the current view.
 
-    Dashboard auto-refresh interval is controlled by
-    ``DASHBOARD_REFRESH_SECONDS`` (defaults to 1s, minimum 1s).
+    Live LTP updates are pushed to the browser over ``WS /ws/live-prices``
+    (fed by the existing KiteTicker stream). A separate **slow** full-page
+    snapshot uses ``GET /dashboard`` on an interval controlled by
+    ``DASHBOARD_SNAPSHOT_SECONDS`` (defaults to 120s, minimum 10s); see also
+    legacy ``DASHBOARD_REFRESH_SECONDS`` which maps to the same snapshot
+    interval when ``DASHBOARD_SNAPSHOT_SECONDS`` is unset.
 
     If the cached token has expired (``TokenException``), the session is
     cleared and the user is bounced back to ``/`` to log in again.
@@ -71,14 +75,19 @@ References
 
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
 import os
+from collections.abc import MutableMapping
+from typing import Any
 import secrets
 import threading
 import time
 import warnings
 import webbrowser
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 import keyring
@@ -96,7 +105,10 @@ from app.auth import (
     validate_kite_session,
 )
 from app.instruments import get_cash_equity_name_lookups, symbol_with_company_name
-from app.live_prices import live_price_stream
+from app.live_prices import dashboard_ws_debug_enabled, live_price_stream
+
+
+logger = logging.getLogger(__name__)
 
 
 TEMPLATES_DIR = PROJECT_ROOT / "templates"
@@ -108,18 +120,22 @@ DASHBOARD_HOST = "127.0.0.1"
 DASHBOARD_PORT = 5000
 
 
-def _dashboard_refresh_interval_ms() -> int:
-    """Read dashboard auto-refresh interval from env (seconds -> milliseconds)."""
-    raw = os.getenv("DASHBOARD_REFRESH_SECONDS", "1").strip()
+def _dashboard_snapshot_interval_ms() -> int:
+    """Full HTML snapshot interval (REST refresh for MF/cash/structure)."""
+    raw = (
+        os.getenv("DASHBOARD_SNAPSHOT_SECONDS", "").strip()
+        or os.getenv("DASHBOARD_REFRESH_SECONDS", "").strip()
+        or "120"
+    )
     try:
         seconds = float(raw)
     except ValueError:
-        seconds = 1.0
-    seconds = max(1.0, seconds)
+        seconds = 120.0
+    seconds = max(10.0, seconds)
     return int(seconds * 1000)
 
 
-_DASHBOARD_REFRESH_INTERVAL_MS = _dashboard_refresh_interval_ms()
+_DASHBOARD_SNAPSHOT_INTERVAL_MS = _dashboard_snapshot_interval_ms()
 
 
 def _session_secret() -> str:
@@ -265,19 +281,17 @@ def _kite_for_request() -> KiteConnect | None:
     return build_authenticated_client(api_key, token)
 
 
-def _restore_session_if_token_valid(request: Request) -> bool:
-    """Ensure ``request.session`` reflects a valid Kite token if one exists on disk.
+def _restore_session_if_token_valid_session(session: MutableMapping[str, Any]) -> bool:
+    """Ensure ``session`` reflects a valid Kite token if one exists on disk.
 
-    After a server restart the cookie may still be valid (persistent
-    session secret); if not, a stored access token is probed with
-    :func:`~app.auth.validate_kite_session` and the session is marked
-    authenticated when Kite still accepts it (until daily expiry).
+    Shared by HTTP routes and WebSocket handlers (WebSocket cannot use
+    :class:`~starlette.requests.Request`, which only accepts ``http`` scopes).
     """
     token = load_cached_access_token()
-    if request.session.get("authenticated"):
+    if session.get("authenticated"):
         if token:
             return True
-        request.session.clear()
+        session.clear()
         return False
     if not token:
         return False
@@ -285,8 +299,13 @@ def _restore_session_if_token_valid(request: Request) -> bool:
     kite = build_authenticated_client(api_key, token)
     if not validate_kite_session(kite):
         return False
-    request.session["authenticated"] = True
+    session["authenticated"] = True
     return True
+
+
+def _restore_session_if_token_valid(request: Request) -> bool:
+    """Ensure ``request.session`` reflects a valid Kite token if one exists on disk."""
+    return _restore_session_if_token_valid_session(request.session)
 
 
 def _decorate_holding(
@@ -317,9 +336,11 @@ def _decorate_holding(
         "tradingsymbol": symbol,
         "symbol_label": symbol_label,
         "exchange": h.get("exchange", ""),
+        "instrument_token": int(h.get("instrument_token") or 0),
         "quantity": quantity,
         "average_price": avg,
         "last_price": ltp,
+        "close_price": close_price,
         "invested": avg * quantity,
         "current": ltp * quantity,
         "pnl": pnl,
@@ -383,9 +404,13 @@ def _decorate_position(
         "symbol_label": symbol_label,
         "exchange": p.get("exchange", ""),
         "product": p.get("product", ""),
+        "instrument_token": int(p.get("instrument_token") or 0),
         "quantity": qty,
         "average_price": float(p.get("average_price") or 0.0),
         "last_price": ltp,
+        "buy_value": float(p.get("buy_value") or 0.0),
+        "sell_value": float(p.get("sell_value") or 0.0),
+        "multiplier": float(p.get("multiplier") or 1.0),
         "pnl": pnl,
         "m2m": float(p.get("m2m") or 0.0),
     }
@@ -486,6 +511,103 @@ async def logout(request: Request):
     clear_cached_access_token()
     live_price_stream.close()
     return RedirectResponse("/", status_code=303)
+
+
+@app.websocket("/ws/live-prices")
+async def live_prices_websocket(websocket: WebSocket) -> None:
+    """Push KiteTicker LTP deltas to the dashboard (same stream as HTML snapshots)."""
+    # 1008 = policy violation (RFC 6455); used here for "not authenticated".
+    if not _restore_session_if_token_valid_session(websocket.session):
+        await websocket.close(code=1008)
+        return
+    if _kite_for_request() is None:
+        await websocket.close(code=1008)
+        return
+    await websocket.accept()
+
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[dict[int, float]] = asyncio.Queue(maxsize=512)
+
+    # Merge tick batches on the event-loop thread (ticker runs in another thread)
+    # so we send fewer WebSocket frames under busy markets.
+    class _LtpCoalescer:
+        __slots__ = ("flush_scheduled", "pending")
+
+        def __init__(self) -> None:
+            self.pending: dict[int, float] = {}
+            self.flush_scheduled = False
+
+    coalesce = _LtpCoalescer()
+
+    def try_put_to_queue(batch: dict[int, float]) -> None:
+        if not batch:
+            return
+
+        def _try_put() -> None:
+            try:
+                queue.put_nowait(batch)
+            except asyncio.QueueFull:
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    queue.put_nowait(batch)
+                except asyncio.QueueFull:
+                    pass
+
+        loop.call_soon_threadsafe(_try_put)
+
+    def flush_coalesced() -> None:
+        coalesce.flush_scheduled = False
+        if not coalesce.pending:
+            return
+        batch = dict(coalesce.pending)
+        coalesce.pending.clear()
+        try_put_to_queue(batch)
+
+    def enqueue_updates(updates: dict[int, float]) -> None:
+        if not updates:
+            return
+
+        def merge_on_loop() -> None:
+            coalesce.pending.update(updates)
+            if coalesce.flush_scheduled:
+                return
+            coalesce.flush_scheduled = True
+            loop.call_soon(flush_coalesced)
+
+        loop.call_soon_threadsafe(merge_on_loop)
+
+    live_price_stream.add_tick_listener(enqueue_updates)
+    try:
+        while True:
+            try:
+                updates = await queue.get()
+            except asyncio.CancelledError:
+                # Server shutdown (Ctrl+C) cancels waiters; exit without logging as error.
+                break
+            try:
+                await websocket.send_json(
+                    {"ltp": {str(tok): price for tok, price in updates.items()}}
+                )
+            except WebSocketDisconnect:
+                raise
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                if dashboard_ws_debug_enabled():
+                    logger.exception("WebSocket send_json failed; ending live-prices stream")
+                break
+    except WebSocketDisconnect:
+        pass
+    finally:
+        live_price_stream.remove_tick_listener(enqueue_updates)
+        try:
+            # 1001 = "going away" — helps ASGI/uvicorn finish the connection on shutdown.
+            await websocket.close(code=1001)
+        except (Exception, asyncio.CancelledError):
+            pass
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
@@ -604,6 +726,15 @@ async def dashboard(request: Request):
     positions_pnl = equity_position_totals["pnl"] + fno_position_totals["pnl"]
     overall_pnl = holdings_pnl + positions_pnl
 
+    dashboard_bootstrap = {
+        "mfTotals": {
+            "invested": mf_totals["invested"],
+            "current": mf_totals["current"],
+            "pnl": mf_totals["pnl"],
+        },
+        "portfolioInvestedTotal": total_invested,
+        "equityInvestedTotal": equity_totals["invested"],
+    }
     context = {
         "request": request,
         "equity_holdings": equity_holdings,
@@ -616,7 +747,8 @@ async def dashboard(request: Request):
         "fno_positions": fno_positions,
         "fno_position_totals": fno_position_totals,
         "cash": cash,
-        "refresh_interval_ms": _DASHBOARD_REFRESH_INTERVAL_MS,
+        "snapshot_interval_ms": _DASHBOARD_SNAPSHOT_INTERVAL_MS,
+        "dashboard_bootstrap_json": json.dumps(dashboard_bootstrap),
         "portfolio_summary": {
             "total_invested": total_invested,
             "total_current": total_current,
@@ -650,6 +782,7 @@ def main() -> None:
         port=DASHBOARD_PORT,
         reload=False,
         log_level="info",
+        timeout_graceful_shutdown=5,
     )
 
 
