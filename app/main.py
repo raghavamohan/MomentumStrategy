@@ -64,7 +64,7 @@ import time
 
 from tabulate import tabulate
 
-from kiteconnect.exceptions import DataException, PermissionException
+from kiteconnect.exceptions import DataException, NetworkException, PermissionException
 
 from app.auth import get_kite_client
 from app.instruments import get_cash_equity_name_lookups, symbol_with_company_name
@@ -495,16 +495,17 @@ def _print_cash_balance(kite) -> None:
     Calls ``kite.margins(segment="equity")``. See:
     https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.margins
     """
-    def _is_transient_service_unavailable(exc: DataException) -> bool:
+    def _is_transient_service_unavailable(exc: Exception) -> bool:
+        code = getattr(exc, "code", None)
         msg = str(exc).lower()
-        return "503" in msg or "service unavailable" in msg
+        return code == 503 or "503" in msg or "service unavailable" in msg
 
     margins: dict = {}
     for attempt in (1, 2):
         try:
             margins = kite.margins(segment="equity") or {}
             break
-        except DataException as exc:
+        except (NetworkException, DataException) as exc:
             if attempt == 1 and _is_transient_service_unavailable(exc):
                 time.sleep(1.0)
                 continue
