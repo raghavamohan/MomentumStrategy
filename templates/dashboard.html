@@ -279,9 +279,6 @@
                 <button type="button" class="th-sort" data-sort-type="text">Company <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
               <th class="sortable" scope="col">
-                <button type="button" class="th-sort" data-sort-type="text">Exch <span class="sort-ind" aria-hidden="true"></span></button>
-              </th>
-              <th class="sortable" scope="col">
                 <button type="button" class="th-sort" data-sort-type="text">Prod <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
               <th class="num sortable" scope="col">
@@ -313,7 +310,6 @@
                 data-market="equity"
               >
                 <td class="symbol">{{ p.symbol_label }}</td>
-                <td>{{ p.exchange }}</td>
                 <td>{{ p.product }}</td>
                 <td class="num">{{ p.quantity }}</td>
                 <td class="num">{{ p.average_price|inr }}</td>
@@ -359,9 +355,6 @@
                 <button type="button" class="th-sort" data-sort-type="text">Symbol <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
               <th class="sortable" scope="col">
-                <button type="button" class="th-sort" data-sort-type="text">Exch <span class="sort-ind" aria-hidden="true"></span></button>
-              </th>
-              <th class="sortable" scope="col">
                 <button type="button" class="th-sort" data-sort-type="text">Prod <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
               <th class="num sortable" scope="col">
@@ -393,7 +386,6 @@
                 data-market="fno"
               >
                 <td class="symbol">{{ p.symbol_label }}</td>
-                <td>{{ p.exchange }}</td>
                 <td>{{ p.product }}</td>
                 <td class="num">{{ p.quantity }}</td>
                 <td class="num">{{ p.average_price|inr }}</td>
@@ -427,10 +419,6 @@
       </div>
     </div>
     <div class="alert">
-      Sourced from
-      <a href="https://kite.trade/docs/connect/v3/user/#funds-and-margins" target="_blank" rel="noopener">
-        <code>GET /user/margins/equity</code>
-      </a>.
       <strong>Available cash</strong> is free cash for new trades;
       <strong>Live balance</strong> includes intraday MTM updates;
       <strong>Utilised</strong> is margin currently locked by open positions / orders.
