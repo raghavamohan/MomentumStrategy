@@ -117,7 +117,7 @@
         </div>
       </div>
       <div class="card" style="padding: 0; overflow: hidden;">
-        <table data-default-sort-col="4" data-default-sort-type="inr">
+        <table data-table-sort-key="equity-holdings" data-default-sort-col="4" data-default-sort-type="inr">
           <thead>
             <tr>
               <th class="sortable" scope="col">
@@ -203,7 +203,7 @@
         </div>
       </div>
       <div class="card" style="padding: 0; overflow: hidden;">
-        <table data-default-sort-col="5" data-default-sort-type="inr">
+        <table data-table-sort-key="mf-holdings" data-default-sort-col="5" data-default-sort-type="inr">
           <thead>
             <tr>
               <th class="sortable" scope="col">
@@ -275,7 +275,7 @@
         </div>
       </div>
       <div class="card" style="padding: 0; overflow: hidden;">
-        <table>
+        <table data-table-sort-key="positions-equity">
           <thead>
             <tr>
               <th class="sortable" scope="col">
@@ -351,7 +351,7 @@
         </div>
       </div>
       <div class="card" style="padding: 0; overflow: hidden;">
-        <table>
+        <table data-table-sort-key="positions-fno">
           <thead>
             <tr>
               <th class="sortable" scope="col">
@@ -434,6 +434,7 @@
 <script>
   (function () {
     const SNAPSHOT_MS = {{ snapshot_interval_ms }};
+    const TABLE_SORT_STORAGE_PREFIX = 'momentumDashboard:tableSort:';
     let isRefreshing = false;
     let selectedTab = 'equity';
     const niftyPriceEl = document.getElementById('nifty-live-price');
@@ -689,6 +690,55 @@
       table.dataset.sortCol = String(colIndex);
       table.dataset.sortType = sortType;
       table.dataset.sortDir = direction;
+      persistTableSortPreference(table);
+    }
+
+    function persistTableSortPreference(table) {
+      const key = table.dataset.tableSortKey;
+      if (!key || table.dataset.sortCol === undefined || table.dataset.sortCol === '') {
+        return;
+      }
+      const col = parseInt(table.dataset.sortCol, 10);
+      const dir = table.dataset.sortDir === 'desc' ? 'desc' : 'asc';
+      if (!Number.isFinite(col)) {
+        return;
+      }
+      try {
+        localStorage.setItem(
+          TABLE_SORT_STORAGE_PREFIX + key,
+          JSON.stringify({ col: col, dir: dir })
+        );
+      } catch (_e) {}
+    }
+
+    function restoreTableSortFromStorage(table) {
+      const key = table.dataset.tableSortKey;
+      if (!key) {
+        return false;
+      }
+      let parsed;
+      try {
+        const raw = localStorage.getItem(TABLE_SORT_STORAGE_PREFIX + key);
+        if (!raw) {
+          return false;
+        }
+        parsed = JSON.parse(raw);
+      } catch (_e) {
+        return false;
+      }
+      const col = parseInt(parsed.col, 10);
+      const dir = parsed.dir === 'asc' ? 'asc' : 'desc';
+      const ths = table.querySelectorAll('thead tr th');
+      if (!Number.isFinite(col) || col < 0 || col >= ths.length) {
+        return false;
+      }
+      const btn = ths[col].querySelector('.th-sort');
+      if (!btn) {
+        return false;
+      }
+      const sortType = btn.getAttribute('data-sort-type') || 'text';
+      sortDataTable(table, col, sortType, dir);
+      return true;
     }
 
     function reapplyPersistedTableSorts() {
@@ -703,18 +753,23 @@
       });
     }
 
-    function applyDefaultInvestedSort() {
-      document.querySelectorAll('#dashboard-root table[data-default-sort-col]').forEach(function (table) {
+    function applyInitialTableSorts() {
+      document.querySelectorAll('#dashboard-root table[data-table-sort-key]').forEach(function (table) {
         const tbody = table.querySelector('tbody');
         if (!tbody || !tbody.querySelector('tr')) {
           return;
         }
-        const col = parseInt(table.dataset.defaultSortCol, 10);
-        const typ = table.dataset.defaultSortType || 'inr';
-        if (!Number.isFinite(col)) {
+        if (restoreTableSortFromStorage(table)) {
           return;
         }
-        sortDataTable(table, col, typ, 'desc');
+        const defCol = table.dataset.defaultSortCol;
+        if (defCol !== undefined && defCol !== '') {
+          const col = parseInt(defCol, 10);
+          const typ = table.dataset.defaultSortType || 'inr';
+          if (Number.isFinite(col)) {
+            sortDataTable(table, col, typ, 'desc');
+          }
+        }
       });
     }
 
@@ -933,7 +988,7 @@
         renderNiftyQuote(niftyLtpFromBootstrap());
         bindTabs();
         activateTab(selectedTab || requestedTab);
-        applyDefaultInvestedSort();
+        applyInitialTableSorts();
         stampUpdatedNow();
         recalcSummaries();
       } catch (_err) {
@@ -944,7 +999,7 @@
 
     bindTabs();
     selectedTab = getActiveTab();
-    applyDefaultInvestedSort();
+    applyInitialTableSorts();
     stampUpdatedNow();
     renderNiftyQuote(niftyLtpFromBootstrap());
     recalcSummaries();
