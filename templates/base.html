@@ -185,6 +185,45 @@
     td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
     td.symbol { font-weight: 500; }
 
+    th.sortable {
+      padding: 0;
+      vertical-align: bottom;
+    }
+    th.sortable .th-sort {
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      width: 100%;
+      margin: 0;
+      padding: 10px 12px;
+      background: transparent;
+      border: none;
+      color: inherit;
+      font: inherit;
+      font-weight: 600;
+      text-transform: inherit;
+      letter-spacing: inherit;
+      cursor: pointer;
+      gap: 6px;
+      text-align: inherit;
+    }
+    th.num.sortable .th-sort {
+      justify-content: flex-end;
+    }
+    th.sortable .th-sort:hover {
+      color: var(--text);
+    }
+    th.sortable .sort-ind {
+      font-size: 11px;
+      opacity: 0.45;
+      flex-shrink: 0;
+    }
+    th.sortable.sorted-asc .sort-ind,
+    th.sortable.sorted-desc .sort-ind {
+      opacity: 1;
+      color: var(--accent);
+    }
+
     .positive { color: var(--positive); }
     .negative { color: var(--negative); }
     .neutral  { color: var(--neutral); }
