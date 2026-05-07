@@ -93,6 +93,8 @@ Then edit [`.env`](.env) and fill in your credentials:
 KITE_API_KEY=your_api_key_here
 KITE_API_SECRET=your_api_secret_here
 KITE_DASHBOARD_NAME=Raghava`s Porfolio
+# Optional: live index quotes under the dashboard title (NSE). Default: NIFTY50,BANKNIFTY,NIFTYIT,NIFTYFINSERVICE,NIFTYMET
+# KITE_DASHBOARD_INDICES=NIFTY50,BANKNIFTY,NIFTYIT,NIFTYFINSERVICE,NIFTYMET
 DASHBOARD_SNAPSHOT_SECONDS=120
 # optional for CLI auto request_token capture
 KITE_REDIRECT_URL=http://127.0.0.1:5000/callback

@@ -47,6 +47,9 @@ Routes
     * ``KiteConnect.margins("equity")`` -> ``GET /user/margins/equity``
     * ``KiteTicker`` (WebSocket)     -> ``wss://ws.kite.trade`` for live
       LTP snapshots on equity/F&O instrument tokens used in the current view.
+    * ``KiteConnect.quote`` (NSE indices) -> previous close and instrument tokens
+      for header index tickers from ``KITE_DASHBOARD_INDICES`` (defaults to
+      NIFTY 50, NIFTY BANK, NIFTY IT, NIFTY FIN SERVICE, NIFTY METAL).
 
     Live LTP updates are pushed to the browser over ``WS /ws/live-prices``
     (fed by the existing KiteTicker stream). A separate **slow** full-page
@@ -147,6 +150,50 @@ def _dashboard_display_name() -> str:
 
 
 _DASHBOARD_DISPLAY_NAME = _dashboard_display_name()
+
+# Compact keys (spaces / punctuation stripped, uppercased) -> NSE index tradingsymbol for Kite quote keys.
+_INDEX_COMPACT_TO_TRADINGSYMBOL: dict[str, str] = {
+    "NIFTY50": "NIFTY 50",
+    "NIFTY_50": "NIFTY 50",
+    "BANKNIFTY": "NIFTY BANK",
+    "NIFTYBANK": "NIFTY BANK",
+    "NIFTYIT": "NIFTY IT",
+    "NIFTY_IT": "NIFTY IT",
+    "NIFTYFINSERVICE": "NIFTY FIN SERVICE",
+    "NIFTY_FIN_SERVICE": "NIFTY FIN SERVICE",
+    "NIFTYMET": "NIFTY METAL",
+    "NIFTY_METAL": "NIFTY METAL",
+}
+
+
+def _resolve_index_tradingsymbol(label: str) -> str:
+    """Map a dashboard env token (e.g. ``NIFTY50``) to an NSE index tradingsymbol."""
+    stripped = label.strip()
+    if not stripped:
+        return ""
+    compact = "".join(stripped.split()).upper().replace("-", "")
+    return _INDEX_COMPACT_TO_TRADINGSYMBOL.get(compact, stripped)
+
+
+def _dashboard_index_entries() -> list[tuple[str, str]]:
+    """Ordered unique (env label, NSE tradingsymbol) pairs for header index quotes."""
+    load_dotenv(PROJECT_ROOT / ".env")
+    raw = os.getenv("KITE_DASHBOARD_INDICES", "").strip()
+    labels = [p.strip() for p in raw.split(",") if p.strip()]
+    if not labels:
+        labels = ["NIFTY50", "BANKNIFTY", "NIFTYIT", "NIFTYFINSERVICE", "NIFTYMET"]
+    seen_ts: set[str] = set()
+    out: list[tuple[str, str]] = []
+    for label in labels:
+        ts = _resolve_index_tradingsymbol(label)
+        if not ts or ts in seen_ts:
+            continue
+        seen_ts.add(ts)
+        out.append((label, ts))
+    return out
+
+
+_DASHBOARD_INDEX_ENTRIES = _dashboard_index_entries()
 
 
 def _session_secret() -> str:
@@ -294,8 +341,6 @@ app.add_middleware(
 
 EQUITY_EXCHANGES = {"NSE", "BSE"}
 FNO_EXCHANGES = {"NFO", "BFO", "CDS", "BCD", "MCX"}
-NIFTY_50_INSTRUMENT_TOKEN = 256265
-NIFTY_50_QUOTE_KEY = "NSE:NIFTY 50"
 
 
 def _kite_for_request() -> KiteConnect | None:
@@ -689,8 +734,49 @@ async def dashboard(request: Request):
     open_net = [p for p in net_positions if int(p.get("quantity") or 0) != 0]
 
     live_ltp_by_token: dict[int, float] = {}
-    nifty_live_price: float | None = None
     access_token = load_cached_access_token()
+    index_quote_keys = [f"NSE:{ts}" for _, ts in _DASHBOARD_INDEX_ENTRIES]
+    index_tokens: set[int] = set()
+    index_quotes_bootstrap: list[dict[str, Any]] = []
+
+    try:
+        quote_batch: dict[str, Any] = {}
+        if index_quote_keys:
+            quote_batch = kite.quote(index_quote_keys) or {}
+    except Exception:
+        quote_batch = {}
+
+    for env_label, ts in _DASHBOARD_INDEX_ENTRIES:
+        key = f"NSE:{ts}"
+        data = quote_batch.get(key) or {}
+        token = int(data.get("instrument_token") or 0)
+        if token > 0:
+            index_tokens.add(token)
+        ohlc = data.get("ohlc") or {}
+        raw_prev = ohlc.get("close")
+        prev_close: float | None = None
+        if raw_prev is not None:
+            try:
+                prev_close = float(raw_prev)
+            except (TypeError, ValueError):
+                prev_close = None
+        raw_ltp = data.get("last_price")
+        rest_ltp: float | None = None
+        if raw_ltp is not None:
+            try:
+                rest_ltp = float(raw_ltp)
+            except (TypeError, ValueError):
+                rest_ltp = None
+        display = str(data.get("tradingsymbol") or ts or env_label)
+        index_quotes_bootstrap.append(
+            {
+                "label": display,
+                "token": token,
+                "ltp": rest_ltp,
+                "prevClose": prev_close,
+            }
+        )
+
     if access_token:
         try:
             api_key, _ = load_credentials()
@@ -702,30 +788,18 @@ async def dashboard(request: Request):
                 int(p.get("instrument_token") or 0)
                 for p in open_net
             }
-            tokens.add(NIFTY_50_INSTRUMENT_TOKEN)
+            tokens |= index_tokens
             tokens = {t for t in tokens if t > 0}
             live_price_stream.subscribe(tokens)
             live_ltp_by_token = live_price_stream.snapshot_ltp(tokens)
-            nifty_live_price = live_ltp_by_token.get(NIFTY_50_INSTRUMENT_TOKEN)
         except Exception:
             # Keep dashboard resilient if websocket setup fails.
             live_ltp_by_token = {}
-            nifty_live_price = None
 
-    nifty_prev_close: float | None = None
-    try:
-        quote = kite.quote([NIFTY_50_QUOTE_KEY]) or {}
-        nifty_data = quote.get(NIFTY_50_QUOTE_KEY) or {}
-        ohlc = nifty_data.get("ohlc") or {}
-        raw_prev = ohlc.get("close")
-        if raw_prev is not None:
-            nifty_prev_close = float(raw_prev)
-        if nifty_live_price is None:
-            raw_ltp = nifty_data.get("last_price")
-            if raw_ltp is not None:
-                nifty_live_price = float(raw_ltp)
-    except Exception:
-        pass
+    for row in index_quotes_bootstrap:
+        tok = int(row.get("token") or 0)
+        if tok > 0 and tok in live_ltp_by_token:
+            row["ltp"] = live_ltp_by_token[tok]
 
     equity_token_to_name, equity_symbol_to_name = get_cash_equity_name_lookups(kite)
 
@@ -797,9 +871,7 @@ async def dashboard(request: Request):
         },
         "portfolioInvestedTotal": total_invested,
         "equityInvestedTotal": equity_totals["invested"],
-        "niftyToken": NIFTY_50_INSTRUMENT_TOKEN,
-        "niftyLtp": nifty_live_price,
-        "niftyPrevClose": nifty_prev_close,
+        "indexQuotes": index_quotes_bootstrap,
     }
     context = {
         "request": request,

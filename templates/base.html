@@ -65,6 +65,7 @@
     }
     .topbar .topbar-main {
       flex: 1;
+      min-width: 0;
       text-align: center;
     }
     .topbar h1 {
@@ -84,10 +85,78 @@
       color: var(--text);
       letter-spacing: 0.01em;
     }
+    .topbar .nifty-quote.index-quotes-marquee {
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .topbar .index-quotes-marquee {
+      overflow: hidden;
+      width: 100%;
+      max-width: 100%;
+      box-sizing: border-box;
+      padding-bottom: 2px;
+    }
+    .topbar .index-quotes-marquee:hover .index-quotes-marquee-inner {
+      animation-play-state: paused;
+    }
+    .topbar .index-quotes-marquee-inner {
+      display: flex;
+      flex-direction: row;
+      flex-wrap: nowrap;
+      width: max-content;
+      animation: index-quotes-marquee-scroll 60s linear infinite;
+      will-change: transform;
+    }
+    .topbar .index-quotes-marquee-chunk {
+      display: flex;
+      flex-direction: row;
+      flex-wrap: nowrap;
+      align-items: baseline;
+      gap: 0 4px;
+      flex-shrink: 0;
+    }
+    @keyframes index-quotes-marquee-scroll {
+      from { transform: translateX(0); }
+      to { transform: translateX(-50%); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .topbar .index-quotes-marquee-inner {
+        animation: none;
+      }
+      .topbar .index-quotes-marquee-chunk + .index-quotes-marquee-chunk {
+        display: none;
+      }
+      .topbar .index-quotes-marquee {
+        overflow-x: auto;
+      }
+    }
+    .topbar .index-quote-item {
+      display: inline-flex;
+      flex-wrap: nowrap;
+      flex-shrink: 0;
+      align-items: baseline;
+      gap: 0 2px;
+      white-space: nowrap;
+    }
+    .topbar .index-quote-title {
+      white-space: nowrap;
+    }
+    .topbar .index-quote-sep {
+      color: var(--muted);
+      font-weight: 500;
+      margin: 0 2px;
+      flex-shrink: 0;
+    }
+    /* Extra gap after the wrap dot so the repeated chunk does not sit flush on the first ticker */
+    .topbar .index-quote-sep--trail {
+      margin-inline-end: 0;
+      padding-inline-end: 0.45em;
+    }
     .topbar .nifty-quote .nifty-change {
-      margin-left: 10px;
-      font-weight: 700;
+      margin-left: 8px;
+      font-weight: 600;
       font-variant-numeric: tabular-nums;
+      white-space: nowrap;
     }
     .topbar .nifty-quote .nifty-change-up { color: var(--positive); }
     .topbar .nifty-quote .nifty-change-down { color: var(--negative); }
