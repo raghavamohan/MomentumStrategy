@@ -183,6 +183,38 @@
       border-radius: 4px;
     }
     .topbar .right { display: flex; align-items: center; gap: 16px; }
+    .dashboard-topbar {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 8px;
+    }
+    .dashboard-topbar .dashboard-topbar-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .dashboard-topbar .dashboard-topbar-header h1 {
+      flex: 1;
+      text-align: center;
+    }
+    .dashboard-topbar .topbar-main {
+      text-align: center;
+    }
+    .dashboard-topbar .right {
+      align-self: flex-start;
+      flex-shrink: 0;
+    }
+    @media (max-width: 900px) {
+      .dashboard-topbar .dashboard-topbar-header {
+        flex-wrap: wrap;
+        justify-content: center;
+      }
+      .dashboard-topbar .dashboard-topbar-header h1 {
+        flex-basis: 100%;
+      }
+    }
 
     .button {
       display: inline-block;

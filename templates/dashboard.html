@@ -38,14 +38,16 @@
 {% block title %}Dashboard &middot; {{ dashboard_name }}{% endblock %}
 
 {% block content %}
-  <div class="topbar">
-    <div class="topbar-main">
+  <div class="topbar dashboard-topbar">
+    <div class="dashboard-topbar-header">
       <h1>{{ dashboard_name }}</h1>
+      <div class="right">
+        <a class="button secondary" href="/logout">Logout</a>
+      </div>
+    </div>
+    <div class="topbar-main">
       <div class="subtitle nifty-quote index-quotes-marquee" id="index-quotes-bar" aria-live="off"></div>
       <div class="subtitle" id="last-updated-indicator">Last updated: --</div>
-    </div>
-    <div class="right">
-      <a class="button secondary" href="/logout">Logout</a>
     </div>
   </div>
 
@@ -478,39 +480,22 @@
         </section>
 
         <section class="section-panel" data-section-panel="watchlist">
-          <div class="summary">
-            <div class="stat">
-              <div class="label">Watch List Symbols</div>
-              <div class="value">{{ watch_list|length }}</div>
-            </div>
-            <div class="stat">
-              <div class="label">Indices</div>
-              <div class="value">{{ watch_list|selectattr("segment", "equalto", "Index")|list|length }}</div>
-            </div>
-            <div class="stat">
-              <div class="label">Stocks</div>
-              <div class="value">{{ watch_list|selectattr("segment", "equalto", "Equity")|list|length }}</div>
-            </div>
-          </div>
           {% if watch_list %}
             <div class="card" style="padding: 0; overflow: hidden;">
-              <table data-table-sort-key="watch-list" data-default-sort-col="4" data-default-sort-type="pct">
+              <table data-table-sort-key="watch-list" data-default-sort-col="3" data-default-sort-type="pct">
                 <thead>
                   <tr>
                     <th class="sortable" scope="col">
-                      <button type="button" class="th-sort" data-sort-type="text">Symbol <span class="sort-ind" aria-hidden="true"></span></button>
-                    </th>
-                    <th class="sortable" scope="col">
-                      <button type="button" class="th-sort" data-sort-type="text">Segment <span class="sort-ind" aria-hidden="true"></span></button>
+                      <button type="button" class="th-sort" data-sort-type="text">Company <span class="sort-ind" aria-hidden="true"></span></button>
                     </th>
                     <th class="num sortable" scope="col">
-                      <button type="button" class="th-sort" data-sort-type="inr">LTP <span class="sort-ind" aria-hidden="true"></span></button>
+                      <button type="button" class="th-sort" data-sort-type="inr">Live Price <span class="sort-ind" aria-hidden="true"></span></button>
                     </th>
                     <th class="num sortable" scope="col">
-                      <button type="button" class="th-sort" data-sort-type="inr">Change <span class="sort-ind" aria-hidden="true"></span></button>
+                      <button type="button" class="th-sort" data-sort-type="inr">Change (Last Close) <span class="sort-ind" aria-hidden="true"></span></button>
                     </th>
                     <th class="num sortable" scope="col">
-                      <button type="button" class="th-sort" data-sort-type="pct">Change % <span class="sort-ind" aria-hidden="true"></span></button>
+                      <button type="button" class="th-sort" data-sort-type="pct">% Change Today <span class="sort-ind" aria-hidden="true"></span></button>
                     </th>
                   </tr>
                 </thead>
@@ -522,7 +507,6 @@
                       data-prev="{{ item.prev_close }}"
                     >
                       <td class="symbol">{{ item.label }}</td>
-                      <td>{{ item.segment }}</td>
                       <td class="num js-watch-ltp">{{ item.last_price|inr }}</td>
                       <td class="num js-watch-change {{ item.change|sign_class }}">{{ item.change|inr }}</td>
                       <td class="num js-watch-change-pct {{ item.change_pct|sign_class }}">{{ item.change_pct|pct }}</td>

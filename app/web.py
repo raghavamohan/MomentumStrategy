@@ -109,7 +109,12 @@ from app.auth import (
     save_cached_access_token,
     validate_kite_session,
 )
-from app.instruments import get_cash_equity_name_lookups, symbol_with_company_name
+from app.instruments import (
+    get_cash_equity_name_lookups,
+    get_nifty50_symbols,
+    get_nse_symbol_to_token_lookup,
+    symbol_with_company_name,
+)
 from app.live_prices import dashboard_ws_debug_enabled, live_price_stream
 
 
@@ -744,10 +749,19 @@ async def dashboard(request: Request):
     index_tokens: set[int] = set()
     index_quotes_bootstrap: list[dict[str, Any]] = []
 
+    equity_token_to_name, equity_symbol_to_name = get_cash_equity_name_lookups(kite)
+    nse_symbol_to_token = get_nse_symbol_to_token_lookup(kite)
+    nifty50_symbols = get_nifty50_symbols()
+    watch_quote_keys = [f"NSE:{sym}" for sym in nifty50_symbols]
+    watch_tokens = {
+        int(nse_symbol_to_token.get(sym) or 0)
+        for sym in nifty50_symbols
+        if int(nse_symbol_to_token.get(sym) or 0) > 0
+    }
+
+    quote_keys = index_quote_keys + watch_quote_keys
     try:
-        quote_batch: dict[str, Any] = {}
-        if index_quote_keys:
-            quote_batch = kite.quote(index_quote_keys) or {}
+        quote_batch: dict[str, Any] = kite.quote(quote_keys) if quote_keys else {}
     except Exception:
         quote_batch = {}
 
@@ -794,6 +808,7 @@ async def dashboard(request: Request):
                 for p in open_net
             }
             tokens |= index_tokens
+            tokens |= watch_tokens
             tokens = {t for t in tokens if t > 0}
             live_price_stream.subscribe(tokens)
             live_ltp_by_token = live_price_stream.snapshot_ltp(tokens)
@@ -805,8 +820,6 @@ async def dashboard(request: Request):
         tok = int(row.get("token") or 0)
         if tok > 0 and tok in live_ltp_by_token:
             row["ltp"] = live_ltp_by_token[tok]
-
-    equity_token_to_name, equity_symbol_to_name = get_cash_equity_name_lookups(kite)
 
     equity_holdings = sorted(
         (
@@ -881,8 +894,52 @@ async def dashboard(request: Request):
         "exchanges": list(profile_raw.get("exchanges") or []),
     }
 
-    # Watch list entries will be user-managed in a future iteration.
     watch_list: list[dict[str, Any]] = []
+    for symbol in nifty50_symbols:
+        qkey = f"NSE:{symbol}"
+        qrow = quote_batch.get(qkey) or {}
+        qtoken = int(qrow.get("instrument_token") or 0)
+        token = qtoken if qtoken > 0 else int(nse_symbol_to_token.get(symbol) or 0)
+        ohlc = qrow.get("ohlc") or {}
+        raw_prev = ohlc.get("close")
+        raw_ltp = qrow.get("last_price")
+        try:
+            prev_close = float(raw_prev) if raw_prev is not None else None
+        except (TypeError, ValueError):
+            prev_close = None
+        try:
+            last_price = float(raw_ltp) if raw_ltp is not None else None
+        except (TypeError, ValueError):
+            last_price = None
+        if token > 0 and token in live_ltp_by_token:
+            last_price = float(live_ltp_by_token[token])
+
+        if (
+            last_price is not None
+            and prev_close is not None
+            and prev_close > 0
+        ):
+            change = last_price - prev_close
+            change_pct = (change / prev_close) * 100.0
+        else:
+            change = 0.0
+            change_pct = 0.0
+
+        company_name = str(equity_symbol_to_name.get(("NSE", symbol)) or "").strip()
+        label = company_name or symbol
+
+        watch_list.append(
+            {
+                "label": label,
+                "symbol": symbol,
+                "segment": "Equity",
+                "instrument_token": token,
+                "prev_close": prev_close,
+                "last_price": last_price,
+                "change": change,
+                "change_pct": change_pct,
+            }
+        )
 
     dashboard_bootstrap = {
         "mfTotals": {
