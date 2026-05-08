@@ -312,6 +312,11 @@ Section keys accepted by `--sections` / `--exclude-sections`:
 ├── README.md
 ├── requirements.txt
 ├── .access_token.json    # cached daily access token (gitignored, auto-created)
+├── .cache/               # local runtime caches (gitignored)
+│   ├── dashboard_timing.log
+│   ├── mfdata_underlyings_cache.json
+│   ├── reference_data_cache.json
+│   └── yfinance_industry_cache.json
 ├── app/
 │   ├── __init__.py       # package docstring + entry point index
 │   ├── auth.py           # Kite login flow + token caching (shared by CLI + web)
@@ -330,6 +335,7 @@ Section keys accepted by `--sections` / `--exclude-sections`:
 This app combines three external sources:
 
 - **Kite Connect** for account data and live prices.
+- **NSE India archives** for index constituents and `Industry`/`ISIN` reference data.
 - **yfinance** for equity metadata enrichment (`industry`/`sector`).
 - **mfdata.in** for mutual-fund underlying holdings aggregation.
 
@@ -461,6 +467,23 @@ Used in:
   live/cache-backed industry and sector lookup.
 - `scripts/build_cache.py` — `yf.Ticker(...).info` to pre-build
   `.cache/yfinance_industry_cache.json` offline.
+
+### NSE India (constituents and industry reference data)
+
+The app fetches NSE reference CSVs from `nsearchives.nseindia.com` to power:
+
+- Nifty 50 watch-list symbol universe (`Symbol` column)
+- Symbol/ISIN-to-industry fallback maps used in sector resolution
+
+Method used in code:
+
+- HTTP GET with Python `urllib.request.Request` + browser-like headers
+  (`User-Agent`, `Accept`, `Referer`) in `app/instruments.py`
+- Parse CSV using `csv.DictReader`
+- Merge selected files (for example Nifty 50/100/200/500 and mid/small-cap lists)
+  into in-memory maps
+- Persist and reuse via `.cache/reference_data_cache.json` with TTL-based refresh
+  (`REFERENCE_CACHE_TTL_SECONDS`)
 
 ### mfdata.in (MF underlying aggregation)
 
