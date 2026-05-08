@@ -1587,6 +1587,7 @@
           if (filterChip.classList.contains('mf-filter-chip')) {
             selectedMfTone = filterChip.dataset.mfFilterValue || 'all';
             applyMfFilters();
+            loadMfUnderlyingBreakdown();
             syncCsvActionState();
             return;
           }
@@ -1622,6 +1623,7 @@
         if (mfResetFiltersBtn && dashboardRootEl.contains(mfResetFiltersBtn)) {
           selectedMfTone = 'all';
           applyMfFilters();
+          loadMfUnderlyingBreakdown();
           syncCsvActionState();
           return;
         }
@@ -2180,11 +2182,11 @@
     let mfHoldingsLoaded = false;
     let mfHoldingsLoading = false;
     let mfUnderlyingsLoading = false;
-    let mfUnderlyingsLoaded = false;
+    let mfUnderlyingsLoadedByTone = {};
     let mfPrefetchScheduled = false;
     let mfClientCacheDay = '';
     let mfHoldingsCachedPayload = null;
-    let mfUnderlyingsCachedPayload = null;
+    let mfUnderlyingsCachedPayloadByTone = {};
 
     function currentDayToken() {
       const now = new Date();
@@ -2201,9 +2203,9 @@
       }
       mfClientCacheDay = day;
       mfHoldingsCachedPayload = null;
-      mfUnderlyingsCachedPayload = null;
+      mfUnderlyingsCachedPayloadByTone = {};
       mfHoldingsLoaded = false;
-      mfUnderlyingsLoaded = false;
+      mfUnderlyingsLoadedByTone = {};
       mfHoldingsLoading = false;
       mfUnderlyingsLoading = false;
       mfPrefetchScheduled = false;
@@ -2446,49 +2448,63 @@
       applyMfUnderlyingSectorFilter();
     }
 
+    function currentMfUnderlyingTone() {
+      if (selectedMfTone === 'gainers' || selectedMfTone === 'losers') {
+        return selectedMfTone;
+      }
+      return 'all';
+    }
+
     async function loadMfUnderlyingBreakdown() {
       ensureMfClientCacheDay();
       const host = document.getElementById('mf-underlying-breakdown-block');
       if (!host || mfUnderlyingsLoading || !mfHoldingsLoaded) {
         return;
       }
+      const tone = currentMfUnderlyingTone();
       // Snapshot refresh replaces tab DOM, so cached underlying data must
       // repaint before honoring "loaded" flags.
-      if (mfUnderlyingsCachedPayload) {
-        const payload = mfUnderlyingsCachedPayload;
+      const cachedPayload = mfUnderlyingsCachedPayloadByTone[tone];
+      if (cachedPayload) {
+        const payload = cachedPayload;
         if (payload.error) {
           host.innerHTML = '<div class="alert warning">' + escapeHtml(payload.error) + '</div>';
-          mfUnderlyingsLoaded = true;
           return;
         }
         renderMfUnderlyingBreakdownPayload(host, payload);
-        mfUnderlyingsLoaded = true;
         syncCsvActionState();
         return;
       }
-      if (mfUnderlyingsLoaded) {
+      if (mfUnderlyingsLoadedByTone[tone]) {
         return;
       }
       mfUnderlyingsLoading = true;
       try {
-        const response = await fetch('/dashboard/mf-underlyings', { cache: 'no-store' });
+        const response = await fetch('/dashboard/mf-underlyings?tone=' + encodeURIComponent(tone), { cache: 'no-store' });
         if (!response.ok) {
           host.innerHTML = '<div class="card empty">Unable to load MF underlying breakdown right now.</div>';
           return;
         }
         const payload = await response.json();
-        mfUnderlyingsCachedPayload = payload;
+        mfUnderlyingsCachedPayloadByTone[tone] = payload;
+        mfUnderlyingsLoadedByTone[tone] = true;
         if (payload.error) {
           host.innerHTML = '<div class="alert warning">' + escapeHtml(payload.error) + '</div>';
           return;
         }
+        if (currentMfUnderlyingTone() !== tone) {
+          return;
+        }
         renderMfUnderlyingBreakdownPayload(host, payload);
-        mfUnderlyingsLoaded = true;
         syncCsvActionState();
       } catch (_err) {
         host.innerHTML = '<div class="card empty">Unable to load MF underlying breakdown right now.</div>';
       } finally {
         mfUnderlyingsLoading = false;
+        const latestTone = currentMfUnderlyingTone();
+        if (latestTone !== tone && !mfUnderlyingsCachedPayloadByTone[latestTone]) {
+          loadMfUnderlyingBreakdown();
+        }
       }
     }
 
@@ -2543,7 +2559,10 @@
         ensureMfClientCacheDay();
         mfHoldingsLoaded = !!mfHoldingsCachedPayload;
         mfHoldingsLoading = false;
-        mfUnderlyingsLoaded = !!mfUnderlyingsCachedPayload;
+        mfUnderlyingsLoadedByTone = {};
+        Object.keys(mfUnderlyingsCachedPayloadByTone).forEach(function (tone) {
+          mfUnderlyingsLoadedByTone[tone] = true;
+        });
         mfUnderlyingsLoading = false;
         mfPrefetchScheduled = false;
         if (mfHoldingsCachedPayload) {

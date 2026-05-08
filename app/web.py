@@ -165,7 +165,7 @@ _QUOTE_CACHE: dict[str, dict[str, Any]] = {}
 _MF_CACHE_LOCK = threading.Lock()
 _MF_CACHE_DAY = ""
 _MF_HOLDINGS_CACHE_PAYLOAD: dict[str, Any] | None = None
-_MF_UNDERLYINGS_CACHE_PAYLOAD: dict[str, Any] | None = None
+_MF_UNDERLYINGS_CACHE_PAYLOADS: dict[str, dict[str, Any]] = {}
 
 DASHBOARD_HOST = "127.0.0.1"
 DASHBOARD_PORT = 5000
@@ -579,13 +579,13 @@ def _get_cached_profile(kite) -> dict[str, Any]:
 
 def _get_cached_mf_holdings_payload(kite) -> dict[str, Any]:
     """Return MF holdings payload cached for the current day."""
-    global _MF_CACHE_DAY, _MF_HOLDINGS_CACHE_PAYLOAD, _MF_UNDERLYINGS_CACHE_PAYLOAD
+    global _MF_CACHE_DAY, _MF_HOLDINGS_CACHE_PAYLOAD, _MF_UNDERLYINGS_CACHE_PAYLOADS
     day = _today_cache_token()
     with _MF_CACHE_LOCK:
         if _MF_CACHE_DAY != day:
             _MF_CACHE_DAY = day
             _MF_HOLDINGS_CACHE_PAYLOAD = None
-            _MF_UNDERLYINGS_CACHE_PAYLOAD = None
+            _MF_UNDERLYINGS_CACHE_PAYLOADS = {}
         if _MF_HOLDINGS_CACHE_PAYLOAD is not None:
             return dict(_MF_HOLDINGS_CACHE_PAYLOAD)
 
@@ -623,16 +623,35 @@ def _get_cached_mf_holdings_payload(kite) -> dict[str, Any]:
     return payload
 
 
-def _get_cached_mf_underlyings_payload(kite) -> dict[str, Any]:
+def _normalize_mf_underlying_tone(tone: str) -> str:
+    value = str(tone or "").strip().lower()
+    if value in {"gainers", "losers"}:
+        return value
+    return "all"
+
+
+def _filter_mf_holdings_by_tone(
+    rows: list[dict[str, Any]], tone: str
+) -> list[dict[str, Any]]:
+    if tone == "gainers":
+        return [row for row in rows if float(row.get("pnl") or 0.0) > 0.0]
+    if tone == "losers":
+        return [row for row in rows if float(row.get("pnl") or 0.0) < 0.0]
+    return rows
+
+
+def _get_cached_mf_underlyings_payload(kite, *, tone: str = "all") -> dict[str, Any]:
     """Return MF underlyings payload cached for the current day."""
-    global _MF_CACHE_DAY, _MF_UNDERLYINGS_CACHE_PAYLOAD
+    global _MF_CACHE_DAY, _MF_UNDERLYINGS_CACHE_PAYLOADS
+    tone_key = _normalize_mf_underlying_tone(tone)
     day = _today_cache_token()
     with _MF_CACHE_LOCK:
         if _MF_CACHE_DAY != day:
             _MF_CACHE_DAY = day
-            _MF_UNDERLYINGS_CACHE_PAYLOAD = None
-        if _MF_UNDERLYINGS_CACHE_PAYLOAD is not None:
-            return dict(_MF_UNDERLYINGS_CACHE_PAYLOAD)
+            _MF_UNDERLYINGS_CACHE_PAYLOADS = {}
+        cached = _MF_UNDERLYINGS_CACHE_PAYLOADS.get(tone_key)
+        if cached is not None:
+            return dict(cached)
 
     holdings_payload = _get_cached_mf_holdings_payload(kite)
     if holdings_payload.get("error"):
@@ -646,6 +665,7 @@ def _get_cached_mf_underlyings_payload(kite) -> dict[str, Any]:
         }
     else:
         mf_holdings = list(holdings_payload.get("rows") or [])
+        mf_holdings = _filter_mf_holdings_by_tone(mf_holdings, tone_key)
         rows, month, missing_funds, aggregated_count, total_count = _build_mf_underlying_breakdown(
             mf_holdings
         )
@@ -655,12 +675,13 @@ def _get_cached_mf_underlyings_payload(kite) -> dict[str, Any]:
             "notAggregatedFunds": missing_funds,
             "aggregatedFundCount": aggregated_count,
             "totalFundCount": total_count,
+            "tone": tone_key,
             "error": "",
         }
 
     with _MF_CACHE_LOCK:
         if _MF_CACHE_DAY == day:
-            _MF_UNDERLYINGS_CACHE_PAYLOAD = dict(payload)
+            _MF_UNDERLYINGS_CACHE_PAYLOADS[tone_key] = dict(payload)
     return payload
 
 
@@ -1235,7 +1256,10 @@ async def dashboard(request: Request):
 
 
 @app.get("/dashboard/mf-underlyings")
-async def dashboard_mf_underlyings(request: Request) -> JSONResponse:
+async def dashboard_mf_underlyings(
+    request: Request,
+    tone: str = "all",
+) -> JSONResponse:
     """Return MF underlying aggregation as JSON (loaded lazily by the UI)."""
     if not _restore_session_if_token_valid(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -1246,7 +1270,7 @@ async def dashboard_mf_underlyings(request: Request) -> JSONResponse:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
 
     try:
-        payload = _get_cached_mf_underlyings_payload(kite)
+        payload = _get_cached_mf_underlyings_payload(kite, tone=tone)
     except TokenException:
         request.session.clear()
         live_price_stream.close()
