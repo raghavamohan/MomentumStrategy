@@ -76,12 +76,12 @@ from kiteconnect.exceptions import (
 
 from app.auth import get_kite_client
 from app.instruments import (
-    get_cash_equity_industry_lookups,
+    get_cash_equity_kite_sector_lookups,
     get_cash_equity_isin_lookups,
     get_cash_equity_name_lookups,
     get_isin_to_industry,
     get_nse_symbol_to_industry,
-    resolve_equity_industry,
+    resolve_equity_sector,
     symbol_with_company_name,
 )
 
@@ -133,8 +133,8 @@ def _row(
     holding: dict,
     token_to_name: dict[int, str],
     symbol_to_name: dict[tuple[str, str], str],
-    token_to_industry: dict[int, str],
-    symbol_to_industry: dict[tuple[str, str], str],
+    token_to_kite_sector: dict[int, str],
+    symbol_to_kite_sector: dict[tuple[str, str], str],
     nse_symbol_to_industry: dict[str, str],
     isin_to_industry: dict[str, str],
     token_to_isin: dict[int, str],
@@ -162,22 +162,27 @@ def _row(
         token_to_name=token_to_name,
         symbol_to_name=symbol_to_name,
     )
-    industry = resolve_equity_industry(
+    sector = _normalize_equity_sector(
+        str(holding.get("tradingsymbol", "")),
+        resolve_equity_sector(
         symbol=str(holding.get("tradingsymbol", "")),
         exchange=str(holding.get("exchange", "")),
         instrument_token=int(holding.get("instrument_token") or 0),
-        token_to_industry=token_to_industry,
-        symbol_to_industry=symbol_to_industry,
+        token_to_name=token_to_name,
+        symbol_to_name=symbol_to_name,
+        token_to_kite_sector=token_to_kite_sector,
+        symbol_to_kite_sector=symbol_to_kite_sector,
         nse_symbol_to_industry=nse_symbol_to_industry,
         isin_to_industry=isin_to_industry,
         token_to_isin=token_to_isin,
         symbol_to_isin=symbol_to_isin,
+        ),
     )
-    ind_disp = industry if industry else "—"
+    sector_disp = sector if sector else "—"
 
     return [
         symbol_label,
-        ind_disp,
+        sector_disp,
         quantity,
         avg_price,
         last_price,
@@ -186,6 +191,57 @@ def _row(
         pnl,
         day_change_pct,
     ]
+
+
+def _normalize_equity_sector(symbol: str, sector: str) -> str:
+    """Normalize sector labels and classify selected ETFs explicitly."""
+    compact = "".join(ch for ch in symbol.upper() if ch.isalnum())
+    if compact in {"GOLDBEES", "GOLDETF", "GOLDSHARE"}:
+        return "Gold"
+    if compact in {"LIQUIDBEES", "LIQUIDBESS", "LIQUIDETF"}:
+        return "Debt"
+    return (sector or "").strip() or "Uncategorized"
+
+
+def _summarise_equity_by_sector(rows: list[list]) -> list[dict[str, float | str]]:
+    """Aggregate holdings rows by sector and sort by invested descending."""
+    bucket: dict[str, dict[str, float | str]] = {}
+    for row in rows:
+        sector = str(row[1] or "Uncategorized").strip() or "Uncategorized"
+        entry = bucket.setdefault(
+            sector,
+            {"sector": sector, "invested": 0.0, "current": 0.0, "pnl": 0.0},
+        )
+        entry["invested"] = float(entry["invested"]) + float(row[5] or 0.0)
+        entry["current"] = float(entry["current"]) + float(row[6] or 0.0)
+        entry["pnl"] = float(entry["pnl"]) + float(row[7] or 0.0)
+    return sorted(
+        bucket.values(),
+        key=lambda r: float(r["invested"]),
+        reverse=True,
+    )
+
+
+def _split_top_level_allocations(
+    sector_rows: list[dict[str, float | str]],
+) -> list[dict[str, float | str]]:
+    """Return Debt/Gold/Equity grouped allocation rows."""
+    debt = {"sector": "Debt", "invested": 0.0, "current": 0.0, "pnl": 0.0}
+    gold = {"sector": "Gold", "invested": 0.0, "current": 0.0, "pnl": 0.0}
+    equity = {"sector": "Equity", "invested": 0.0, "current": 0.0, "pnl": 0.0}
+
+    for row in sector_rows:
+        key = str(row["sector"]).strip().lower()
+        if key == "debt":
+            debt = row
+        elif key == "gold":
+            gold = row
+        else:
+            equity["invested"] = float(equity["invested"]) + float(row["invested"])
+            equity["current"] = float(equity["current"]) + float(row["current"])
+            equity["pnl"] = float(equity["pnl"]) + float(row["pnl"])
+
+    return [debt, gold, equity]
 
 
 def _print_holdings(kite) -> tuple[float, float, float]:
@@ -210,7 +266,7 @@ def _print_holdings(kite) -> tuple[float, float, float]:
         return (0.0, 0.0, 0.0)
 
     token_to_name, symbol_to_name = get_cash_equity_name_lookups(kite)
-    token_to_industry, symbol_to_industry = get_cash_equity_industry_lookups(kite)
+    token_to_kite_sector, symbol_to_kite_sector = get_cash_equity_kite_sector_lookups(kite)
     token_to_isin, symbol_to_isin = get_cash_equity_isin_lookups(kite)
     nse_symbol_to_industry = get_nse_symbol_to_industry()
     isin_to_industry = get_isin_to_industry()
@@ -219,8 +275,8 @@ def _print_holdings(kite) -> tuple[float, float, float]:
             h,
             token_to_name,
             symbol_to_name,
-            token_to_industry,
-            symbol_to_industry,
+            token_to_kite_sector,
+            symbol_to_kite_sector,
             nse_symbol_to_industry,
             isin_to_industry,
             token_to_isin,
@@ -232,7 +288,7 @@ def _print_holdings(kite) -> tuple[float, float, float]:
 
     headers = [
         "Symbol",
-        "Industry",
+        "Sector",
         "Qty",
         "Avg",
         "LTP",
@@ -271,6 +327,48 @@ def _print_holdings(kite) -> tuple[float, float, float]:
     print(f"Invested: {total_invested:>14,.2f}")
     print(f"Current : {total_current:>14,.2f}")
     print(f"P&L     : {total_pnl:>14,.2f}")
+
+    sector_rows = _summarise_equity_by_sector(rows)
+    top_level = _split_top_level_allocations(sector_rows)
+
+    print()
+    print("Sector-wise Allocation (Debt / Gold / Equity):")
+    print(
+        tabulate(
+            [
+                [
+                    str(r["sector"]),
+                    float(r["current"]),
+                    (float(r["current"]) / total_current * 100.0) if total_current > 0 else 0.0,
+                    float(r["pnl"]),
+                ]
+                for r in top_level
+            ],
+            headers=["Bucket", "Current", "Weight %", "P&L"],
+            tablefmt="github",
+            floatfmt=("", ",.2f", ",.2f", ",.2f"),
+        )
+    )
+
+    print()
+    print("Sector-wise Summary (all sectors):")
+    print(
+        tabulate(
+            [
+                [
+                    str(r["sector"]),
+                    float(r["invested"]),
+                    float(r["current"]),
+                    (float(r["current"]) / total_current * 100.0) if total_current > 0 else 0.0,
+                    float(r["pnl"]),
+                ]
+                for r in sector_rows
+            ],
+            headers=["Sector", "Invested", "Current", "Weight %", "P&L"],
+            tablefmt="github",
+            floatfmt=("", ",.2f", ",.2f", ",.2f", ",.2f"),
+        )
+    )
     return (total_invested, total_current, total_pnl)
 
 
@@ -435,8 +533,8 @@ def _position_row(
     position: dict,
     token_to_name: dict[int, str],
     symbol_to_name: dict[tuple[str, str], str],
-    token_to_industry: dict[int, str],
-    symbol_to_industry: dict[tuple[str, str], str],
+    token_to_kite_sector: dict[int, str],
+    symbol_to_kite_sector: dict[tuple[str, str], str],
     nse_symbol_to_industry: dict[str, str],
     isin_to_industry: dict[str, str],
     token_to_isin: dict[int, str],
@@ -480,18 +578,23 @@ def _position_row(
     )
     exch = str(position.get("exchange", ""))
     if exch in EQUITY_EXCHANGES:
-        industry = resolve_equity_industry(
+        sector = _normalize_equity_sector(
+            str(position.get("tradingsymbol", "")),
+            resolve_equity_sector(
             symbol=str(position.get("tradingsymbol", "")),
             exchange=exch,
             instrument_token=int(position.get("instrument_token") or 0),
-            token_to_industry=token_to_industry,
-            symbol_to_industry=symbol_to_industry,
+            token_to_name=token_to_name,
+            symbol_to_name=symbol_to_name,
+            token_to_kite_sector=token_to_kite_sector,
+            symbol_to_kite_sector=symbol_to_kite_sector,
             nse_symbol_to_industry=nse_symbol_to_industry,
             isin_to_industry=isin_to_industry,
             token_to_isin=token_to_isin,
             symbol_to_isin=symbol_to_isin,
+            ),
         )
-        ind_disp = industry if industry else "—"
+        ind_disp = sector if sector else "—"
     else:
         ind_disp = "—"
     return [
@@ -512,8 +615,8 @@ def _print_position_table(
     positions: list[dict],
     token_to_name: dict[int, str],
     symbol_to_name: dict[tuple[str, str], str],
-    token_to_industry: dict[int, str],
-    symbol_to_industry: dict[tuple[str, str], str],
+    token_to_kite_sector: dict[int, str],
+    symbol_to_kite_sector: dict[tuple[str, str], str],
     nse_symbol_to_industry: dict[str, str],
     isin_to_industry: dict[str, str],
     token_to_isin: dict[int, str],
@@ -532,8 +635,8 @@ def _print_position_table(
             p,
             token_to_name,
             symbol_to_name,
-            token_to_industry,
-            symbol_to_industry,
+            token_to_kite_sector,
+            symbol_to_kite_sector,
             nse_symbol_to_industry,
             isin_to_industry,
             token_to_isin,
@@ -589,7 +692,7 @@ def _print_positions(kite) -> float:
 
     open_positions = [p for p in net_positions if int(p.get("quantity") or 0) != 0]
     token_to_name, symbol_to_name = get_cash_equity_name_lookups(kite)
-    token_to_industry, symbol_to_industry = get_cash_equity_industry_lookups(kite)
+    token_to_kite_sector, symbol_to_kite_sector = get_cash_equity_kite_sector_lookups(kite)
     token_to_isin, symbol_to_isin = get_cash_equity_isin_lookups(kite)
     nse_symbol_to_industry = get_nse_symbol_to_industry()
     isin_to_industry = get_isin_to_industry()
@@ -605,8 +708,8 @@ def _print_positions(kite) -> float:
     common_kw = dict(
         token_to_name=token_to_name,
         symbol_to_name=symbol_to_name,
-        token_to_industry=token_to_industry,
-        symbol_to_industry=symbol_to_industry,
+        token_to_kite_sector=token_to_kite_sector,
+        symbol_to_kite_sector=symbol_to_kite_sector,
         nse_symbol_to_industry=nse_symbol_to_industry,
         isin_to_industry=isin_to_industry,
         token_to_isin=token_to_isin,
