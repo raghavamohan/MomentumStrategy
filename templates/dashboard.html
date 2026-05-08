@@ -98,8 +98,8 @@
       <div class="dashboard-main">
         <section class="section-panel" data-section-panel="profile">
           <div class="card">
-            <h2 style="margin-top: 0;">User Profile</h2>
-            <p style="color: var(--muted); margin-top: 0;">
+            <h2 class="heading-reset-top heading-gap-md">User Profile</h2>
+            <p class="text-muted text-reset-top">
               Profile details are fetched from your authenticated Kite account session.
             </p>
             <div class="meta-list">
@@ -181,14 +181,14 @@
       </div>
       <div class="equity-breakdown-grid">
         <div class="card">
-          <h3 style="margin: 0 0 8px; text-align: center;">Allocation Overview</h3>
+          <h3 class="chart-card-title">Allocation Overview</h3>
           <div id="equity-top-level-chart" class="pie-panel"></div>
         </div>
         <div class="card">
-          <h3 style="margin: 0 0 8px; text-align: center;">Equity Subsector Split</h3>
+          <h3 class="chart-card-title">Equity Subsector Split</h3>
           <div id="equity-subsector-chart" class="pie-panel"></div>
         </div>
-        <div class="card" style="padding: 0; overflow: hidden;">
+        <div class="card card-table">
           <table data-table-sort-key="equity-sector-summary" data-default-sort-col="1" data-default-sort-type="inr">
             <thead>
               <tr>
@@ -237,7 +237,7 @@
           <span class="toolbar-meta" id="equity-filter-summary"></span>
         </div>
       </div>
-      <div class="card" style="padding: 0; overflow: hidden;">
+      <div class="card card-table">
         <table data-table-sort-key="equity-holdings" data-default-sort-col="5" data-default-sort-type="inr">
           <thead>
             <tr>
@@ -306,7 +306,7 @@
     <div id="mf-holdings-block">
       <div class="card empty">Open this tab to load mutual fund holdings.</div>
     </div>
-    <div id="mf-underlying-breakdown-block" style="margin-top: 16px;">
+    <div id="mf-underlying-breakdown-block" class="stack-gap-md">
       <div class="card empty">Underlying breakdown loads after MF holdings are available.</div>
     </div>
     </section>
@@ -332,7 +332,7 @@
           </div>
         </div>
       </div>
-      <div class="card" style="padding: 0; overflow: hidden;">
+      <div class="card card-table">
         <table data-table-sort-key="positions-equity">
           <thead>
             <tr>
@@ -413,7 +413,7 @@
           </div>
         </div>
       </div>
-      <div class="card" style="padding: 0; overflow: hidden;">
+      <div class="card card-table">
         <table data-table-sort-key="positions-fno">
           <thead>
             <tr>
@@ -496,7 +496,7 @@
 
         <section class="section-panel" data-section-panel="watchlist">
           {% if watch_list %}
-            <div class="card" style="padding: 0; overflow: hidden;">
+            <div class="card card-table">
               <table data-table-sort-key="watch-list" data-default-sort-col="4" data-default-sort-type="pct">
                 <thead>
                   <tr>
@@ -1681,14 +1681,14 @@
         const color = colors[idx % colors.length];
         legend +=
           '<li class="pie-legend-item">' +
-          '<span class="pie-dot" style="background:' + color + ';"></span>' +
+          '<span class="pie-dot" data-dot-color="' + color + '"></span>' +
           '<span class="pie-label">' + escapeHtml(String(row.sector || '-')) + '</span>' +
           '<span class="pie-val">' + formatInr(value) + ' (' + formatPct(pct) + ')' + '</span>' +
           '</li>';
       });
       return (
         '<div class="pie-wrap">' +
-        '<div class="pie-chart pie-chart--donut" style="' + pieStyle + '">' +
+        '<div class="pie-chart pie-chart--donut" data-pie-style="' + pieStyle + '">' +
         '<div class="pie-center-label">' +
         '<div class="pie-center-title">' + escapeHtml(String(centerTitle || 'Total')) + '</div>' +
         '<div class="pie-center-value">' + formatInr(total) + '</div>' +
@@ -1742,6 +1742,24 @@
       }
     }
 
+    function applyDynamicTemplateStyles(root) {
+      if (!root) {
+        return;
+      }
+      root.querySelectorAll('.pie-dot[data-dot-color]').forEach(function (dotEl) {
+        const color = dotEl.getAttribute('data-dot-color');
+        if (color) {
+          dotEl.style.background = color;
+        }
+      });
+      root.querySelectorAll('.pie-chart[data-pie-style]').forEach(function (pieEl) {
+        const pieStyle = pieEl.getAttribute('data-pie-style');
+        if (pieStyle) {
+          pieEl.setAttribute('style', pieStyle);
+        }
+      });
+    }
+
     function recalcEquitySectorSummary() {
       const sectors = collectSectorStats();
       const grouped = splitTopLevelBuckets(sectors);
@@ -1756,6 +1774,7 @@
       const topChart = document.getElementById('equity-top-level-chart');
       if (topChart) {
         topChart.innerHTML = buildDonutPanelHtml(topLevelRows, ['#6366f1', '#f59e0b', '#10b981'], 'Debt + Gold + Equity');
+        applyDynamicTemplateStyles(topChart);
       }
 
       const subsectorChart = document.getElementById('equity-subsector-chart');
@@ -1765,6 +1784,7 @@
           ['#38bdf8', '#22d3ee', '#818cf8', '#a78bfa', '#34d399', '#fbbf24', '#f87171', '#fb7185'],
           'Top 5 Subsectors'
         );
+        applyDynamicTemplateStyles(subsectorChart);
       }
 
       const tbody = document.getElementById('equity-subsector-summary-body');
@@ -1989,7 +2009,7 @@
       host.innerHTML =
         summaryHtml +
         toolbarHtml +
-        '<div class="card" style="padding: 0; overflow: hidden;">' +
+        '<div class="card card-table">' +
         '<table data-table-sort-key="mf-holdings" data-default-sort-col="5" data-default-sort-type="inr">' +
         '<thead><tr>' +
         '<th class="sortable" scope="col"><button type="button" class="th-sort" data-sort-type="text">Fund <span class="sort-ind" aria-hidden="true"></span></button></th>' +
@@ -2086,7 +2106,7 @@
               .join('')
           : (
               '<tr>' +
-              '<td colspan="3" class="empty" style="text-align: left;">' +
+              '<td colspan="3" class="empty empty-left">' +
               'Underlying holdings are unavailable on mfdata.in for the current MF set.' +
               '</td>' +
               '</tr>'
@@ -2115,13 +2135,13 @@
           })
           .join('');
         host.innerHTML =
-          '<div style="display: grid; grid-template-columns: minmax(260px, 32%) minmax(0, 68%); gap: 12px; align-items: stretch;">' +
-          '<div class="card" style="overflow: hidden;">' +
-          '<h3 style="margin: 0 0 8px; text-align: center;">Underlying Sector Split</h3>' +
+          '<div class="split-layout">' +
+          '<div class="card card-overflow-hidden">' +
+          '<h3 class="chart-card-title">Underlying Sector Split</h3>' +
           pieHtml +
           '</div>' +
-          '<div class="card" style="padding: 0; overflow: hidden;">' +
-          '<div class="equity-toolbar" style="margin: 0; border-radius: 0;">' +
+          '<div class="card card-table">' +
+          '<div class="equity-toolbar equity-toolbar--flush">' +
           '<div class="toolbar-group">' +
           '<span class="toolbar-label">Sector filter</span>' +
           '<select id="mf-underlying-sector-filter" aria-label="Filter underlyings by sector">' +
@@ -2142,11 +2162,12 @@
           '</table>' +
           '</div>' +
           '</div>' +
-          '<div class="alert" style="margin-top: 12px;">' +
+          '<div class="alert alert-top-gap">' +
           'Combined from mutual fund underlyings available on mfdata.in' + monthText + '. ' +
           'Aggregated funds: ' + aggregated + ' / ' + total + '.' +
           missingText +
           '</div>';
+        applyDynamicTemplateStyles(host);
         applyInitialTableSorts();
         applyMfUnderlyingSectorFilter();
         mfUnderlyingsLoaded = true;
@@ -2194,7 +2215,7 @@
               .join('')
           : (
               '<tr>' +
-              '<td colspan="3" class="empty" style="text-align: left;">' +
+              '<td colspan="3" class="empty empty-left">' +
               'Underlying holdings are unavailable on mfdata.in for the current MF set.' +
               '</td>' +
               '</tr>'
@@ -2223,13 +2244,13 @@
           })
           .join('');
         host.innerHTML =
-          '<div style="display: grid; grid-template-columns: minmax(260px, 32%) minmax(0, 68%); gap: 12px; align-items: stretch;">' +
-          '<div class="card" style="overflow: hidden;">' +
-          '<h3 style="margin: 0 0 8px; text-align: center;">Underlying Sector Split</h3>' +
+          '<div class="split-layout">' +
+          '<div class="card card-overflow-hidden">' +
+          '<h3 class="chart-card-title">Underlying Sector Split</h3>' +
           pieHtml +
           '</div>' +
-          '<div class="card" style="padding: 0; overflow: hidden;">' +
-          '<div class="equity-toolbar" style="margin: 0; border-radius: 0;">' +
+          '<div class="card card-table">' +
+          '<div class="equity-toolbar equity-toolbar--flush">' +
           '<div class="toolbar-group">' +
           '<span class="toolbar-label">Sector filter</span>' +
           '<select id="mf-underlying-sector-filter" aria-label="Filter underlyings by sector">' +
@@ -2250,11 +2271,12 @@
           '</table>' +
           '</div>' +
           '</div>' +
-          '<div class="alert" style="margin-top: 12px;">' +
+          '<div class="alert alert-top-gap">' +
           'Combined from mutual fund underlyings available on mfdata.in' + monthText + '. ' +
           'Aggregated funds: ' + aggregated + ' / ' + total + '.' +
           missingText +
           '</div>';
+        applyDynamicTemplateStyles(host);
         applyInitialTableSorts();
         applyMfUnderlyingSectorFilter();
         mfUnderlyingsLoaded = true;

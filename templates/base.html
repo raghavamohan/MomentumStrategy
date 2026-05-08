@@ -313,9 +313,16 @@
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: var(--radius-md);
-      padding: 18px;
+      padding: 16px;
       margin-bottom: 16px;
       box-shadow: var(--shadow-card);
+    }
+    .card-table {
+      padding: 0;
+      overflow: hidden;
+    }
+    .card-overflow-hidden {
+      overflow: hidden;
     }
 
     .dashboard-shell {
@@ -365,11 +372,9 @@
       color: #d9e7ff;
       font-weight: 600;
     }
-    .section-context {
-      margin-bottom: 12px;
-    }
+    .section-context { margin-bottom: 12px; }
     .section-title {
-      margin: 0 0 4px;
+      margin: 0 0 12px;
       font-size: 20px;
       letter-spacing: -0.01em;
     }
@@ -380,6 +385,18 @@
     }
     .section-panel { display: none; }
     .section-panel.active { display: block; }
+    .heading-reset-top {
+      margin-top: 0;
+    }
+    .heading-gap-md {
+      margin-bottom: 16px;
+    }
+    .text-muted {
+      color: var(--muted);
+    }
+    .text-reset-top {
+      margin-top: 0;
+    }
     .meta-list {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -587,6 +604,10 @@
       padding: 12px 14px;
       margin-bottom: 12px;
     }
+    .equity-toolbar--flush {
+      margin: 0;
+      border-radius: 0;
+    }
     .toolbar-group {
       display: flex;
       flex-wrap: wrap;
@@ -675,6 +696,16 @@
       grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 12px;
       margin-bottom: 12px;
+      align-items: stretch;
+    }
+    .chart-card-title {
+      margin: 0 0 12px;
+      text-align: center;
+    }
+    .split-layout {
+      display: grid;
+      grid-template-columns: minmax(260px, 32%) minmax(0, 68%);
+      gap: 12px;
       align-items: stretch;
     }
     .pie-panel {
@@ -803,6 +834,19 @@
       padding: 24px;
       text-align: center;
       font-style: italic;
+    }
+    .empty-left {
+      text-align: left;
+    }
+    .alert-top-gap {
+      margin-top: 12px;
+    }
+    .stack-gap-md {
+      margin-top: 16px;
+    }
+    .helper-note {
+      margin-top: 24px;
+      font-size: 12px;
     }
 
     .login-card {
