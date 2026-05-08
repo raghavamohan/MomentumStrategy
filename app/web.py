@@ -124,6 +124,7 @@ from app.instruments import (
     get_cash_equity_isin_lookups,
     get_cash_equity_kite_sector_lookups,
     get_cash_equity_name_lookups,
+    get_reference_cache_debug_snapshot,
     get_isin_to_industry,
     get_nifty50_symbols,
     get_nse_symbol_to_industry,
@@ -997,7 +998,7 @@ def _dashboard_timing_mark(
 
 
 def _start_reference_cache_warmup() -> None:
-    """Warm heavy instrument/NSE caches in background when a token is available."""
+    """Warm/refresh reference caches in background on server startup."""
     global _REFERENCE_WARMUP_IN_PROGRESS
     with _REFERENCE_WARMUP_LOCK:
         if _REFERENCE_WARMUP_IN_PROGRESS:
@@ -1008,13 +1009,15 @@ def _start_reference_cache_warmup() -> None:
         global _REFERENCE_WARMUP_IN_PROGRESS
         try:
             token = load_cached_access_token()
-            if not token:
-                return
-            api_key, _ = load_credentials()
-            kite = build_authenticated_client(api_key, token)
-            if not validate_kite_session(kite):
-                return
-            warm_reference_caches(kite)
+            kite = None
+            if token:
+                api_key, _ = load_credentials()
+                candidate = build_authenticated_client(api_key, token)
+                if validate_kite_session(candidate):
+                    kite = candidate
+            # Warm NSE/Nifty references regardless of auth state, and force
+            # background refresh jobs so startup doesn't wait for first request.
+            warm_reference_caches(kite, force_refresh=True)
         except Exception as exc:
             logger.info("Reference cache warmup skipped/failed: %s", exc)
         finally:
@@ -1281,14 +1284,22 @@ async def dashboard(request: Request):
     index_quotes_bootstrap: list[dict[str, Any]] = []
 
     equity_token_to_name, equity_symbol_to_name = get_cash_equity_name_lookups(kite)
+    _dashboard_timing_mark(timings, "lookup_cash_equity_names", request_start)
     equity_token_to_kite_sector, equity_symbol_to_kite_sector = (
         get_cash_equity_kite_sector_lookups(kite)
     )
+    _dashboard_timing_mark(timings, "lookup_cash_equity_kite_sectors", request_start)
     equity_token_to_isin, equity_symbol_to_isin = get_cash_equity_isin_lookups(kite)
+    _dashboard_timing_mark(timings, "lookup_cash_equity_isin", request_start)
     nse_symbol_to_industry = get_nse_symbol_to_industry()
+    _dashboard_timing_mark(timings, "lookup_nse_symbol_industry", request_start)
     isin_to_industry = get_isin_to_industry()
+    _dashboard_timing_mark(timings, "lookup_isin_industry", request_start)
     nse_symbol_to_token = get_nse_symbol_to_token_lookup(kite)
+    _dashboard_timing_mark(timings, "lookup_nse_symbol_token", request_start)
     nifty50_symbols = get_nifty50_symbols()
+    _dashboard_timing_mark(timings, "lookup_nifty50_symbols", request_start)
+    reference_cache_debug = get_reference_cache_debug_snapshot()
     _dashboard_timing_mark(timings, "instrument_and_reference_lookups", request_start)
     watch_quote_keys = [f"NSE:{sym}" for sym in nifty50_symbols]
     watch_tokens = {
@@ -1558,8 +1569,26 @@ async def dashboard(request: Request):
     _dashboard_timing_mark(timings, "context_build", request_start)
     total_ms = (time.perf_counter() - request_start) * 1000.0
     timings_str = ", ".join(f"{name}={ms:.1f}ms" for name, ms in timings)
-    logger.info("dashboard timing total=%.1fms | %s", total_ms, timings_str)
-    _DASHBOARD_TIMING_LOGGER.info("dashboard timing total=%.1fms | %s", total_ms, timings_str)
+    reference_cache_str = ", ".join(
+        (
+            f"{name}:source={meta.get('source','unknown')}"
+            f"/expires_in_ms={float(meta.get('expires_in_ms') or 0.0):.1f}"
+            f"/refreshing={bool(meta.get('refresh_in_progress'))}"
+        )
+        for name, meta in reference_cache_debug.items()
+    )
+    logger.info(
+        "dashboard timing total=%.1fms | %s | reference_cache=%s",
+        total_ms,
+        timings_str,
+        reference_cache_str,
+    )
+    _DASHBOARD_TIMING_LOGGER.info(
+        "dashboard timing total=%.1fms | %s | reference_cache=%s",
+        total_ms,
+        timings_str,
+        reference_cache_str,
+    )
     return templates.TemplateResponse(request, "dashboard.html", context)
 
 

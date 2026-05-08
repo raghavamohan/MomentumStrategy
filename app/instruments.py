@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import csv
 import io
+import json
+import os
 import threading
 import time
 from typing import Any
@@ -17,10 +19,13 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 import logging
+from dotenv import load_dotenv
 
 
 EQUITY_EXCHANGES = ("NSE", "BSE")
-_CACHE_TTL_SECONDS = 60 * 60
+_DEFAULT_REFERENCE_CACHE_TTL_SECONDS = 24 * 60 * 60
+_REFERENCE_CACHE_TTL_SECONDS = _DEFAULT_REFERENCE_CACHE_TTL_SECONDS
+_CACHE_TTL_SECONDS = _REFERENCE_CACHE_TTL_SECONDS
 _CACHE_LOCK = threading.Lock()
 _CACHE_EXPIRES_AT = 0.0
 _CACHED_TOKEN_TO_NAME: dict[int, str] = {}
@@ -45,8 +50,8 @@ _NSE_INDUSTRY_CSV_URLS: tuple[str, ...] = (
     "https://nsearchives.nseindia.com/content/indices/ind_niftylargemidcap250list.csv",
     "https://nsearchives.nseindia.com/content/indices/ind_niftymidsmallcap400list.csv",
 )
-# NSE CSV downloads are relatively expensive; keep these lookups warm longer.
-_NIFTY50_CACHE_TTL_SECONDS = 12 * 60 * 60
+# Keep NSE-reference lookups aligned with the shared reference-cache TTL.
+_NIFTY50_CACHE_TTL_SECONDS = _REFERENCE_CACHE_TTL_SECONDS
 _NIFTY50_CACHE_EXPIRES_AT = 0.0
 _CACHED_NIFTY50_SYMBOLS: list[str] = []
 _NSE_MERGED_INDUSTRY_EXPIRES_AT = 0.0
@@ -78,15 +83,160 @@ _YFINANCE_REFRESH_THREAD_STARTED = False
 _YFINANCE_SYMBOL_REFRESH_IN_PROGRESS: set[tuple[str, str]] = set()
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(_PROJECT_ROOT / ".env")
+try:
+    _REFERENCE_CACHE_TTL_SECONDS = max(
+        60,
+        int(
+            float(
+                os.getenv(
+                    "REFERENCE_CACHE_TTL_SECONDS",
+                    str(_DEFAULT_REFERENCE_CACHE_TTL_SECONDS),
+                )
+                or str(_DEFAULT_REFERENCE_CACHE_TTL_SECONDS)
+            )
+        ),
+    )
+except ValueError:
+    _REFERENCE_CACHE_TTL_SECONDS = _DEFAULT_REFERENCE_CACHE_TTL_SECONDS
+_CACHE_TTL_SECONDS = _REFERENCE_CACHE_TTL_SECONDS
+_NIFTY50_CACHE_TTL_SECONDS = _REFERENCE_CACHE_TTL_SECONDS
 _YFINANCE_CACHE_DIR = _PROJECT_ROOT / ".cache"
 _YFINANCE_CACHE_FILE = _YFINANCE_CACHE_DIR / "yfinance_industry_cache.json"
+_REFERENCE_CACHE_FILE = _YFINANCE_CACHE_DIR / "reference_data_cache.json"
 _YFINANCE_CACHE_REFRESH_DAYS = 30.0
 
 _YFINANCE_CACHE_LAST_REFRESH_EPOCH = 0.0
+_REFERENCE_DISK_CACHE_LOADED = False
+_REFERENCE_DISK_CACHE: dict[str, Any] = {}
+_REFERENCE_DISK_CACHE_DIRTY = False
+
+_CASH_EQUITY_REFRESH_IN_PROGRESS = False
+_NSE_MERGED_REFRESH_IN_PROGRESS = False
+_NIFTY50_REFRESH_IN_PROGRESS = False
+_REFERENCE_CACHE_LAST_SOURCE: dict[str, str] = {
+    "cash_equity": "unknown",
+    "nse_merged_industry": "unknown",
+    "nifty50_symbols": "unknown",
+}
 
 
 def _yfinance_cache_key(exchange: str, symbol: str) -> tuple[str, str]:
     return (exchange.upper().strip(), _normalise_symbol(symbol))
+
+
+def _prepare_reference_disk_cache_unlocked() -> None:
+    """Load shared reference cache file lazily (expects _CACHE_LOCK held)."""
+    global _REFERENCE_DISK_CACHE_LOADED, _REFERENCE_DISK_CACHE
+    if _REFERENCE_DISK_CACHE_LOADED:
+        return
+    _YFINANCE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    if _REFERENCE_CACHE_FILE.exists():
+        try:
+            loaded = json.loads(_REFERENCE_CACHE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            loaded = {}
+        if isinstance(loaded, dict):
+            _REFERENCE_DISK_CACHE = loaded
+    _REFERENCE_DISK_CACHE_LOADED = True
+
+
+def _save_reference_disk_cache_unlocked() -> None:
+    """Persist shared reference cache file (expects _CACHE_LOCK held)."""
+    global _REFERENCE_DISK_CACHE_DIRTY
+    if not _REFERENCE_DISK_CACHE_DIRTY:
+        return
+    try:
+        _YFINANCE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = _REFERENCE_CACHE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(_REFERENCE_DISK_CACHE, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(_REFERENCE_CACHE_FILE)
+        _REFERENCE_DISK_CACHE_DIRTY = False
+    except Exception as exc:
+        logger.warning("Failed to persist shared reference cache: %s", exc)
+
+
+def _reference_cache_get_entry_unlocked(section: str) -> tuple[dict[str, Any], float]:
+    """Return (payload, expires_at) for one shared cache section."""
+    _prepare_reference_disk_cache_unlocked()
+    entry = _REFERENCE_DISK_CACHE.get(section)
+    if not isinstance(entry, dict):
+        return ({}, 0.0)
+    payload = entry.get("payload")
+    if not isinstance(payload, dict):
+        payload = {}
+    try:
+        expires_at = float(entry.get("expires_at") or 0.0)
+    except (TypeError, ValueError):
+        expires_at = 0.0
+    return (payload, expires_at)
+
+
+def _reference_cache_set_entry_unlocked(section: str, payload: dict[str, Any], ttl_seconds: float) -> None:
+    """Store one shared cache section with TTL (expects _CACHE_LOCK held)."""
+    global _REFERENCE_DISK_CACHE_DIRTY
+    _prepare_reference_disk_cache_unlocked()
+    _REFERENCE_DISK_CACHE[section] = {
+        "expires_at": time.time() + max(1.0, float(ttl_seconds)),
+        "payload": payload,
+    }
+    _REFERENCE_DISK_CACHE_DIRTY = True
+    _save_reference_disk_cache_unlocked()
+
+
+def _set_reference_cache_source_unlocked(section: str, source: str) -> None:
+    _REFERENCE_CACHE_LAST_SOURCE[section] = source
+
+
+def _encode_int_key_dict(data: dict[int, Any]) -> dict[str, Any]:
+    return {str(int(k)): v for k, v in data.items() if int(k) > 0}
+
+
+def _decode_int_key_dict(data: Any, value_cast: Any = str) -> dict[int, Any]:
+    out: dict[int, Any] = {}
+    if not isinstance(data, dict):
+        return out
+    for raw_key, raw_val in data.items():
+        try:
+            key = int(raw_key)
+        except (TypeError, ValueError):
+            continue
+        if key <= 0:
+            continue
+        try:
+            out[key] = value_cast(raw_val)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _encode_symbol_key_dict(data: dict[tuple[str, str], Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for (exchange, symbol), value in data.items():
+        exch = str(exchange or "").strip().upper()
+        sym = _normalise_symbol(symbol)
+        if exch and sym:
+            out[f"{exch}|{sym}"] = value
+    return out
+
+
+def _decode_symbol_key_dict(data: Any, value_cast: Any = str) -> dict[tuple[str, str], Any]:
+    out: dict[tuple[str, str], Any] = {}
+    if not isinstance(data, dict):
+        return out
+    for raw_key, raw_val in data.items():
+        if not isinstance(raw_key, str) or "|" not in raw_key:
+            continue
+        exch, sym = raw_key.split("|", 1)
+        exch = exch.strip().upper()
+        sym = _normalise_symbol(sym)
+        if not exch or not sym:
+            continue
+        try:
+            out[(exch, sym)] = value_cast(raw_val)
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 def _load_yfinance_cache_if_needed() -> None:
@@ -311,16 +461,18 @@ def _kite_row_sector_only(row: dict) -> str:
     return _normalise_name(row.get("sector") or row.get("Sector"))
 
 
-def _refresh_cash_equity_cache(kite) -> None:
-    """Refresh equity instrument caches when TTL expires."""
-    global _CACHE_EXPIRES_AT, _CACHED_TOKEN_TO_NAME, _CACHED_SYMBOL_TO_NAME, _CACHED_SYMBOL_TO_TOKEN
-    global _CACHED_TOKEN_TO_INDUSTRY, _CACHED_SYMBOL_TO_INDUSTRY
-    global _CACHED_TOKEN_TO_KITE_SECTOR, _CACHED_SYMBOL_TO_KITE_SECTOR
-    global _CACHED_TOKEN_TO_ISIN, _CACHED_SYMBOL_TO_ISIN
-    now = time.time()
-    if now < _CACHE_EXPIRES_AT and _CACHED_TOKEN_TO_NAME and _CACHED_SYMBOL_TO_NAME:
-        return
-
+def _build_cash_equity_maps(kite) -> tuple[
+    dict[int, str],
+    dict[tuple[str, str], str],
+    dict[tuple[str, str], int],
+    dict[int, str],
+    dict[tuple[str, str], str],
+    dict[int, str],
+    dict[tuple[str, str], str],
+    dict[int, str],
+    dict[tuple[str, str], str],
+]:
+    """Build fresh cash-equity lookup maps from Kite instruments API."""
     token_to_name: dict[int, str] = {}
     symbol_to_name: dict[tuple[str, str], str] = {}
     symbol_to_token: dict[tuple[str, str], int] = {}
@@ -374,6 +526,160 @@ def _refresh_cash_equity_cache(kite) -> None:
             if token > 0:
                 token_to_name[token] = name
 
+    return (
+        token_to_name,
+        symbol_to_name,
+        symbol_to_token,
+        token_to_industry,
+        symbol_to_industry,
+        token_to_kite_sector,
+        symbol_to_kite_sector,
+        token_to_isin,
+        symbol_to_isin,
+    )
+
+
+def _apply_cash_equity_payload_unlocked(payload: dict[str, Any], expires_at: float) -> bool:
+    """Hydrate in-memory cash-equity caches from disk payload."""
+    global _CACHE_EXPIRES_AT, _CACHED_TOKEN_TO_NAME, _CACHED_SYMBOL_TO_NAME, _CACHED_SYMBOL_TO_TOKEN
+    global _CACHED_TOKEN_TO_INDUSTRY, _CACHED_SYMBOL_TO_INDUSTRY
+    global _CACHED_TOKEN_TO_KITE_SECTOR, _CACHED_SYMBOL_TO_KITE_SECTOR
+    global _CACHED_TOKEN_TO_ISIN, _CACHED_SYMBOL_TO_ISIN
+    token_to_name = _decode_int_key_dict(payload.get("token_to_name"), str)
+    symbol_to_name = _decode_symbol_key_dict(payload.get("symbol_to_name"), str)
+    symbol_to_token = _decode_symbol_key_dict(payload.get("symbol_to_token"), int)
+    token_to_industry = _decode_int_key_dict(payload.get("token_to_industry"), str)
+    symbol_to_industry = _decode_symbol_key_dict(payload.get("symbol_to_industry"), str)
+    token_to_kite_sector = _decode_int_key_dict(payload.get("token_to_kite_sector"), str)
+    symbol_to_kite_sector = _decode_symbol_key_dict(payload.get("symbol_to_kite_sector"), str)
+    token_to_isin = _decode_int_key_dict(payload.get("token_to_isin"), str)
+    symbol_to_isin = _decode_symbol_key_dict(payload.get("symbol_to_isin"), str)
+    if not token_to_name or not symbol_to_name:
+        return False
+
+    _CACHED_TOKEN_TO_NAME = token_to_name
+    _CACHED_SYMBOL_TO_NAME = symbol_to_name
+    _CACHED_SYMBOL_TO_TOKEN = symbol_to_token
+    _CACHED_TOKEN_TO_INDUSTRY = token_to_industry
+    _CACHED_SYMBOL_TO_INDUSTRY = symbol_to_industry
+    _CACHED_TOKEN_TO_KITE_SECTOR = token_to_kite_sector
+    _CACHED_SYMBOL_TO_KITE_SECTOR = symbol_to_kite_sector
+    _CACHED_TOKEN_TO_ISIN = token_to_isin
+    _CACHED_SYMBOL_TO_ISIN = symbol_to_isin
+    _CACHE_EXPIRES_AT = expires_at
+    return True
+
+
+def _cash_equity_payload_unlocked() -> dict[str, Any]:
+    return {
+        "token_to_name": _encode_int_key_dict(_CACHED_TOKEN_TO_NAME),
+        "symbol_to_name": _encode_symbol_key_dict(_CACHED_SYMBOL_TO_NAME),
+        "symbol_to_token": _encode_symbol_key_dict(_CACHED_SYMBOL_TO_TOKEN),
+        "token_to_industry": _encode_int_key_dict(_CACHED_TOKEN_TO_INDUSTRY),
+        "symbol_to_industry": _encode_symbol_key_dict(_CACHED_SYMBOL_TO_INDUSTRY),
+        "token_to_kite_sector": _encode_int_key_dict(_CACHED_TOKEN_TO_KITE_SECTOR),
+        "symbol_to_kite_sector": _encode_symbol_key_dict(_CACHED_SYMBOL_TO_KITE_SECTOR),
+        "token_to_isin": _encode_int_key_dict(_CACHED_TOKEN_TO_ISIN),
+        "symbol_to_isin": _encode_symbol_key_dict(_CACHED_SYMBOL_TO_ISIN),
+    }
+
+
+def _maybe_start_cash_equity_refresh_unlocked(kite) -> None:
+    """Refresh cash-equity mappings in background when stale."""
+    global _CASH_EQUITY_REFRESH_IN_PROGRESS
+    if _CASH_EQUITY_REFRESH_IN_PROGRESS:
+        return
+    _CASH_EQUITY_REFRESH_IN_PROGRESS = True
+
+    def _job() -> None:
+        global _CACHE_EXPIRES_AT, _CASH_EQUITY_REFRESH_IN_PROGRESS
+        ok = False
+        try:
+            (
+                token_to_name,
+                symbol_to_name,
+                symbol_to_token,
+                token_to_industry,
+                symbol_to_industry,
+                token_to_kite_sector,
+                symbol_to_kite_sector,
+                token_to_isin,
+                symbol_to_isin,
+            ) = _build_cash_equity_maps(kite)
+            if not token_to_name or not symbol_to_name:
+                return
+            with _CACHE_LOCK:
+                _CACHED_TOKEN_TO_NAME.clear()
+                _CACHED_TOKEN_TO_NAME.update(token_to_name)
+                _CACHED_SYMBOL_TO_NAME.clear()
+                _CACHED_SYMBOL_TO_NAME.update(symbol_to_name)
+                _CACHED_SYMBOL_TO_TOKEN.clear()
+                _CACHED_SYMBOL_TO_TOKEN.update(symbol_to_token)
+                _CACHED_TOKEN_TO_INDUSTRY.clear()
+                _CACHED_TOKEN_TO_INDUSTRY.update(token_to_industry)
+                _CACHED_SYMBOL_TO_INDUSTRY.clear()
+                _CACHED_SYMBOL_TO_INDUSTRY.update(symbol_to_industry)
+                _CACHED_TOKEN_TO_KITE_SECTOR.clear()
+                _CACHED_TOKEN_TO_KITE_SECTOR.update(token_to_kite_sector)
+                _CACHED_SYMBOL_TO_KITE_SECTOR.clear()
+                _CACHED_SYMBOL_TO_KITE_SECTOR.update(symbol_to_kite_sector)
+                _CACHED_TOKEN_TO_ISIN.clear()
+                _CACHED_TOKEN_TO_ISIN.update(token_to_isin)
+                _CACHED_SYMBOL_TO_ISIN.clear()
+                _CACHED_SYMBOL_TO_ISIN.update(symbol_to_isin)
+                _CACHE_EXPIRES_AT = time.time() + _CACHE_TTL_SECONDS
+                _reference_cache_set_entry_unlocked(
+                    "cash_equity",
+                    _cash_equity_payload_unlocked(),
+                    _CACHE_TTL_SECONDS,
+                )
+                _set_reference_cache_source_unlocked("cash_equity", "network_bg_refresh")
+                ok = True
+        except Exception:
+            pass
+        finally:
+            with _CACHE_LOCK:
+                if not ok:
+                    _set_reference_cache_source_unlocked("cash_equity", "network_bg_refresh_failed")
+                _CASH_EQUITY_REFRESH_IN_PROGRESS = False
+
+    threading.Thread(target=_job, daemon=True).start()
+
+
+def _refresh_cash_equity_cache(kite) -> None:
+    """Refresh equity instrument caches (disk-backed + background refresh)."""
+    global _CACHE_EXPIRES_AT, _CACHED_TOKEN_TO_NAME, _CACHED_SYMBOL_TO_NAME, _CACHED_SYMBOL_TO_TOKEN
+    global _CACHED_TOKEN_TO_INDUSTRY, _CACHED_SYMBOL_TO_INDUSTRY
+    global _CACHED_TOKEN_TO_KITE_SECTOR, _CACHED_SYMBOL_TO_KITE_SECTOR
+    global _CACHED_TOKEN_TO_ISIN, _CACHED_SYMBOL_TO_ISIN
+    now = time.time()
+    if now < _CACHE_EXPIRES_AT and _CACHED_TOKEN_TO_NAME and _CACHED_SYMBOL_TO_NAME:
+        _set_reference_cache_source_unlocked("cash_equity", "memory")
+        return
+
+    payload, expires_at = _reference_cache_get_entry_unlocked("cash_equity")
+    if payload and _apply_cash_equity_payload_unlocked(payload, expires_at):
+        if now >= expires_at:
+            _set_reference_cache_source_unlocked("cash_equity", "disk_stale_bg_refresh")
+            _maybe_start_cash_equity_refresh_unlocked(kite)
+        else:
+            _set_reference_cache_source_unlocked("cash_equity", "disk")
+        return
+
+    (
+        token_to_name,
+        symbol_to_name,
+        symbol_to_token,
+        token_to_industry,
+        symbol_to_industry,
+        token_to_kite_sector,
+        symbol_to_kite_sector,
+        token_to_isin,
+        symbol_to_isin,
+    ) = _build_cash_equity_maps(kite)
+    if not token_to_name or not symbol_to_name:
+        _set_reference_cache_source_unlocked("cash_equity", "network_failed")
+        return
     _CACHED_TOKEN_TO_NAME = token_to_name
     _CACHED_SYMBOL_TO_NAME = symbol_to_name
     _CACHED_SYMBOL_TO_TOKEN = symbol_to_token
@@ -384,6 +690,12 @@ def _refresh_cash_equity_cache(kite) -> None:
     _CACHED_TOKEN_TO_ISIN = token_to_isin
     _CACHED_SYMBOL_TO_ISIN = symbol_to_isin
     _CACHE_EXPIRES_AT = now + _CACHE_TTL_SECONDS
+    _reference_cache_set_entry_unlocked(
+        "cash_equity",
+        _cash_equity_payload_unlocked(),
+        _CACHE_TTL_SECONDS,
+    )
+    _set_reference_cache_source_unlocked("cash_equity", "network_sync")
 
 
 def get_cash_equity_name_lookups(kite) -> tuple[dict[int, str], dict[tuple[str, str], str]]:
@@ -395,13 +707,6 @@ def get_cash_equity_name_lookups(kite) -> tuple[dict[int, str], dict[tuple[str, 
     with _CACHE_LOCK:
         _refresh_cash_equity_cache(kite)
         return (dict(_CACHED_TOKEN_TO_NAME), dict(_CACHED_SYMBOL_TO_NAME))
-
-
-def get_cash_equity_industry_lookups(kite) -> tuple[dict[int, str], dict[tuple[str, str], str]]:
-    """Cached (token->industry, (exchange,symbol)->industry) from Kite EQ rows."""
-    with _CACHE_LOCK:
-        _refresh_cash_equity_cache(kite)
-        return (dict(_CACHED_TOKEN_TO_INDUSTRY), dict(_CACHED_SYMBOL_TO_INDUSTRY))
 
 
 def get_cash_equity_kite_sector_lookups(kite) -> tuple[dict[int, str], dict[tuple[str, str], str]]:
@@ -452,15 +757,40 @@ def _merge_industry_rows(body: str, nse_symbol_out: dict[str, str], isin_out: di
             isin_out[isin] = industry
 
 
-def _refresh_nse_merged_industry_unlocked() -> bool:
-    """Merge Industry + ISIN from multiple NSE index CSVs. Returns False if all failed."""
-    global _NSE_MERGED_INDUSTRY_EXPIRES_AT, _CACHED_NSE_SYMBOL_TO_INDUSTRY, _CACHED_ISIN_TO_INDUSTRY
-    now = time.time()
-    if now < _NSE_MERGED_INDUSTRY_EXPIRES_AT and (
-        _CACHED_NSE_SYMBOL_TO_INDUSTRY or _CACHED_ISIN_TO_INDUSTRY
-    ):
-        return True
+def _nse_merged_payload_unlocked() -> dict[str, Any]:
+    return {
+        "nse_symbol_to_industry": _CACHED_NSE_SYMBOL_TO_INDUSTRY,
+        "isin_to_industry": _CACHED_ISIN_TO_INDUSTRY,
+    }
 
+
+def _apply_nse_merged_payload_unlocked(payload: dict[str, Any], expires_at: float) -> bool:
+    global _NSE_MERGED_INDUSTRY_EXPIRES_AT, _CACHED_NSE_SYMBOL_TO_INDUSTRY, _CACHED_ISIN_TO_INDUSTRY
+    nse_symbol_to_industry = payload.get("nse_symbol_to_industry")
+    isin_to_industry = payload.get("isin_to_industry")
+    if not isinstance(nse_symbol_to_industry, dict) or not isinstance(isin_to_industry, dict):
+        return False
+    clean_nse: dict[str, str] = {}
+    clean_isin: dict[str, str] = {}
+    for k, v in nse_symbol_to_industry.items():
+        symbol = _normalise_symbol(k)
+        industry = _normalise_name(v)
+        if symbol and industry:
+            clean_nse[symbol] = industry
+    for k, v in isin_to_industry.items():
+        isin = _normalise_isin(k)
+        industry = _normalise_name(v)
+        if isin and industry:
+            clean_isin[isin] = industry
+    if not clean_nse and not clean_isin:
+        return False
+    _CACHED_NSE_SYMBOL_TO_INDUSTRY = clean_nse
+    _CACHED_ISIN_TO_INDUSTRY = clean_isin
+    _NSE_MERGED_INDUSTRY_EXPIRES_AT = expires_at
+    return True
+
+
+def _fetch_nse_merged_industry_maps() -> tuple[dict[str, str], dict[str, str], bool]:
     nse_sym: dict[str, str] = {}
     isin_map: dict[str, str] = {}
     any_ok = False
@@ -470,13 +800,76 @@ def _refresh_nse_merged_industry_unlocked() -> bool:
             continue
         any_ok = True
         _merge_industry_rows(body, nse_sym, isin_map)
+    return (nse_sym, isin_map, any_ok)
 
+
+def _maybe_start_nse_merged_refresh_unlocked() -> None:
+    global _NSE_MERGED_REFRESH_IN_PROGRESS
+    if _NSE_MERGED_REFRESH_IN_PROGRESS:
+        return
+    _NSE_MERGED_REFRESH_IN_PROGRESS = True
+
+    def _job() -> None:
+        global _NSE_MERGED_REFRESH_IN_PROGRESS, _NSE_MERGED_INDUSTRY_EXPIRES_AT
+        global _CACHED_NSE_SYMBOL_TO_INDUSTRY, _CACHED_ISIN_TO_INDUSTRY
+        ok = False
+        try:
+            nse_sym, isin_map, any_ok = _fetch_nse_merged_industry_maps()
+            if not any_ok:
+                return
+            with _CACHE_LOCK:
+                _CACHED_NSE_SYMBOL_TO_INDUSTRY = nse_sym
+                _CACHED_ISIN_TO_INDUSTRY = isin_map
+                _NSE_MERGED_INDUSTRY_EXPIRES_AT = time.time() + _NIFTY50_CACHE_TTL_SECONDS
+                _reference_cache_set_entry_unlocked(
+                    "nse_merged_industry",
+                    _nse_merged_payload_unlocked(),
+                    _NIFTY50_CACHE_TTL_SECONDS,
+                )
+                _set_reference_cache_source_unlocked("nse_merged_industry", "network_bg_refresh")
+                ok = True
+        finally:
+            with _CACHE_LOCK:
+                if not ok:
+                    _set_reference_cache_source_unlocked("nse_merged_industry", "network_bg_refresh_failed")
+                _NSE_MERGED_REFRESH_IN_PROGRESS = False
+
+    threading.Thread(target=_job, daemon=True).start()
+
+
+def _refresh_nse_merged_industry_unlocked() -> bool:
+    """Merge Industry + ISIN from multiple NSE index CSVs. Returns False if all failed."""
+    global _NSE_MERGED_INDUSTRY_EXPIRES_AT, _CACHED_NSE_SYMBOL_TO_INDUSTRY, _CACHED_ISIN_TO_INDUSTRY
+    now = time.time()
+    if now < _NSE_MERGED_INDUSTRY_EXPIRES_AT and (
+        _CACHED_NSE_SYMBOL_TO_INDUSTRY or _CACHED_ISIN_TO_INDUSTRY
+    ):
+        _set_reference_cache_source_unlocked("nse_merged_industry", "memory")
+        return True
+
+    payload, expires_at = _reference_cache_get_entry_unlocked("nse_merged_industry")
+    if payload and _apply_nse_merged_payload_unlocked(payload, expires_at):
+        if now >= expires_at:
+            _set_reference_cache_source_unlocked("nse_merged_industry", "disk_stale_bg_refresh")
+            _maybe_start_nse_merged_refresh_unlocked()
+        else:
+            _set_reference_cache_source_unlocked("nse_merged_industry", "disk")
+        return True
+
+    nse_sym, isin_map, any_ok = _fetch_nse_merged_industry_maps()
     if not any_ok:
+        _set_reference_cache_source_unlocked("nse_merged_industry", "network_failed")
         return False
 
     _CACHED_NSE_SYMBOL_TO_INDUSTRY = nse_sym
     _CACHED_ISIN_TO_INDUSTRY = isin_map
     _NSE_MERGED_INDUSTRY_EXPIRES_AT = now + _NIFTY50_CACHE_TTL_SECONDS
+    _reference_cache_set_entry_unlocked(
+        "nse_merged_industry",
+        _nse_merged_payload_unlocked(),
+        _NIFTY50_CACHE_TTL_SECONDS,
+    )
+    _set_reference_cache_source_unlocked("nse_merged_industry", "network_sync")
     return True
 
 
@@ -501,8 +894,39 @@ def _refresh_nifty50_cache_unlocked() -> bool:
     global _NIFTY50_CACHE_EXPIRES_AT, _CACHED_NIFTY50_SYMBOLS
     now = time.time()
     if now < _NIFTY50_CACHE_EXPIRES_AT and _CACHED_NIFTY50_SYMBOLS:
+        _set_reference_cache_source_unlocked("nifty50_symbols", "memory")
         return True
 
+    payload, expires_at = _reference_cache_get_entry_unlocked("nifty50_symbols")
+    symbols_payload = payload.get("symbols") if isinstance(payload, dict) else None
+    if isinstance(symbols_payload, list):
+        symbols: list[str] = []
+        seen: set[str] = set()
+        for raw in symbols_payload:
+            symbol = _normalise_symbol(raw)
+            if not symbol or symbol in seen:
+                continue
+            seen.add(symbol)
+            symbols.append(symbol)
+        if symbols:
+            _CACHED_NIFTY50_SYMBOLS = symbols
+            _NIFTY50_CACHE_EXPIRES_AT = expires_at
+            if now >= expires_at:
+                _set_reference_cache_source_unlocked("nifty50_symbols", "disk_stale_bg_refresh")
+                _maybe_start_nifty50_refresh_unlocked()
+            else:
+                _set_reference_cache_source_unlocked("nifty50_symbols", "disk")
+            return True
+
+    if not _refresh_nifty50_from_network_unlocked():
+        _set_reference_cache_source_unlocked("nifty50_symbols", "network_failed")
+        return False
+    _set_reference_cache_source_unlocked("nifty50_symbols", "network_sync")
+    return True
+
+
+def _refresh_nifty50_from_network_unlocked() -> bool:
+    global _NIFTY50_CACHE_EXPIRES_AT
     body = _fetch_nse_industry_csv_body(_NIFTY50_CSV_URL)
     if not body:
         return False
@@ -518,8 +942,56 @@ def _refresh_nifty50_cache_unlocked() -> bool:
         ordered_unique.append(symbol)
 
     _CACHED_NIFTY50_SYMBOLS = ordered_unique
-    _NIFTY50_CACHE_EXPIRES_AT = now + _NIFTY50_CACHE_TTL_SECONDS
+    _NIFTY50_CACHE_EXPIRES_AT = time.time() + _NIFTY50_CACHE_TTL_SECONDS
+    _reference_cache_set_entry_unlocked(
+        "nifty50_symbols",
+        {"symbols": ordered_unique},
+        _NIFTY50_CACHE_TTL_SECONDS,
+    )
     return True
+
+
+def _maybe_start_nifty50_refresh_unlocked() -> None:
+    global _NIFTY50_REFRESH_IN_PROGRESS
+    if _NIFTY50_REFRESH_IN_PROGRESS:
+        return
+    _NIFTY50_REFRESH_IN_PROGRESS = True
+
+    def _job() -> None:
+        global _NIFTY50_REFRESH_IN_PROGRESS, _NIFTY50_CACHE_EXPIRES_AT
+        ok = False
+        try:
+            body = _fetch_nse_industry_csv_body(_NIFTY50_CSV_URL)
+            if not body:
+                return
+            reader = csv.DictReader(io.StringIO(body))
+            ordered_unique: list[str] = []
+            seen: set[str] = set()
+            for row in reader:
+                symbol = _normalise_symbol((row or {}).get("Symbol"))
+                if not symbol or symbol in seen:
+                    continue
+                seen.add(symbol)
+                ordered_unique.append(symbol)
+            if not ordered_unique:
+                return
+            with _CACHE_LOCK:
+                _CACHED_NIFTY50_SYMBOLS[:] = ordered_unique
+                _NIFTY50_CACHE_EXPIRES_AT = time.time() + _NIFTY50_CACHE_TTL_SECONDS
+                _reference_cache_set_entry_unlocked(
+                    "nifty50_symbols",
+                    {"symbols": ordered_unique},
+                    _NIFTY50_CACHE_TTL_SECONDS,
+                )
+                _set_reference_cache_source_unlocked("nifty50_symbols", "network_bg_refresh")
+                ok = True
+        finally:
+            with _CACHE_LOCK:
+                if not ok:
+                    _set_reference_cache_source_unlocked("nifty50_symbols", "network_bg_refresh_failed")
+                _NIFTY50_REFRESH_IN_PROGRESS = False
+
+    threading.Thread(target=_job, daemon=True).start()
 
 
 def get_nifty50_symbols() -> list[str]:
@@ -530,80 +1002,57 @@ def get_nifty50_symbols() -> list[str]:
         return list(_CACHED_NIFTY50_SYMBOLS)
 
 
-def warm_reference_caches(kite) -> None:
-    """Best-effort warmup for heavy instrument/NSE reference lookups."""
-    try:
-        get_cash_equity_name_lookups(kite)
-        get_cash_equity_kite_sector_lookups(kite)
-        get_cash_equity_isin_lookups(kite)
-    except Exception as exc:
-        logger.warning("Instrument lookup warmup failed: %s", exc)
+def get_reference_cache_debug_snapshot() -> dict[str, dict[str, Any]]:
+    """Return cache-source/expiry metadata for dashboard timing logs."""
+    now = time.time()
+    with _CACHE_LOCK:
+        return {
+            "cash_equity": {
+                "source": _REFERENCE_CACHE_LAST_SOURCE.get("cash_equity", "unknown"),
+                "expires_in_ms": max(0.0, (_CACHE_EXPIRES_AT - now) * 1000.0),
+                "refresh_in_progress": _CASH_EQUITY_REFRESH_IN_PROGRESS,
+            },
+            "nse_merged_industry": {
+                "source": _REFERENCE_CACHE_LAST_SOURCE.get("nse_merged_industry", "unknown"),
+                "expires_in_ms": max(0.0, (_NSE_MERGED_INDUSTRY_EXPIRES_AT - now) * 1000.0),
+                "refresh_in_progress": _NSE_MERGED_REFRESH_IN_PROGRESS,
+            },
+            "nifty50_symbols": {
+                "source": _REFERENCE_CACHE_LAST_SOURCE.get("nifty50_symbols", "unknown"),
+                "expires_in_ms": max(0.0, (_NIFTY50_CACHE_EXPIRES_AT - now) * 1000.0),
+                "refresh_in_progress": _NIFTY50_REFRESH_IN_PROGRESS,
+            },
+        }
+
+
+def warm_reference_caches(kite=None, *, force_refresh: bool = False) -> None:
+    """Best-effort warmup for heavy instrument/NSE reference lookups.
+
+    If ``force_refresh`` is True, trigger background refresh jobs at startup
+    even when existing cache entries are still within TTL.
+    """
+    if kite is not None:
+        try:
+            get_cash_equity_name_lookups(kite)
+            get_cash_equity_kite_sector_lookups(kite)
+            get_cash_equity_isin_lookups(kite)
+        except Exception as exc:
+            logger.warning("Instrument lookup warmup failed: %s", exc)
     try:
         get_nse_symbol_to_industry()
         get_isin_to_industry()
         get_nifty50_symbols()
     except Exception as exc:
         logger.warning("NSE reference lookup warmup failed: %s", exc)
-
-
-def resolve_equity_industry(
-    symbol: str,
-    exchange: str | None,
-    instrument_token: int | None,
-    token_to_industry: dict[int, str],
-    symbol_to_industry: dict[tuple[str, str], str],
-    nse_symbol_to_industry: dict[str, str],
-    isin_to_industry: dict[str, str],
-    token_to_isin: dict[int, str],
-    symbol_to_isin: dict[tuple[str, str], str],
-) -> str:
-    """Resolve industry for NSE/BSE cash equities (empty string if unknown)."""
-    clean_symbol = _normalise_symbol(symbol)
-    clean_exchange = str(exchange or "").strip().upper()
-    token = int(instrument_token or 0)
-
-    if clean_exchange not in EQUITY_EXCHANGES:
-        return ""
-
-    # yfinance first (requested). Only if it isn't in cache do we call yfinance.
-    ind = ""
-    if clean_symbol and clean_exchange in EQUITY_EXCHANGES:
-        _maybe_start_monthly_yfinance_refresh()
-        y_key = _yfinance_cache_key(clean_exchange, clean_symbol)
-
-        _load_yfinance_cache_if_needed()
-        with _YFINANCE_CACHE_LOCK:
-            cached_ind = _CACHED_YFINANCE_KEY_TO_INDUSTRY.get(y_key)
-        if cached_ind is not None:
-            ind = cached_ind
-            if ind:
-                logger.info(
-                    "Industry for %s resolved via yfinance cache: %s",
-                    f"{clean_exchange}:{clean_symbol}",
-                    ind,
-                )
-        else:
-            # Do not block request path with yfinance network fetches.
-            # Queue a best-effort background refresh and fall back to other sources.
-            _maybe_start_single_symbol_yfinance_refresh(clean_exchange, clean_symbol)
-
-    # Other sources first-choice after yfinance miss.
-    if not ind and token > 0:
-        ind = _normalise_name(token_to_industry.get(token))
-    if not ind and clean_symbol:
-        ind = _normalise_name(symbol_to_industry.get((clean_exchange, clean_symbol)))
-    if not ind and clean_exchange == "NSE" and clean_symbol:
-        ind = _normalise_name(nse_symbol_to_industry.get(clean_symbol))
-    if not ind:
-        isin = ""
-        if token > 0:
-            isin = _normalise_isin(token_to_isin.get(token))
-        if not isin and clean_symbol:
-            isin = _normalise_isin(symbol_to_isin.get((clean_exchange, clean_symbol)))
-        if isin:
-            ind = _normalise_name(isin_to_industry.get(isin))
-
-    return ind
+    if force_refresh:
+        try:
+            with _CACHE_LOCK:
+                if kite is not None:
+                    _maybe_start_cash_equity_refresh_unlocked(kite)
+                _maybe_start_nse_merged_refresh_unlocked()
+                _maybe_start_nifty50_refresh_unlocked()
+        except Exception as exc:
+            logger.warning("Reference cache startup refresh failed: %s", exc)
 
 
 def resolve_equity_sector(

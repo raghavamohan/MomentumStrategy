@@ -103,6 +103,10 @@ KITE_DASHBOARD_NAME=Raghava's Portfolio
 # Optional: live index quotes under the dashboard title (NSE). Default: NIFTY50,BANKNIFTY,NIFTYIT,NIFTYFINSERVICE,NIFTYMET
 # KITE_DASHBOARD_INDICES=NIFTY50,BANKNIFTY,NIFTYIT,NIFTYFINSERVICE,NIFTYMET
 DASHBOARD_SNAPSHOT_SECONDS=120
+# optional: parallel workers for MF underlying fetches (mfdata.in), default 6
+MFDATA_MAX_FETCH_WORKERS=6
+# optional: shared TTL for reference cache entries (cash-equity + NSE maps + Nifty50)
+REFERENCE_CACHE_TTL_SECONDS=86400
 # optional for CLI auto request_token capture
 KITE_REDIRECT_URL=http://127.0.0.1:5000/callback
 ```
@@ -168,6 +172,8 @@ Notes:
 - yfinance cache refresh runs in background about once every 30 days.
 - The dashboard also warms heavy reference caches in the background on startup
   and after successful login (`/callback`) to reduce cold-load latency.
+- Reference cache TTL defaults to 1 day and can be configured via
+  `REFERENCE_CACHE_TTL_SECONDS` in `.env`.
 
 ## Dashboard timing logs
 
@@ -179,22 +185,36 @@ Each line includes total duration and cumulative stage marks (for example:
 `kite_data_fetch_parallel`, `instrument_and_reference_lookups`,
 `live_price_stream_bootstrap`) to help isolate bottlenecks.
 
-### Build initial yfinance cache offline (recommended)
+### Build initial caches offline (recommended)
 
-To keep first app launch fast, pre-warm the yfinance cache before running the
+To keep first app launch fast, pre-warm local caches before running the
 dashboard/CLI:
 
 ```powershell
-python scripts/build_yfinance_cache.py --workers 6
+python scripts/build_cache.py --workers 6
 ```
 
 This writes/updates:
 - `.cache/yfinance_industry_cache.json`
+- `.cache/reference_data_cache.json` (NSE industry maps, Nifty 50 list, and
+  cash-equity lookup maps when a valid Kite access token is available)
 
 Optional backfill for older cache rows that have industry but missing sector:
 
 ```powershell
-python scripts/build_yfinance_cache.py --backfill-sector --workers 6
+python scripts/build_cache.py --backfill-sector --workers 6
+```
+
+To skip shared reference cache warmup:
+
+```powershell
+python scripts/build_cache.py --skip-reference-cache
+```
+
+Reference-cache only warmup (skip yfinance):
+
+```powershell
+python scripts/build_cache.py --reference-only
 ```
 
 ### yfinance API usage reference
@@ -211,7 +231,7 @@ Where this app uses it:
 
 - `app/instruments.py` — `yf.Ticker(f"{symbol}.{exchange}").info` for
   live/cache-backed industry and sector lookup.
-- `scripts/build_yfinance_cache.py` — `yf.Ticker(...).info` to pre-build
+- `scripts/build_cache.py` — `yf.Ticker(...).info` to pre-build
   `.cache/yfinance_industry_cache.json` offline.
 
 ## Run — CLI
