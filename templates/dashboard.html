@@ -1,9 +1,9 @@
 {#
-  Tabbed account dashboard.
+  Account dashboard with section navigation.
 
   Rendered by `app/web.py` GET /dashboard once per request after the
-  view fetches the four Kite Connect data sets and overlays live LTPs
-  (when available) from the Kite WebSocket stream:
+  view fetches Kite account data sets and overlays live LTPs (when
+  available) from the Kite WebSocket stream:
 
     * equity_holdings     <- KiteConnect.holdings()
         https://kite.trade/docs/connect/v3/portfolio/#holdings
@@ -17,11 +17,16 @@
     * cash                <- KiteConnect.margins(segment="equity")
         https://kite.trade/docs/connect/v3/user/#funds-and-margins
 
+  Additional data:
+    * user_profile        <- KiteConnect.profile() best-effort fetch
+    * watch_list          <- Nifty 50 symbols + KiteConnect.quote(...)
+
   Layout:
-  * Topbar with title and Logout button.
-  * Tab nav (5 tabs, accessible buttons with role="tab").
-  * One <section class="panel"> per tab, only one visible at a time.
-  * Per-tab summary cards (counts, totals) above each table.
+  * Topbar with title, live index marquee, and Logout button.
+  * Section nav (Profile, Portfolio, Watch List).
+  * Portfolio tab nav (5 tabs, accessible buttons with role="tab").
+  * One `<section class="panel">` per portfolio tab, one active at a time.
+  * Per-panel summary cards (counts, totals) above each table.
 
   Live LTP / derived P&amp;L updates arrive over ``WS /ws/live-prices``.
   A full REST snapshot (MF, cash, structure) runs every

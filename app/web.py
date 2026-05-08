@@ -33,10 +33,15 @@ Routes
     is bound to) at https://developers.kite.trade.
 
 ``GET /dashboard``
-    Authenticated. Fetches all four account-snapshot data sets in one
-    go and renders ``templates/dashboard.html``, a single page with
-    in-page tabs for: Equity Holdings, Mutual Funds, Equity Positions,
-    F&O Positions, Cash Balance.
+    Authenticated. Fetches holdings, mutual funds (optional module),
+    open positions, cash margins, profile data, and watch-list quote
+    data; then renders ``templates/dashboard.html``.
+
+    The page has three section views:
+    * Profile
+    * Portfolio (with in-page tabs for Equity Holdings, Mutual Funds,
+      Equity Positions, F&O Positions, Cash Balance)
+    * Watch List (Nifty 50 constituents with live updates)
 
     Kite endpoints called per request:
 
@@ -156,7 +161,7 @@ _DASHBOARD_SNAPSHOT_INTERVAL_MS = _dashboard_snapshot_interval_ms()
 def _dashboard_display_name() -> str:
     """Dashboard/product display name from env with a friendly default."""
     load_dotenv(PROJECT_ROOT / ".env")
-    return os.getenv("KITE_DASHBOARD_NAME", "").strip() or "Raghava`s Porfolio"
+    return os.getenv("KITE_DASHBOARD_NAME", "").strip() or "Raghava's Portfolio"
 
 
 _DASHBOARD_DISPLAY_NAME = _dashboard_display_name()

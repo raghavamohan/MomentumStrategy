@@ -7,17 +7,19 @@ account using the Kite Connect API:
 * Mutual fund holdings (units held per folio, with NAV and P&L).
 * Open net positions, separated into equity and F&O / derivatives.
 * Equity segment cash balance (available, live, utilised).
+* Overall portfolio summary totals in the CLI.
 
 Entry points
 ------------
 ``python -m app.main``
-    Command-line interface. Prints the same data as ASCII tables.
+    Command-line interface. Prints snapshot sections as ASCII tables.
     See :mod:`app.main`.
 
 ``python -m app.web``
     Starts the local FastAPI dashboard at http://127.0.0.1:5000/. The
-    dashboard renders all four sections as tabs in a single page and
-    overlays live equity/F&O LTP via Kite WebSocket. See :mod:`app.web`.
+    dashboard renders Profile / Portfolio / Watch List sections, with
+    portfolio tabs for holdings, positions, and cash. It also overlays
+    live equity/F&O LTP via Kite WebSocket. See :mod:`app.web`.
 
 Both entry points share the same authentication code (:mod:`app.auth`)
 and the same on-disk access-token cache, so logging in via either

@@ -92,7 +92,7 @@ Then edit [`.env`](.env) and fill in your credentials:
 ```
 KITE_API_KEY=your_api_key_here
 KITE_API_SECRET=your_api_secret_here
-KITE_DASHBOARD_NAME=Raghava`s Porfolio
+KITE_DASHBOARD_NAME=Raghava's Portfolio
 # Optional: live index quotes under the dashboard title (NSE). Default: NIFTY50,BANKNIFTY,NIFTYIT,NIFTYFINSERVICE,NIFTYMET
 # KITE_DASHBOARD_INDICES=NIFTY50,BANKNIFTY,NIFTYIT,NIFTYFINSERVICE,NIFTYMET
 DASHBOARD_SNAPSHOT_SECONDS=120
@@ -176,6 +176,23 @@ Optional backfill for older cache rows that have industry but missing sector:
 ```powershell
 python scripts/build_yfinance_cache.py --backfill-sector --workers 6
 ```
+
+### yfinance API usage reference
+
+The app uses `yfinance` only for equity metadata enrichment (`industry` and
+`sector`) and does **not** use it for order/trade operations.
+
+- **yfinance documentation** — <https://ranaroussi.github.io/yfinance/>
+- **`Ticker` API reference** — <https://ranaroussi.github.io/yfinance/reference/api/yfinance.Ticker.html>
+- **`Ticker.info` reference** — <https://ranaroussi.github.io/yfinance/reference/api/yfinance.Ticker.info.html>
+- **PyPI package** — <https://pypi.org/project/yfinance/>
+
+Where this app uses it:
+
+- `app/instruments.py` — `yf.Ticker(f"{symbol}.{exchange}").info` for
+  live/cache-backed industry and sector lookup.
+- `scripts/build_yfinance_cache.py` — `yf.Ticker(...).info` to pre-build
+  `.cache/yfinance_industry_cache.json` offline.
 
 ## Run — CLI
 
