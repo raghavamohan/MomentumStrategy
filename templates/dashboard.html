@@ -2314,15 +2314,18 @@
     async function loadMfHoldings() {
       ensureMfClientCacheDay();
       const host = document.getElementById('mf-holdings-block');
-      if (!host || mfHoldingsLoading || mfHoldingsLoaded) {
-        if (mfHoldingsLoaded) {
-          loadMfUnderlyingBreakdown();
-        }
+      if (!host || mfHoldingsLoading) {
         return;
       }
+      // Snapshot refresh replaces tab DOM, so cached MF data must repaint
+      // before honoring "loaded" flags.
       if (mfHoldingsCachedPayload) {
         renderMfHoldings(mfHoldingsCachedPayload);
         mfHoldingsLoaded = true;
+        loadMfUnderlyingBreakdown();
+        return;
+      }
+      if (mfHoldingsLoaded) {
         loadMfUnderlyingBreakdown();
         return;
       }
@@ -2446,9 +2449,11 @@
     async function loadMfUnderlyingBreakdown() {
       ensureMfClientCacheDay();
       const host = document.getElementById('mf-underlying-breakdown-block');
-      if (!host || mfUnderlyingsLoading || mfUnderlyingsLoaded || !mfHoldingsLoaded) {
+      if (!host || mfUnderlyingsLoading || !mfHoldingsLoaded) {
         return;
       }
+      // Snapshot refresh replaces tab DOM, so cached underlying data must
+      // repaint before honoring "loaded" flags.
       if (mfUnderlyingsCachedPayload) {
         const payload = mfUnderlyingsCachedPayload;
         if (payload.error) {
@@ -2459,6 +2464,9 @@
         renderMfUnderlyingBreakdownPayload(host, payload);
         mfUnderlyingsLoaded = true;
         syncCsvActionState();
+        return;
+      }
+      if (mfUnderlyingsLoaded) {
         return;
       }
       mfUnderlyingsLoading = true;
