@@ -75,7 +75,15 @@ from kiteconnect.exceptions import (
 )
 
 from app.auth import get_kite_client
-from app.instruments import get_cash_equity_name_lookups, symbol_with_company_name
+from app.instruments import (
+    get_cash_equity_industry_lookups,
+    get_cash_equity_isin_lookups,
+    get_cash_equity_name_lookups,
+    get_isin_to_industry,
+    get_nse_symbol_to_industry,
+    resolve_equity_industry,
+    symbol_with_company_name,
+)
 
 
 def _is_transient_service_unavailable(exc: Exception) -> bool:
@@ -125,6 +133,12 @@ def _row(
     holding: dict,
     token_to_name: dict[int, str],
     symbol_to_name: dict[tuple[str, str], str],
+    token_to_industry: dict[int, str],
+    symbol_to_industry: dict[tuple[str, str], str],
+    nse_symbol_to_industry: dict[str, str],
+    isin_to_industry: dict[str, str],
+    token_to_isin: dict[int, str],
+    symbol_to_isin: dict[tuple[str, str], str],
 ) -> list:
     """Map a single Kite ``holdings`` entry to a printable table row.
 
@@ -148,9 +162,22 @@ def _row(
         token_to_name=token_to_name,
         symbol_to_name=symbol_to_name,
     )
+    industry = resolve_equity_industry(
+        symbol=str(holding.get("tradingsymbol", "")),
+        exchange=str(holding.get("exchange", "")),
+        instrument_token=int(holding.get("instrument_token") or 0),
+        token_to_industry=token_to_industry,
+        symbol_to_industry=symbol_to_industry,
+        nse_symbol_to_industry=nse_symbol_to_industry,
+        isin_to_industry=isin_to_industry,
+        token_to_isin=token_to_isin,
+        symbol_to_isin=symbol_to_isin,
+    )
+    ind_disp = industry if industry else "—"
 
     return [
         symbol_label,
+        ind_disp,
         quantity,
         avg_price,
         last_price,
@@ -183,11 +210,29 @@ def _print_holdings(kite) -> tuple[float, float, float]:
         return (0.0, 0.0, 0.0)
 
     token_to_name, symbol_to_name = get_cash_equity_name_lookups(kite)
-    rows = [_row(h, token_to_name, symbol_to_name) for h in holdings]
+    token_to_industry, symbol_to_industry = get_cash_equity_industry_lookups(kite)
+    token_to_isin, symbol_to_isin = get_cash_equity_isin_lookups(kite)
+    nse_symbol_to_industry = get_nse_symbol_to_industry()
+    isin_to_industry = get_isin_to_industry()
+    rows = [
+        _row(
+            h,
+            token_to_name,
+            symbol_to_name,
+            token_to_industry,
+            symbol_to_industry,
+            nse_symbol_to_industry,
+            isin_to_industry,
+            token_to_isin,
+            symbol_to_isin,
+        )
+        for h in holdings
+    ]
     rows.sort(key=lambda r: r[0])
 
     headers = [
         "Symbol",
+        "Industry",
         "Qty",
         "Avg",
         "LTP",
@@ -203,13 +248,23 @@ def _print_holdings(kite) -> tuple[float, float, float]:
             rows,
             headers=headers,
             tablefmt="github",
-            floatfmt=(".0f", ".0f", ",.2f", ",.2f", ",.2f", ",.2f", ",.2f", ",.2f"),
+            floatfmt=(
+                "",
+                "",
+                ".0f",
+                ",.2f",
+                ",.2f",
+                ",.2f",
+                ",.2f",
+                ",.2f",
+                ",.2f",
+            ),
         )
     )
 
-    total_invested = sum(r[4] for r in rows)
-    total_current = sum(r[5] for r in rows)
-    total_pnl = sum(r[6] for r in rows)
+    total_invested = sum(r[5] for r in rows)
+    total_current = sum(r[6] for r in rows)
+    total_pnl = sum(r[7] for r in rows)
 
     print()
     print(f"Holdings: {len(rows)} stock(s)")
@@ -380,6 +435,12 @@ def _position_row(
     position: dict,
     token_to_name: dict[int, str],
     symbol_to_name: dict[tuple[str, str], str],
+    token_to_industry: dict[int, str],
+    symbol_to_industry: dict[tuple[str, str], str],
+    nse_symbol_to_industry: dict[str, str],
+    isin_to_industry: dict[str, str],
+    token_to_isin: dict[int, str],
+    symbol_to_isin: dict[tuple[str, str], str],
 ) -> list:
     """Map a single Kite ``positions`` entry to a printable row.
 
@@ -417,9 +478,26 @@ def _position_row(
         token_to_name=token_to_name,
         symbol_to_name=symbol_to_name,
     )
+    exch = str(position.get("exchange", ""))
+    if exch in EQUITY_EXCHANGES:
+        industry = resolve_equity_industry(
+            symbol=str(position.get("tradingsymbol", "")),
+            exchange=exch,
+            instrument_token=int(position.get("instrument_token") or 0),
+            token_to_industry=token_to_industry,
+            symbol_to_industry=symbol_to_industry,
+            nse_symbol_to_industry=nse_symbol_to_industry,
+            isin_to_industry=isin_to_industry,
+            token_to_isin=token_to_isin,
+            symbol_to_isin=symbol_to_isin,
+        )
+        ind_disp = industry if industry else "—"
+    else:
+        ind_disp = "—"
     return [
         symbol_label,
-        position.get("exchange", ""),
+        ind_disp,
+        exch,
         position.get("product", ""),
         qty,
         avg,
@@ -434,6 +512,12 @@ def _print_position_table(
     positions: list[dict],
     token_to_name: dict[int, str],
     symbol_to_name: dict[tuple[str, str], str],
+    token_to_industry: dict[int, str],
+    symbol_to_industry: dict[tuple[str, str], str],
+    nse_symbol_to_industry: dict[str, str],
+    isin_to_industry: dict[str, str],
+    token_to_isin: dict[int, str],
+    symbol_to_isin: dict[tuple[str, str], str],
 ) -> None:
     """Render one positions table with subtotals."""
     print()
@@ -443,10 +527,23 @@ def _print_position_table(
         print("(no open positions)")
         return
 
-    rows = [_position_row(p, token_to_name, symbol_to_name) for p in positions]
+    rows = [
+        _position_row(
+            p,
+            token_to_name,
+            symbol_to_name,
+            token_to_industry,
+            symbol_to_industry,
+            nse_symbol_to_industry,
+            isin_to_industry,
+            token_to_isin,
+            symbol_to_isin,
+        )
+        for p in positions
+    ]
     rows.sort(key=lambda r: r[0])
 
-    headers = ["Symbol", "Exch", "Prod", "Qty", "Avg", "LTP", "P&L", "M2M"]
+    headers = ["Symbol", "Industry", "Exch", "Prod", "Qty", "Avg", "LTP", "P&L", "M2M"]
 
     print()
     print(
@@ -454,12 +551,12 @@ def _print_position_table(
             rows,
             headers=headers,
             tablefmt="github",
-            floatfmt=("", "", "", ".0f", ",.2f", ",.2f", ",.2f", ",.2f"),
+            floatfmt=("", "", "", "", ".0f", ",.2f", ",.2f", ",.2f", ",.2f"),
         )
     )
 
-    total_pnl = sum(r[6] for r in rows)
-    total_m2m = sum(r[7] for r in rows)
+    total_pnl = sum(r[7] for r in rows)
+    total_m2m = sum(r[8] for r in rows)
     print()
     print(f"Open positions: {len(rows)}")
     print(f"Total P&L     : {total_pnl:>14,.2f}")
@@ -492,6 +589,10 @@ def _print_positions(kite) -> float:
 
     open_positions = [p for p in net_positions if int(p.get("quantity") or 0) != 0]
     token_to_name, symbol_to_name = get_cash_equity_name_lookups(kite)
+    token_to_industry, symbol_to_industry = get_cash_equity_industry_lookups(kite)
+    token_to_isin, symbol_to_isin = get_cash_equity_isin_lookups(kite)
+    nse_symbol_to_industry = get_nse_symbol_to_industry()
+    isin_to_industry = get_isin_to_industry()
 
     equity = [p for p in open_positions if p.get("exchange") in EQUITY_EXCHANGES]
     fno = [p for p in open_positions if p.get("exchange") in FNO_EXCHANGES]
@@ -501,15 +602,25 @@ def _print_positions(kite) -> float:
         if p.get("exchange") not in EQUITY_EXCHANGES and p.get("exchange") not in FNO_EXCHANGES
     ]
 
-    _print_position_table("Positions: Equity (NSE / BSE)", equity, token_to_name, symbol_to_name)
+    common_kw = dict(
+        token_to_name=token_to_name,
+        symbol_to_name=symbol_to_name,
+        token_to_industry=token_to_industry,
+        symbol_to_industry=symbol_to_industry,
+        nse_symbol_to_industry=nse_symbol_to_industry,
+        isin_to_industry=isin_to_industry,
+        token_to_isin=token_to_isin,
+        symbol_to_isin=symbol_to_isin,
+    )
+
+    _print_position_table("Positions: Equity (NSE / BSE)", equity, **common_kw)
     _print_position_table(
         "Positions: F&O / Derivatives (NFO / BFO / CDS / BCD / MCX)",
         fno,
-        token_to_name,
-        symbol_to_name,
+        **common_kw,
     )
     if other:
-        _print_position_table("Positions: Other", other, token_to_name, symbol_to_name)
+        _print_position_table("Positions: Other", other, **common_kw)
 
     return sum(float(p.get("pnl") or 0.0) for p in open_positions)
 

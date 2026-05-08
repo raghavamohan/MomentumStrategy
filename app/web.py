@@ -110,9 +110,14 @@ from app.auth import (
     validate_kite_session,
 )
 from app.instruments import (
+    get_cash_equity_isin_lookups,
+    get_cash_equity_kite_sector_lookups,
     get_cash_equity_name_lookups,
+    get_isin_to_industry,
     get_nifty50_symbols,
+    get_nse_symbol_to_industry,
     get_nse_symbol_to_token_lookup,
+    resolve_equity_sector,
     symbol_with_company_name,
 )
 from app.live_prices import dashboard_ws_debug_enabled, live_price_stream
@@ -393,6 +398,12 @@ def _decorate_holding(
     h: dict,
     token_to_name: dict[int, str],
     symbol_to_name: dict[tuple[str, str], str],
+    token_to_kite_sector: dict[int, str],
+    symbol_to_kite_sector: dict[tuple[str, str], str],
+    nse_symbol_to_industry: dict[str, str],
+    isin_to_industry: dict[str, str],
+    token_to_isin: dict[int, str],
+    symbol_to_isin: dict[tuple[str, str], str],
 ) -> dict:
     """Enrich a Kite holdings entry with derived fields used by the template."""
     quantity = (h.get("quantity") or 0) + (h.get("t1_quantity") or 0)
@@ -413,9 +424,23 @@ def _decorate_holding(
         token_to_name=token_to_name,
         symbol_to_name=symbol_to_name,
     )
+    sector = resolve_equity_sector(
+        symbol=symbol,
+        exchange=str(h.get("exchange", "")),
+        instrument_token=int(h.get("instrument_token") or 0),
+        token_to_name=token_to_name,
+        symbol_to_name=symbol_to_name,
+        token_to_kite_sector=token_to_kite_sector,
+        symbol_to_kite_sector=symbol_to_kite_sector,
+        nse_symbol_to_industry=nse_symbol_to_industry,
+        isin_to_industry=isin_to_industry,
+        token_to_isin=token_to_isin,
+        symbol_to_isin=symbol_to_isin,
+    )
     return {
         "tradingsymbol": symbol,
         "symbol_label": symbol_label,
+        "sector": sector,
         "exchange": h.get("exchange", ""),
         "instrument_token": int(h.get("instrument_token") or 0),
         "quantity": quantity,
@@ -460,6 +485,12 @@ def _decorate_position(
     p: dict,
     token_to_name: dict[int, str],
     symbol_to_name: dict[tuple[str, str], str],
+    token_to_kite_sector: dict[int, str],
+    symbol_to_kite_sector: dict[tuple[str, str], str],
+    nse_symbol_to_industry: dict[str, str],
+    isin_to_industry: dict[str, str],
+    token_to_isin: dict[int, str],
+    symbol_to_isin: dict[tuple[str, str], str],
 ) -> dict:
     """Enrich a Kite positions entry."""
     qty = int(p.get("quantity") or 0)
@@ -480,9 +511,23 @@ def _decorate_position(
         token_to_name=token_to_name,
         symbol_to_name=symbol_to_name,
     )
+    sector = resolve_equity_sector(
+        symbol=symbol,
+        exchange=str(p.get("exchange", "")),
+        instrument_token=int(p.get("instrument_token") or 0),
+        token_to_name=token_to_name,
+        symbol_to_name=symbol_to_name,
+        token_to_kite_sector=token_to_kite_sector,
+        symbol_to_kite_sector=symbol_to_kite_sector,
+        nse_symbol_to_industry=nse_symbol_to_industry,
+        isin_to_industry=isin_to_industry,
+        token_to_isin=token_to_isin,
+        symbol_to_isin=symbol_to_isin,
+    )
     return {
         "tradingsymbol": symbol,
         "symbol_label": symbol_label,
+        "sector": sector,
         "exchange": p.get("exchange", ""),
         "product": p.get("product", ""),
         "instrument_token": int(p.get("instrument_token") or 0),
@@ -750,6 +795,12 @@ async def dashboard(request: Request):
     index_quotes_bootstrap: list[dict[str, Any]] = []
 
     equity_token_to_name, equity_symbol_to_name = get_cash_equity_name_lookups(kite)
+    equity_token_to_kite_sector, equity_symbol_to_kite_sector = (
+        get_cash_equity_kite_sector_lookups(kite)
+    )
+    equity_token_to_isin, equity_symbol_to_isin = get_cash_equity_isin_lookups(kite)
+    nse_symbol_to_industry = get_nse_symbol_to_industry()
+    isin_to_industry = get_isin_to_industry()
     nse_symbol_to_token = get_nse_symbol_to_token_lookup(kite)
     nifty50_symbols = get_nifty50_symbols()
     watch_quote_keys = [f"NSE:{sym}" for sym in nifty50_symbols]
@@ -827,6 +878,12 @@ async def dashboard(request: Request):
                 _overlay_live_ltp(h, live_ltp_by_token),
                 equity_token_to_name,
                 equity_symbol_to_name,
+                equity_token_to_kite_sector,
+                equity_symbol_to_kite_sector,
+                nse_symbol_to_industry,
+                isin_to_industry,
+                equity_token_to_isin,
+                equity_symbol_to_isin,
             )
             for h in equity_raw
         ),
@@ -843,6 +900,12 @@ async def dashboard(request: Request):
                 _overlay_live_ltp(p, live_ltp_by_token),
                 equity_token_to_name,
                 equity_symbol_to_name,
+                equity_token_to_kite_sector,
+                equity_symbol_to_kite_sector,
+                nse_symbol_to_industry,
+                isin_to_industry,
+                equity_token_to_isin,
+                equity_symbol_to_isin,
             )
             for p in open_net
             if p.get("exchange") in EQUITY_EXCHANGES
@@ -855,6 +918,12 @@ async def dashboard(request: Request):
                 _overlay_live_ltp(p, live_ltp_by_token),
                 equity_token_to_name,
                 equity_symbol_to_name,
+                equity_token_to_kite_sector,
+                equity_symbol_to_kite_sector,
+                nse_symbol_to_industry,
+                isin_to_industry,
+                equity_token_to_isin,
+                equity_symbol_to_isin,
             )
             for p in open_net
             if p.get("exchange") in FNO_EXCHANGES
@@ -927,11 +996,25 @@ async def dashboard(request: Request):
 
         company_name = str(equity_symbol_to_name.get(("NSE", symbol)) or "").strip()
         label = company_name or symbol
+        sector = resolve_equity_sector(
+            symbol=symbol,
+            exchange="NSE",
+            instrument_token=token,
+            token_to_name=equity_token_to_name,
+            symbol_to_name=equity_symbol_to_name,
+            token_to_kite_sector=equity_token_to_kite_sector,
+            symbol_to_kite_sector=equity_symbol_to_kite_sector,
+            nse_symbol_to_industry=nse_symbol_to_industry,
+            isin_to_industry=isin_to_industry,
+            token_to_isin=equity_token_to_isin,
+            symbol_to_isin=equity_symbol_to_isin,
+        )
 
         watch_list.append(
             {
                 "label": label,
                 "symbol": symbol,
+                "sector": sector,
                 "segment": "Equity",
                 "instrument_token": token,
                 "prev_close": prev_close,

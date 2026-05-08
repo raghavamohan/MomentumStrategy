@@ -138,6 +138,45 @@ changes); live LTP and row-level P&L updates arrive over WebSocket between
 those snapshots. Click **Logout** to clear the browser session **and** delete
 the on-disk token cache so both dashboard and CLI require a fresh Zerodha login.
 
+## Sector data source and cache
+
+The dashboard's **Sector** column for equities (holdings, equity positions, and
+watch list) is resolved in this order:
+
+1. **ETF override**: if the symbol or instrument/company name contains `ETF`,
+   sector is forced to `ETF`.
+2. **Local yfinance cache** (`.cache/yfinance_industry_cache.json`) using the
+   `sector` field.
+3. **Live yfinance** lookup (only if that symbol is not present in the local
+   yfinance cache). The result is written back to the local cache.
+4. **Kite instruments `sector`** field (when available for the equity row).
+5. **NSE index CSV `Industry`** fallback (coarse backup label).
+6. **ISIN -> Industry** fallback from the same NSE CSV merges.
+
+Notes:
+- `Industry` may appear as fallback text if a true sector is unavailable.
+- ETFs are intentionally mapped to `ETF` because exchange/API sector metadata is
+  commonly missing or inconsistent for ETFs.
+- yfinance cache refresh runs in background about once every 30 days.
+
+### Build initial yfinance cache offline (recommended)
+
+To keep first app launch fast, pre-warm the yfinance cache before running the
+dashboard/CLI:
+
+```powershell
+python scripts/build_yfinance_cache.py --workers 6
+```
+
+This writes/updates:
+- `.cache/yfinance_industry_cache.json`
+
+Optional backfill for older cache rows that have industry but missing sector:
+
+```powershell
+python scripts/build_yfinance_cache.py --backfill-sector --workers 6
+```
+
 ## Run — CLI
 
 ```powershell

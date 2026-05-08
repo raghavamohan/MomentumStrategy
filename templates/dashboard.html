@@ -165,11 +165,14 @@
         </div>
       </div>
       <div class="card" style="padding: 0; overflow: hidden;">
-        <table data-table-sort-key="equity-holdings" data-default-sort-col="4" data-default-sort-type="inr">
+        <table data-table-sort-key="equity-holdings" data-default-sort-col="5" data-default-sort-type="inr">
           <thead>
             <tr>
               <th class="sortable" scope="col">
                 <button type="button" class="th-sort" data-sort-type="text">Company <span class="sort-ind" aria-hidden="true"></span></button>
+              </th>
+              <th class="sortable" scope="col">
+                <button type="button" class="th-sort" data-sort-type="text">Sector <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
               <th class="num sortable" scope="col">
                 <button type="button" class="th-sort" data-sort-type="num">Qty <span class="sort-ind" aria-hidden="true"></span></button>
@@ -204,6 +207,7 @@
                 data-close="{{ h.close_price }}"
               >
                 <td class="symbol">{{ h.symbol_label }}</td>
+                <td>{{ h.sector or "—" }}</td>
                 <td class="num">{{ h.quantity }}</td>
                 <td class="num">{{ h.average_price|inr }}</td>
                 <td class="num js-holding-ltp live-col-ltp">{{ h.last_price|inr }}</td>
@@ -330,6 +334,9 @@
                 <button type="button" class="th-sort" data-sort-type="text">Company <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
               <th class="sortable" scope="col">
+                <button type="button" class="th-sort" data-sort-type="text">Sector <span class="sort-ind" aria-hidden="true"></span></button>
+              </th>
+              <th class="sortable" scope="col">
                 <button type="button" class="th-sort" data-sort-type="text">Prod <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
               <th class="num sortable" scope="col">
@@ -361,6 +368,7 @@
                 data-market="equity"
               >
                 <td class="symbol">{{ p.symbol_label }}</td>
+                <td>{{ p.sector or "—" }}</td>
                 <td>{{ p.product }}</td>
                 <td class="num">{{ p.quantity }}</td>
                 <td class="num">{{ p.average_price|inr }}</td>
@@ -481,11 +489,14 @@
         <section class="section-panel" data-section-panel="watchlist">
           {% if watch_list %}
             <div class="card" style="padding: 0; overflow: hidden;">
-              <table data-table-sort-key="watch-list" data-default-sort-col="3" data-default-sort-type="pct">
+              <table data-table-sort-key="watch-list" data-default-sort-col="4" data-default-sort-type="pct">
                 <thead>
                   <tr>
                     <th class="sortable" scope="col">
                       <button type="button" class="th-sort" data-sort-type="text">Company <span class="sort-ind" aria-hidden="true"></span></button>
+                    </th>
+                    <th class="sortable" scope="col">
+                      <button type="button" class="th-sort" data-sort-type="text">Sector <span class="sort-ind" aria-hidden="true"></span></button>
                     </th>
                     <th class="num sortable" scope="col">
                       <button type="button" class="th-sort" data-sort-type="inr">Live Price <span class="sort-ind" aria-hidden="true"></span></button>
@@ -506,6 +517,7 @@
                       data-prev="{{ item.prev_close }}"
                     >
                       <td class="symbol">{{ item.label }}</td>
+                      <td>{{ item.sector or "—" }}</td>
                       <td class="num js-watch-ltp">{{ item.last_price|inr }}</td>
                       <td class="num js-watch-change {{ item.change|sign_class }}">{{ item.change|inr }}</td>
                       <td class="num js-watch-change-pct {{ item.change_pct|sign_class }}">{{ item.change_pct|pct }}</td>
