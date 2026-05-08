@@ -377,48 +377,46 @@ External documentation:
 
 ```mermaid
 sequenceDiagram
-    participant U as User (browser)
-    participant W as MomentumStrategy web (FastAPI)
-    participant Z as Zerodha (kite.trade)
-    U->>W: GET /
-    W-->>U: index.html (Login button)
+    participant U as User browser
+    participant W as MomentumStrategy web
+    participant Z as Zerodha kite
+    U->>W: Open root page
+    W-->>U: Show login page
     U->>W: GET /login
-    W->>U: 303 redirect to KiteConnect.login_url()
-    U->>Z: GET https://kite.trade/connect/login?api_key=...
-    U->>Z: log in + approve access
-    Z->>U: 302 redirect to http://127.0.0.1:5000/callback?request_token=XXXX
-    U->>W: GET /callback?request_token=XXXX
-    W->>Z: POST /session/token (request_token + api_secret)
-    Z->>W: { access_token, ... }
-    W->>W: save_cached_access_token + set session["authenticated"]
-    W->>U: 303 redirect to /dashboard
+    W->>U: Redirect to Kite login URL
+    U->>Z: Sign in and approve access
+    Z->>U: Redirect to callback with request token
+    U->>W: Call callback endpoint
+    W->>Z: Exchange request token for access token
+    Z->>W: Return access token
+    W->>W: Save cached token and mark session authenticated
+    W->>U: Redirect to dashboard
     U->>W: GET /dashboard
-    W->>Z: GET /portfolio/holdings, /mf/holdings, /portfolio/positions, /user/margins/equity
-    W->>Z: WebSocket subscribe (equity/F&O instrument tokens)
-    Z->>W: JSON responses
-    Z-->>W: live LTP ticks
-    W-->>U: dashboard.html (tabs rendered with live LTP overlays)
+    W->>Z: Fetch holdings MF positions margins
+    W->>Z: Subscribe to live price stream
+    Z->>W: Return snapshot data
+    Z-->>W: Stream live ticks
+    W-->>U: Render dashboard with live updates
 ```
 
 ### Login flow used by `app/main.py` (CLI)
 
 ```mermaid
 sequenceDiagram
-    participant U as User (browser + terminal)
+    participant U as User browser and terminal
     participant C as MomentumStrategy CLI
-    participant Z as Zerodha (kite.trade)
-    C->>C: load KITE_API_KEY / KITE_API_SECRET from .env
-    C->>C: start local callback listener (KITE_REDIRECT_URL)
-    C->>U: print/open login_url(api_key)
-    U->>Z: GET https://kite.trade/connect/login?api_key=...
-    U->>Z: log in + approve access
-    Z->>U: 302 redirect to local callback?request_token=XXXX
-    U->>C: callback delivers request_token automatically
-    C->>C: if callback unavailable -> prompt manual paste fallback
-    C->>Z: POST /session/token (request_token + api_secret)
-    Z->>C: { access_token, ... }
-    C->>C: cache access_token in .access_token.json
-    C->>Z: GET /portfolio/holdings, /mf/holdings, /portfolio/positions, /user/margins/equity
+    participant Z as Zerodha kite
+    C->>C: Load API key and secret from env
+    C->>C: Start local callback listener
+    C->>U: Open Kite login URL
+    U->>Z: Sign in and approve access
+    Z->>U: Redirect to local callback with request token
+    U->>C: Request token captured automatically
+    C->>C: If capture fails prompt manual paste
+    C->>Z: Exchange request token for access token
+    Z->>C: Return access token
+    C->>C: Save token to local cache
+    C->>Z: Fetch holdings MF positions margins
 ```
 
 The `access_token` returned by `generate_session` is valid until
