@@ -344,6 +344,9 @@
           </tbody>
         </table>
       </div>
+      <div id="mf-underlying-breakdown-block" style="margin-top: 16px;">
+        <div class="card empty">Loading mutual fund underlying breakdown...</div>
+      </div>
     {% elif not mf_error %}
       <div class="card empty">No mutual fund holdings found in your Zerodha account.</div>
     {% endif %}
@@ -804,6 +807,15 @@
           maximumFractionDigits: 2,
         }) + '%'
       );
+    }
+
+    function escapeHtml(value) {
+      return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
     }
 
     function sortRowsByInvestedDesc(rows) {
@@ -1466,6 +1478,78 @@
       });
     }
 
+    let mfUnderlyingsLoading = false;
+    async function loadMfUnderlyingBreakdown() {
+      const host = document.getElementById('mf-underlying-breakdown-block');
+      if (!host || mfUnderlyingsLoading) {
+        return;
+      }
+      mfUnderlyingsLoading = true;
+      try {
+        const response = await fetch('/dashboard/mf-underlyings', { cache: 'no-store' });
+        if (!response.ok) {
+          host.innerHTML = '<div class="card empty">Unable to load MF underlying breakdown right now.</div>';
+          return;
+        }
+        const payload = await response.json();
+        if (payload.error) {
+          host.innerHTML = '<div class="alert warning">' + escapeHtml(payload.error) + '</div>';
+          return;
+        }
+        const rows = Array.isArray(payload.rows) ? payload.rows : [];
+        const month = String(payload.month || '');
+        const missing = Array.isArray(payload.notAggregatedFunds) ? payload.notAggregatedFunds : [];
+        const aggregated = Number(payload.aggregatedFundCount) || 0;
+        const total = Number(payload.totalFundCount) || 0;
+        const tableRowsHtml = rows.length
+          ? rows
+              .map(function (row) {
+                return (
+                  '<tr>' +
+                  '<td class="symbol">' + escapeHtml(row.instrument || 'Unknown') + '</td>' +
+                  '<td>' + escapeHtml(row.sector || 'Unspecified') + '</td>' +
+                  '<td class="num">' + formatPct(Number(row.overall_weight) || 0) + '</td>' +
+                  '</tr>'
+                );
+              })
+              .join('')
+          : (
+              '<tr>' +
+              '<td colspan="3" class="empty" style="text-align: left;">' +
+              'Underlying holdings are unavailable on mfdata.in for the current MF set.' +
+              '</td>' +
+              '</tr>'
+            );
+        const missingText = missing.length
+          ? (' Not aggregated (no underlying data on mfdata.in): ' +
+              escapeHtml(missing.join(', ')) +
+              '.')
+          : '';
+        const monthText = month ? (' (latest month ' + escapeHtml(month) + ')') : '';
+        host.innerHTML =
+          '<div class="card" style="padding: 0; overflow: hidden;">' +
+          '<table data-table-sort-key="mf-underlying-breakdown" data-default-sort-col="2" data-default-sort-type="pct">' +
+          '<thead><tr>' +
+          '<th class="sortable" scope="col"><button type="button" class="th-sort" data-sort-type="text">Underlying Instrument <span class="sort-ind" aria-hidden="true"></span></button></th>' +
+          '<th class="sortable" scope="col"><button type="button" class="th-sort" data-sort-type="text">Sector <span class="sort-ind" aria-hidden="true"></span></button></th>' +
+          '<th class="num sortable" scope="col"><button type="button" class="th-sort" data-sort-type="pct">Overall Weight (MF Portfolio) <span class="sort-ind" aria-hidden="true"></span></button></th>' +
+          '</tr></thead>' +
+          '<tbody>' + tableRowsHtml + '</tbody>' +
+          '</table>' +
+          '</div>' +
+          '<div class="alert" style="margin-top: 12px;">' +
+          'Combined from mutual fund underlyings available on mfdata.in' + monthText + '. ' +
+          'Aggregated funds: ' + aggregated + ' / ' + total + '.' +
+          missingText +
+          '</div>';
+        applyInitialTableSorts();
+      } catch (_err) {
+        host.innerHTML = '<div class="card empty">Unable to load MF underlying breakdown right now.</div>';
+      } finally {
+        mfUnderlyingsLoading = false;
+      }
+    }
+
     async function refreshDashboardSnapshot() {
       if (isRefreshing || document.hidden) {
         return;
@@ -1497,6 +1581,7 @@
         bindTabs();
         activateTab(selectedTab || requestedTab);
         applyInitialTableSorts();
+        loadMfUnderlyingBreakdown();
         stampUpdatedNow();
         recalcSummaries();
       } catch (_err) {
@@ -1523,6 +1608,7 @@
     applyInitialTableSorts();
     stampUpdatedNow();
     renderIndexQuotes();
+    loadMfUnderlyingBreakdown();
     recalcSummaries();
     connectLivePrices();
     window.setInterval(refreshDashboardSnapshot, SNAPSHOT_MS);

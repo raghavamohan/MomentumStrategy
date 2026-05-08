@@ -84,20 +84,26 @@ References
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
 import os
+import re
 from collections.abc import MutableMapping
 from contextlib import asynccontextmanager
+from difflib import SequenceMatcher
 from typing import Any
 import secrets
 import threading
 import time
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request as URLRequest, urlopen
 import warnings
 import webbrowser
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from dotenv import load_dotenv
 import keyring
@@ -124,20 +130,50 @@ from app.instruments import (
     get_nse_symbol_to_token_lookup,
     resolve_equity_sector,
     symbol_with_company_name,
+    warm_reference_caches,
 )
 from app.live_prices import dashboard_ws_debug_enabled, live_price_stream
 
 
 logger = logging.getLogger(__name__)
+_DASHBOARD_TIMING_LOGGER = logging.getLogger("app.dashboard.timing")
 
 
 TEMPLATES_DIR = PROJECT_ROOT / "templates"
 SESSION_SECRET_FILE = PROJECT_ROOT / ".session_secret"
 SESSION_SECRET_KEYRING_SERVICE = "MomentumStrategy"
 SESSION_SECRET_KEYRING_ACCOUNT = "dashboard-session-secret"
+MFDATA_BASE_URL = "https://mfdata.in"
+MFDATA_HTTP_TIMEOUT_SECONDS = 20
+MFDATA_MAX_FETCH_WORKERS = max(1, min(16, int(os.getenv("MFDATA_MAX_FETCH_WORKERS", "6") or "6")))
+MFDATA_CACHE_FILE = PROJECT_ROOT / ".cache" / "mfdata_underlyings_cache.json"
+DASHBOARD_TIMING_LOG_FILE = PROJECT_ROOT / ".cache" / "dashboard_timing.log"
+_MFDATA_SEARCH_CACHE: dict[str, list[dict[str, Any]]] = {}
+_MFDATA_HOLDINGS_CACHE: dict[int, dict[str, Any] | None] = {}
+_MFDATA_DISK_CACHE_LOADED = False
+_MFDATA_DISK_CACHE: dict[str, Any] = {"meta": {"cache_month": ""}, "search": {}, "holdings": {}}
+_MFDATA_DISK_CACHE_DIRTY = False
+_MFDATA_CACHE_LOCK = threading.Lock()
+_REFERENCE_WARMUP_LOCK = threading.Lock()
+_REFERENCE_WARMUP_IN_PROGRESS = False
 
 DASHBOARD_HOST = "127.0.0.1"
 DASHBOARD_PORT = 5000
+
+
+def _setup_dashboard_timing_logger() -> None:
+    """Attach a dedicated file handler for dashboard timing lines."""
+    if _DASHBOARD_TIMING_LOGGER.handlers:
+        return
+    DASHBOARD_TIMING_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(DASHBOARD_TIMING_LOG_FILE, encoding="utf-8")
+    file_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    _DASHBOARD_TIMING_LOGGER.addHandler(file_handler)
+    _DASHBOARD_TIMING_LOGGER.setLevel(logging.INFO)
+    _DASHBOARD_TIMING_LOGGER.propagate = False
+
+
+_setup_dashboard_timing_logger()
 
 
 def _dashboard_snapshot_interval_ms() -> int:
@@ -327,6 +363,7 @@ async def _lifespan(_: FastAPI):
             "Startup note: live dashboard prices require Kite WebSocket market data "
             "to be enabled for this API key in developers.kite.trade."
         )
+        _start_reference_cache_warmup()
         yield
     finally:
         # Ensure websocket/ticker thread is closed when FastAPI exits.
@@ -489,6 +526,324 @@ def _decorate_mf(h: dict) -> dict:
     }
 
 
+def _normalize_match_text(value: str) -> str:
+    """Lowercase text with compact spacing for fuzzy scheme-name matching."""
+    cleaned = re.sub(r"[^a-z0-9]+", " ", (value or "").lower())
+    return " ".join(cleaned.split())
+
+
+def _canonicalize_mf_scheme_name(value: str) -> str:
+    """Drop plan/option tokens so scheme names map reliably."""
+    normalized = _normalize_match_text(value)
+    drop_tokens = {
+        "direct",
+        "regular",
+        "growth",
+        "plan",
+        "option",
+        "idcw",
+        "dividend",
+        "payout",
+        "reinvestment",
+        "reinvest",
+        "bonus",
+        "inst",
+        "institutional",
+    }
+    kept = [token for token in normalized.split() if token not in drop_tokens]
+    return " ".join(kept)
+
+
+def _parse_pct(value: Any) -> float:
+    """Parse percentage-like strings to float; returns 0 on malformed input."""
+    if value is None:
+        return 0.0
+    raw = str(value).strip().replace("%", "").replace(",", "")
+    try:
+        return float(raw)
+    except ValueError:
+        return 0.0
+
+
+def _current_month_token() -> str:
+    """Return current month token used for mfdata cache invalidation."""
+    return time.strftime("%Y-%m")
+
+
+def _save_mfdata_disk_cache_locked() -> None:
+    """Persist mfdata cache to local JSON file (expects lock held)."""
+    MFDATA_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    MFDATA_CACHE_FILE.write_text(
+        json.dumps(_MFDATA_DISK_CACHE, ensure_ascii=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+
+
+def _prepare_mfdata_cache_locked() -> None:
+    """Load cache from disk and rotate monthly if stale (expects lock held)."""
+    global _MFDATA_DISK_CACHE_LOADED, _MFDATA_DISK_CACHE, _MFDATA_DISK_CACHE_DIRTY
+    if not _MFDATA_DISK_CACHE_LOADED:
+        if MFDATA_CACHE_FILE.exists():
+            try:
+                loaded = json.loads(MFDATA_CACHE_FILE.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                loaded = {}
+            if isinstance(loaded, dict):
+                _MFDATA_DISK_CACHE = {
+                    "meta": loaded.get("meta") if isinstance(loaded.get("meta"), dict) else {"cache_month": ""},
+                    "search": loaded.get("search") if isinstance(loaded.get("search"), dict) else {},
+                    "holdings": loaded.get("holdings") if isinstance(loaded.get("holdings"), dict) else {},
+                }
+        _MFDATA_DISK_CACHE_LOADED = True
+
+    current_month = _current_month_token()
+    cached_month = str((_MFDATA_DISK_CACHE.get("meta") or {}).get("cache_month") or "")
+    if cached_month == current_month:
+        return
+
+    _MFDATA_DISK_CACHE["meta"] = {"cache_month": current_month}
+    _MFDATA_DISK_CACHE["search"] = {}
+    _MFDATA_DISK_CACHE["holdings"] = {}
+    _MFDATA_SEARCH_CACHE.clear()
+    _MFDATA_HOLDINGS_CACHE.clear()
+    _MFDATA_DISK_CACHE_DIRTY = True
+    try:
+        _save_mfdata_disk_cache_locked()
+        _MFDATA_DISK_CACHE_DIRTY = False
+    except OSError:
+        pass
+
+
+def _flush_mfdata_disk_cache() -> None:
+    """Persist mfdata cache once if there are pending updates."""
+    global _MFDATA_DISK_CACHE_DIRTY
+    with _MFDATA_CACHE_LOCK:
+        _prepare_mfdata_cache_locked()
+        if not _MFDATA_DISK_CACHE_DIRTY:
+            return
+        try:
+            _save_mfdata_disk_cache_locked()
+            _MFDATA_DISK_CACHE_DIRTY = False
+        except OSError:
+            pass
+
+
+def _mfdata_json_get(path: str, query: dict[str, Any] | None = None) -> Any:
+    """GET JSON payload from mfdata.in API."""
+    url = f"{MFDATA_BASE_URL}{path}"
+    if query:
+        url = f"{url}?{urlencode(query)}"
+    req = URLRequest(
+        url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "MomentumStrategy/1.0 (+local-dashboard)",
+        },
+    )
+    with urlopen(req, timeout=MFDATA_HTTP_TIMEOUT_SECONDS) as resp:
+        payload = resp.read().decode("utf-8", errors="replace")
+    return json.loads(payload)
+
+
+def _mfdata_search_fund(fund_name: str) -> list[dict[str, Any]]:
+    """Search fund variants on mfdata.in (monthly disk cache + memory cache)."""
+    key = _normalize_match_text(fund_name)
+    if not key:
+        return []
+    with _MFDATA_CACHE_LOCK:
+        _prepare_mfdata_cache_locked()
+        cached_mem = _MFDATA_SEARCH_CACHE.get(key)
+        if cached_mem is not None:
+            return list(cached_mem)
+        cached_disk = (_MFDATA_DISK_CACHE.get("search") or {}).get(key)
+        if isinstance(cached_disk, list):
+            rows = [row for row in cached_disk if isinstance(row, dict)]
+            _MFDATA_SEARCH_CACHE[key] = rows
+            return list(rows)
+    try:
+        payload = _mfdata_json_get("/api/v1/search", {"q": fund_name})
+    except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError):
+        payload = {}
+    rows = payload.get("data") if isinstance(payload, dict) else []
+    rows = [row for row in (rows or []) if isinstance(row, dict)]
+    global _MFDATA_DISK_CACHE_DIRTY
+    with _MFDATA_CACHE_LOCK:
+        _prepare_mfdata_cache_locked()
+        _MFDATA_SEARCH_CACHE[key] = rows
+        (_MFDATA_DISK_CACHE.get("search") or {})[key] = rows
+        _MFDATA_DISK_CACHE_DIRTY = True
+    return rows
+
+
+def _mfdata_holdings_for_family(family_id: int) -> dict[str, Any] | None:
+    """Fetch holdings for one mfdata family (monthly disk cache + memory cache)."""
+    family_key = str(int(family_id))
+    with _MFDATA_CACHE_LOCK:
+        _prepare_mfdata_cache_locked()
+        if family_id in _MFDATA_HOLDINGS_CACHE:
+            return _MFDATA_HOLDINGS_CACHE[family_id]
+        holdings_disk = (_MFDATA_DISK_CACHE.get("holdings") or {})
+        if family_key in holdings_disk:
+            cached_disk = holdings_disk.get(family_key)
+            result = cached_disk if isinstance(cached_disk, dict) else None
+            _MFDATA_HOLDINGS_CACHE[family_id] = result
+            return result
+    try:
+        payload = _mfdata_json_get(f"/api/v1/families/{family_id}/holdings")
+    except HTTPError as exc:
+        if exc.code == 404:
+            payload = {}
+        else:
+            raise
+    except (URLError, TimeoutError, OSError, json.JSONDecodeError):
+        payload = {}
+    data = payload.get("data") if isinstance(payload, dict) else None
+    result = data if isinstance(data, dict) else None
+    global _MFDATA_DISK_CACHE_DIRTY
+    with _MFDATA_CACHE_LOCK:
+        _prepare_mfdata_cache_locked()
+        _MFDATA_HOLDINGS_CACHE[family_id] = result
+        (_MFDATA_DISK_CACHE.get("holdings") or {})[family_key] = result
+        _MFDATA_DISK_CACHE_DIRTY = True
+    return result
+
+
+def _rank_mfdata_variants(fund_name: str, variants: list[dict[str, Any]]) -> list[int]:
+    """Rank candidate mfdata family IDs for the broker fund name."""
+    canonical_fund = _canonicalize_mf_scheme_name(fund_name)
+    if not canonical_fund:
+        return []
+    fund_tokens = set(canonical_fund.split())
+    scored: list[tuple[float, int]] = []
+    seen_family_ids: set[int] = set()
+    for row in variants:
+        family_id = int(row.get("family_id") or 0)
+        if family_id <= 0 or family_id in seen_family_ids:
+            continue
+        seen_family_ids.add(family_id)
+        candidate_name = str(row.get("name") or "").strip()
+        candidate = _canonicalize_mf_scheme_name(candidate_name)
+        if not candidate:
+            continue
+        candidate_tokens = set(candidate.split())
+        overlap = len(fund_tokens & candidate_tokens)
+        score = float(overlap * 10)
+        if canonical_fund in candidate or candidate in canonical_fund:
+            score += 5
+        score += SequenceMatcher(None, canonical_fund, candidate).ratio()
+        # Prefer growth-like variants when tie-breakers are close.
+        option_type = str(row.get("option_type") or "").lower()
+        plan_type = str(row.get("plan_type") or "").lower()
+        if "growth" in candidate_name.lower() or "growth" in option_type:
+            score += 0.25
+        if plan_type == "direct":
+            score += 0.05
+        scored.append((score, family_id))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [family_id for _, family_id in scored]
+
+
+def _build_mf_underlying_breakdown(
+    mf_holdings: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], str, list[str], int, int]:
+    """Combine all MF holdings into one instrument/sector weighted view via mfdata."""
+    if not mf_holdings:
+        return [], "", [], 0, 0
+
+    fund_current_by_name: dict[str, float] = {}
+    for row in mf_holdings:
+        fund_name = str(row.get("fund") or "").strip()
+        if not fund_name:
+            continue
+        fund_current_by_name[fund_name] = fund_current_by_name.get(fund_name, 0.0) + float(row.get("current") or 0.0)
+
+    total_current = sum(fund_current_by_name.values())
+    if total_current <= 0:
+        unique_count = len(fund_current_by_name)
+        return [], "", [], 0, unique_count
+
+    combined: dict[tuple[str, str], float] = {}
+    used_months: set[str] = set()
+    not_aggregated: list[str] = []
+    aggregated_funds: set[str] = set()
+    all_funds: set[str] = set(fund_current_by_name)
+
+    def _resolve_fund_equity_rows(fund_name: str) -> dict[str, Any] | None:
+        variants = _mfdata_search_fund(fund_name)
+        family_candidates = _rank_mfdata_variants(fund_name, variants)
+        for family_id in family_candidates:
+            try:
+                payload = _mfdata_holdings_for_family(family_id)
+            except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError):
+                payload = None
+            equity_rows = (payload or {}).get("equity_holdings") if isinstance(payload, dict) else []
+            if equity_rows:
+                return payload
+        return None
+
+    fund_items = list(fund_current_by_name.items())
+    fund_payload_by_name: dict[str, dict[str, Any] | None] = {}
+    worker_count = min(MFDATA_MAX_FETCH_WORKERS, max(1, len(fund_items)))
+    if fund_items:
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            payloads = pool.map(lambda item: _resolve_fund_equity_rows(item[0]), fund_items)
+            for (fund_name, _), payload in zip(fund_items, payloads, strict=False):
+                fund_payload_by_name[fund_name] = payload
+
+    for fund_name, fund_current in fund_items:
+        if fund_current <= 0:
+            not_aggregated.append(fund_name)
+            continue
+
+        selected_holdings = fund_payload_by_name.get(fund_name)
+        if not selected_holdings:
+            not_aggregated.append(fund_name)
+            continue
+
+        month = str(selected_holdings.get("month") or "").strip()
+        if month:
+            used_months.add(month)
+        fund_weight = fund_current / total_current
+        for row in selected_holdings.get("equity_holdings") or []:
+            instrument = str(row.get("stock_name") or row.get("isin") or "").strip() or "Unknown"
+            sector = str(
+                row.get("sector") or "Unspecified"
+            ).strip() or "Unspecified"
+            instrument_weight = max(
+                0.0,
+                _parse_pct(
+                    row.get("weight_pct")
+                    or row.get("weight")
+                ),
+            )
+            overall_weight = fund_weight * (instrument_weight / 100.0)
+            if overall_weight <= 0:
+                continue
+            key = (instrument, sector)
+            combined[key] = combined.get(key, 0.0) + overall_weight
+        aggregated_funds.add(fund_name)
+
+    table_rows = [
+        {
+            "instrument": instrument,
+            "sector": sector,
+            "overall_weight": weight * 100.0,
+        }
+        for (instrument, sector), weight in combined.items()
+    ]
+    table_rows.sort(
+        key=lambda row: (float(row.get("overall_weight") or 0.0), str(row.get("instrument") or "").lower()),
+        reverse=True,
+    )
+    sorted_months = sorted(used_months, reverse=True)
+    latest_month = sorted_months[0] if sorted_months else ""
+    # Deduplicate while preserving input order.
+    seen_missing: set[str] = set()
+    missing_unique = [name for name in not_aggregated if not (name in seen_missing or seen_missing.add(name))]
+    _flush_mfdata_disk_cache()
+    return table_rows, latest_month, missing_unique, len(aggregated_funds), len(all_funds)
+
+
 def _normalize_equity_sector(symbol: str, sector: str) -> str:
     """Override sector for selected ETFs and keep a safe fallback."""
     compact = "".join(ch for ch in symbol.upper() if ch.isalnum())
@@ -632,6 +987,43 @@ def _overlay_live_ltp(row: dict, live_ltp_by_token: dict[int, float]) -> dict:
     return out
 
 
+def _dashboard_timing_mark(
+    timings: list[tuple[str, float]],
+    stage: str,
+    start_time: float,
+) -> None:
+    """Append elapsed milliseconds since ``start_time`` for one stage."""
+    timings.append((stage, (time.perf_counter() - start_time) * 1000.0))
+
+
+def _start_reference_cache_warmup() -> None:
+    """Warm heavy instrument/NSE caches in background when a token is available."""
+    global _REFERENCE_WARMUP_IN_PROGRESS
+    with _REFERENCE_WARMUP_LOCK:
+        if _REFERENCE_WARMUP_IN_PROGRESS:
+            return
+        _REFERENCE_WARMUP_IN_PROGRESS = True
+
+    def _job() -> None:
+        global _REFERENCE_WARMUP_IN_PROGRESS
+        try:
+            token = load_cached_access_token()
+            if not token:
+                return
+            api_key, _ = load_credentials()
+            kite = build_authenticated_client(api_key, token)
+            if not validate_kite_session(kite):
+                return
+            warm_reference_caches(kite)
+        except Exception as exc:
+            logger.info("Reference cache warmup skipped/failed: %s", exc)
+        finally:
+            with _REFERENCE_WARMUP_LOCK:
+                _REFERENCE_WARMUP_IN_PROGRESS = False
+
+    threading.Thread(target=_job, daemon=True).start()
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -715,6 +1107,7 @@ async def callback(
 
     save_cached_access_token(session["access_token"])
     request.session["authenticated"] = True
+    _start_reference_cache_warmup()
     return RedirectResponse("/dashboard", status_code=303)
 
 
@@ -827,38 +1220,56 @@ async def live_prices_websocket(websocket: WebSocket) -> None:
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request):
     """Render the tabbed dashboard with all account snapshot sections."""
+    request_start = time.perf_counter()
+    timings: list[tuple[str, float]] = []
     if not _restore_session_if_token_valid(request):
         return RedirectResponse("/", status_code=303)
+    _dashboard_timing_mark(timings, "session_restore", request_start)
 
     kite = _kite_for_request()
     if kite is None:
         request.session.clear()
         return RedirectResponse("/", status_code=303)
-
-    try:
-        equity_raw = kite.holdings() or []
-        positions_raw = kite.positions() or {}
-        margins_raw = kite.margins(segment="equity") or {}
-    except TokenException:
-        request.session.clear()
-        live_price_stream.close()
-        return RedirectResponse("/", status_code=303)
+    _dashboard_timing_mark(timings, "kite_client", request_start)
 
     mf_error: str | None = None
-    try:
-        mf_raw = kite.mf_holdings() or []
-    except PermissionException:
-        mf_raw = []
-        mf_error = (
-            "Mutual Funds API is not enabled on this Kite Connect app. "
-            "Enable the MF module at https://developers.kite.trade if you "
-            "want this section."
-        )
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        future_equity = pool.submit(kite.holdings)
+        future_positions = pool.submit(kite.positions)
+        future_margins = pool.submit(kite.margins, "equity")
+        future_mf = pool.submit(kite.mf_holdings)
+        future_profile = pool.submit(kite.profile)
 
-    try:
-        profile_raw = kite.profile() or {}
-    except Exception:
-        profile_raw = {}
+        try:
+            equity_raw = future_equity.result() or []
+            positions_raw = future_positions.result() or {}
+            margins_raw = future_margins.result() or {}
+        except TokenException:
+            request.session.clear()
+            live_price_stream.close()
+            return RedirectResponse("/", status_code=303)
+
+        try:
+            mf_raw = future_mf.result() or []
+        except PermissionException:
+            mf_raw = []
+            mf_error = (
+                "Mutual Funds API is not enabled on this Kite Connect app. "
+                "Enable the MF module at https://developers.kite.trade if you "
+                "want this section."
+            )
+        except TokenException:
+            request.session.clear()
+            live_price_stream.close()
+            return RedirectResponse("/", status_code=303)
+        except Exception:
+            mf_raw = []
+
+        try:
+            profile_raw = future_profile.result() or {}
+        except Exception:
+            profile_raw = {}
+    _dashboard_timing_mark(timings, "kite_data_fetch_parallel", request_start)
 
     net_positions = positions_raw.get("net", []) or []
     open_net = [p for p in net_positions if int(p.get("quantity") or 0) != 0]
@@ -878,6 +1289,7 @@ async def dashboard(request: Request):
     isin_to_industry = get_isin_to_industry()
     nse_symbol_to_token = get_nse_symbol_to_token_lookup(kite)
     nifty50_symbols = get_nifty50_symbols()
+    _dashboard_timing_mark(timings, "instrument_and_reference_lookups", request_start)
     watch_quote_keys = [f"NSE:{sym}" for sym in nifty50_symbols]
     watch_tokens = {
         int(nse_symbol_to_token.get(sym) or 0)
@@ -890,6 +1302,7 @@ async def dashboard(request: Request):
         quote_batch: dict[str, Any] = kite.quote(quote_keys) if quote_keys else {}
     except Exception:
         quote_batch = {}
+    _dashboard_timing_mark(timings, "quote_batch", request_start)
 
     for env_label, ts in _DASHBOARD_INDEX_ENTRIES:
         key = f"NSE:{ts}"
@@ -941,6 +1354,7 @@ async def dashboard(request: Request):
         except Exception:
             # Keep dashboard resilient if websocket setup fails.
             live_ltp_by_token = {}
+    _dashboard_timing_mark(timings, "live_price_stream_bootstrap", request_start)
 
     for row in index_quotes_bootstrap:
         tok = int(row.get("token") or 0)
@@ -1005,6 +1419,7 @@ async def dashboard(request: Request):
         ),
         key=lambda r: r["tradingsymbol"],
     )
+    _dashboard_timing_mark(timings, "decorate_holdings_positions", request_start)
 
     available = margins_raw.get("available", {}) or {}
     utilised = margins_raw.get("utilised", {}) or {}
@@ -1100,6 +1515,7 @@ async def dashboard(request: Request):
                 "change_pct": change_pct,
             }
         )
+    _dashboard_timing_mark(timings, "watchlist_build", request_start)
 
     dashboard_bootstrap = {
         "mfTotals": {
@@ -1139,7 +1555,64 @@ async def dashboard(request: Request):
         "user_profile": user_profile,
         "watch_list": watch_list,
     }
+    _dashboard_timing_mark(timings, "context_build", request_start)
+    total_ms = (time.perf_counter() - request_start) * 1000.0
+    timings_str = ", ".join(f"{name}={ms:.1f}ms" for name, ms in timings)
+    logger.info("dashboard timing total=%.1fms | %s", total_ms, timings_str)
+    _DASHBOARD_TIMING_LOGGER.info("dashboard timing total=%.1fms | %s", total_ms, timings_str)
     return templates.TemplateResponse(request, "dashboard.html", context)
+
+
+@app.get("/dashboard/mf-underlyings")
+async def dashboard_mf_underlyings(request: Request) -> JSONResponse:
+    """Return MF underlying aggregation as JSON (loaded lazily by the UI)."""
+    if not _restore_session_if_token_valid(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    kite = _kite_for_request()
+    if kite is None:
+        request.session.clear()
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    try:
+        mf_raw = kite.mf_holdings() or []
+    except PermissionException:
+        return JSONResponse(
+            {
+                "rows": [],
+                "month": "",
+                "notAggregatedFunds": [],
+                "aggregatedFundCount": 0,
+                "totalFundCount": 0,
+                "error": (
+                    "Mutual Funds API is not enabled on this Kite Connect app. "
+                    "Enable the MF module at https://developers.kite.trade if you "
+                    "want this section."
+                ),
+            }
+        )
+    except TokenException:
+        request.session.clear()
+        live_price_stream.close()
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    mf_holdings = sorted(
+        (_decorate_mf(h) for h in mf_raw),
+        key=lambda r: r["fund"],
+    )
+    rows, month, missing_funds, aggregated_count, total_count = _build_mf_underlying_breakdown(
+        mf_holdings
+    )
+    return JSONResponse(
+        {
+            "rows": rows,
+            "month": month,
+            "notAggregatedFunds": missing_funds,
+            "aggregatedFundCount": aggregated_count,
+            "totalFundCount": total_count,
+            "error": "",
+        }
+    )
 
 
 def main() -> None:

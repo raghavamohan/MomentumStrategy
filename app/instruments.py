@@ -45,7 +45,8 @@ _NSE_INDUSTRY_CSV_URLS: tuple[str, ...] = (
     "https://nsearchives.nseindia.com/content/indices/ind_niftylargemidcap250list.csv",
     "https://nsearchives.nseindia.com/content/indices/ind_niftymidsmallcap400list.csv",
 )
-_NIFTY50_CACHE_TTL_SECONDS = 30 * 60
+# NSE CSV downloads are relatively expensive; keep these lookups warm longer.
+_NIFTY50_CACHE_TTL_SECONDS = 12 * 60 * 60
 _NIFTY50_CACHE_EXPIRES_AT = 0.0
 _CACHED_NIFTY50_SYMBOLS: list[str] = []
 _NSE_MERGED_INDUSTRY_EXPIRES_AT = 0.0
@@ -74,6 +75,7 @@ _YFINANCE_CACHE_LOCK = threading.Lock()
 _YFINANCE_CACHE_LOADED = False
 _YFINANCE_CACHE_REFRESH_IN_PROGRESS = False
 _YFINANCE_REFRESH_THREAD_STARTED = False
+_YFINANCE_SYMBOL_REFRESH_IN_PROGRESS: set[tuple[str, str]] = set()
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _YFINANCE_CACHE_DIR = _PROJECT_ROOT / ".cache"
@@ -225,6 +227,50 @@ def _maybe_start_monthly_yfinance_refresh() -> None:
                 _YFINANCE_REFRESH_THREAD_STARTED = False
 
     threading.Thread(target=_refresh_job, daemon=True).start()
+
+
+def _maybe_start_single_symbol_yfinance_refresh(exchange: str, symbol: str) -> None:
+    """Best-effort async refresh for one symbol when cache row is missing."""
+    clean_exchange = str(exchange or "").strip().upper()
+    clean_symbol = _normalise_symbol(symbol)
+    if yf is None or clean_exchange not in EQUITY_EXCHANGES or not clean_symbol:
+        return
+
+    key = _yfinance_cache_key(clean_exchange, clean_symbol)
+    with _YFINANCE_CACHE_LOCK:
+        if key in _YFINANCE_SYMBOL_REFRESH_IN_PROGRESS:
+            return
+        _YFINANCE_SYMBOL_REFRESH_IN_PROGRESS.add(key)
+
+    def _refresh_one() -> None:
+        try:
+            yf_symbol = clean_symbol
+            if "." not in yf_symbol:
+                suffix = ".NS" if clean_exchange == "NSE" else ".BO"
+                yf_symbol = f"{yf_symbol}{suffix}"
+            info = yf.Ticker(yf_symbol).info or {}
+            y_ind = _normalise_name(info.get("industry") or info.get("sector"))
+            y_sec = _normalise_name(info.get("sector"))
+
+            global _YFINANCE_CACHE_LAST_REFRESH_EPOCH
+            with _YFINANCE_CACHE_LOCK:
+                _CACHED_YFINANCE_KEY_TO_INDUSTRY[key] = y_ind
+                _CACHED_YFINANCE_KEY_TO_SECTOR[key] = y_sec
+                if not _YFINANCE_CACHE_LAST_REFRESH_EPOCH:
+                    _YFINANCE_CACHE_LAST_REFRESH_EPOCH = time.time()
+            _persist_yfinance_cache()
+        except Exception as exc:
+            logger.warning(
+                "background yfinance refresh failed for %s:%s: %s",
+                clean_exchange,
+                clean_symbol,
+                exc,
+            )
+        finally:
+            with _YFINANCE_CACHE_LOCK:
+                _YFINANCE_SYMBOL_REFRESH_IN_PROGRESS.discard(key)
+
+    threading.Thread(target=_refresh_one, daemon=True).start()
 
 
 def _normalise_name(raw: Any) -> str:
@@ -484,6 +530,22 @@ def get_nifty50_symbols() -> list[str]:
         return list(_CACHED_NIFTY50_SYMBOLS)
 
 
+def warm_reference_caches(kite) -> None:
+    """Best-effort warmup for heavy instrument/NSE reference lookups."""
+    try:
+        get_cash_equity_name_lookups(kite)
+        get_cash_equity_kite_sector_lookups(kite)
+        get_cash_equity_isin_lookups(kite)
+    except Exception as exc:
+        logger.warning("Instrument lookup warmup failed: %s", exc)
+    try:
+        get_nse_symbol_to_industry()
+        get_isin_to_industry()
+        get_nifty50_symbols()
+    except Exception as exc:
+        logger.warning("NSE reference lookup warmup failed: %s", exc)
+
+
 def resolve_equity_industry(
     symbol: str,
     exchange: str | None,
@@ -520,37 +582,10 @@ def resolve_equity_industry(
                     f"{clean_exchange}:{clean_symbol}",
                     ind,
                 )
-        elif yf is not None:
-            yf_symbol = clean_symbol
-            if "." not in yf_symbol:
-                suffix = ".NS" if clean_exchange == "NSE" else ".BO"
-                yf_symbol = f"{yf_symbol}{suffix}"
-
-            try:
-                info = yf.Ticker(yf_symbol).info or {}
-                y_ind = _normalise_name(info.get("industry") or info.get("sector"))
-                y_sec = _normalise_name(info.get("sector"))
-
-                global _YFINANCE_CACHE_LAST_REFRESH_EPOCH
-                with _YFINANCE_CACHE_LOCK:
-                    _CACHED_YFINANCE_KEY_TO_INDUSTRY[y_key] = y_ind
-                    _CACHED_YFINANCE_KEY_TO_SECTOR[y_key] = y_sec
-                    # If this is the first time we populate the cache in this
-                    # process (or cache file had no refresh marker), treat
-                    # "now" as the baseline for monthly refresh.
-                    if not _YFINANCE_CACHE_LAST_REFRESH_EPOCH:
-                        _YFINANCE_CACHE_LAST_REFRESH_EPOCH = time.time()
-                _persist_yfinance_cache()
-
-                ind = y_ind
-                if y_ind:
-                    logger.info(
-                        "Industry for %s resolved via yfinance: %s",
-                        yf_symbol,
-                        y_ind,
-                    )
-            except Exception as exc:
-                logger.warning("yfinance industry lookup failed for %s: %s", yf_symbol, exc)
+        else:
+            # Do not block request path with yfinance network fetches.
+            # Queue a best-effort background refresh and fall back to other sources.
+            _maybe_start_single_symbol_yfinance_refresh(clean_exchange, clean_symbol)
 
     # Other sources first-choice after yfinance miss.
     if not ind and token > 0:
@@ -624,33 +659,10 @@ def resolve_equity_sector(
                 f"{clean_exchange}:{clean_symbol}",
                 sec,
             )
-        elif not yf_has_row and yf is not None:
-            yf_symbol = clean_symbol
-            if "." not in yf_symbol:
-                suffix = ".NS" if clean_exchange == "NSE" else ".BO"
-                yf_symbol = f"{yf_symbol}{suffix}"
-            try:
-                info = yf.Ticker(yf_symbol).info or {}
-                y_ind = _normalise_name(info.get("industry") or info.get("sector"))
-                y_sec = _normalise_name(info.get("sector"))
-
-                global _YFINANCE_CACHE_LAST_REFRESH_EPOCH
-                with _YFINANCE_CACHE_LOCK:
-                    _CACHED_YFINANCE_KEY_TO_INDUSTRY[y_key] = y_ind
-                    _CACHED_YFINANCE_KEY_TO_SECTOR[y_key] = y_sec
-                    if not _YFINANCE_CACHE_LAST_REFRESH_EPOCH:
-                        _YFINANCE_CACHE_LAST_REFRESH_EPOCH = time.time()
-                _persist_yfinance_cache()
-
-                sec = y_sec
-                if y_sec:
-                    logger.info(
-                        "Sector for %s resolved via yfinance: %s",
-                        yf_symbol,
-                        y_sec,
-                    )
-            except Exception as exc:
-                logger.warning("yfinance sector lookup failed for %s: %s", yf_symbol, exc)
+        elif not yf_has_row:
+            # Do not block request path with yfinance network fetches.
+            # Queue a best-effort background refresh and fall back to other sources.
+            _maybe_start_single_symbol_yfinance_refresh(clean_exchange, clean_symbol)
 
     if not sec and token > 0:
         sec = _normalise_name(token_to_kite_sector.get(token))
