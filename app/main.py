@@ -117,6 +117,24 @@ SECTION_KEYS: tuple[str, ...] = (
 )
 
 
+def _build_equity_lookup_bundle(kite) -> dict[str, Any]:
+    """Build and return shared lookup dictionaries used by equity sections."""
+    token_to_name, symbol_to_name = get_cash_equity_name_lookups(kite)
+    token_to_kite_sector, symbol_to_kite_sector = get_cash_equity_kite_sector_lookups(kite)
+    token_to_isin, symbol_to_isin = get_cash_equity_isin_lookups(kite)
+    return {
+        "token_to_name": token_to_name,
+        "symbol_to_name": symbol_to_name,
+        "token_to_kite_sector": token_to_kite_sector,
+        "symbol_to_kite_sector": symbol_to_kite_sector,
+        "token_to_isin": token_to_isin,
+        "symbol_to_isin": symbol_to_isin,
+        "nse_symbol_to_industry": get_nse_symbol_to_industry(),
+        "isin_to_industry": get_isin_to_industry(),
+        "nse_symbol_to_token": get_nse_symbol_to_token_lookup(kite),
+    }
+
+
 def _is_transient_service_unavailable(exc: Exception) -> bool:
     """Return True for transient upstream outages worth a quick retry."""
     code = getattr(exc, "code", None)
@@ -223,7 +241,7 @@ def _split_top_level_allocations(
     return split_top_level_allocations(sector_rows)
 
 
-def _print_holdings(kite) -> tuple[float, float, float]:
+def _print_holdings(kite, *, lookup_bundle: dict[str, Any] | None = None) -> tuple[float, float, float]:
     """Print the equity holdings table.
 
     Calls ``kite.holdings()`` once and renders the result. See:
@@ -244,22 +262,18 @@ def _print_holdings(kite) -> tuple[float, float, float]:
         print("No equity holdings found in your Zerodha account.")
         return (0.0, 0.0, 0.0)
 
-    token_to_name, symbol_to_name = get_cash_equity_name_lookups(kite)
-    token_to_kite_sector, symbol_to_kite_sector = get_cash_equity_kite_sector_lookups(kite)
-    token_to_isin, symbol_to_isin = get_cash_equity_isin_lookups(kite)
-    nse_symbol_to_industry = get_nse_symbol_to_industry()
-    isin_to_industry = get_isin_to_industry()
+    bundle = lookup_bundle or _build_equity_lookup_bundle(kite)
     rows = [
         _row(
             h,
-            token_to_name,
-            symbol_to_name,
-            token_to_kite_sector,
-            symbol_to_kite_sector,
-            nse_symbol_to_industry,
-            isin_to_industry,
-            token_to_isin,
-            symbol_to_isin,
+            bundle["token_to_name"],
+            bundle["symbol_to_name"],
+            bundle["token_to_kite_sector"],
+            bundle["symbol_to_kite_sector"],
+            bundle["nse_symbol_to_industry"],
+            bundle["isin_to_industry"],
+            bundle["token_to_isin"],
+            bundle["symbol_to_isin"],
         )
         for h in holdings
     ]
@@ -745,7 +759,7 @@ def _print_position_table(
     print(f"Total M2M     : {total_m2m:>14,.2f}")
 
 
-def _print_positions(kite) -> float:
+def _print_positions(kite, *, lookup_bundle: dict[str, Any] | None = None) -> float:
     """Fetch and print open positions, separated by equity vs F&O.
 
     Uses
@@ -770,11 +784,7 @@ def _print_positions(kite) -> float:
     net_positions = positions.get("net", []) or []
 
     open_positions = [p for p in net_positions if int(p.get("quantity") or 0) != 0]
-    token_to_name, symbol_to_name = get_cash_equity_name_lookups(kite)
-    token_to_kite_sector, symbol_to_kite_sector = get_cash_equity_kite_sector_lookups(kite)
-    token_to_isin, symbol_to_isin = get_cash_equity_isin_lookups(kite)
-    nse_symbol_to_industry = get_nse_symbol_to_industry()
-    isin_to_industry = get_isin_to_industry()
+    bundle = lookup_bundle or _build_equity_lookup_bundle(kite)
 
     equity = [p for p in open_positions if p.get("exchange") in EQUITY_EXCHANGES]
     fno = [p for p in open_positions if p.get("exchange") in FNO_EXCHANGES]
@@ -785,14 +795,14 @@ def _print_positions(kite) -> float:
     ]
 
     common_kw = dict(
-        token_to_name=token_to_name,
-        symbol_to_name=symbol_to_name,
-        token_to_kite_sector=token_to_kite_sector,
-        symbol_to_kite_sector=symbol_to_kite_sector,
-        nse_symbol_to_industry=nse_symbol_to_industry,
-        isin_to_industry=isin_to_industry,
-        token_to_isin=token_to_isin,
-        symbol_to_isin=symbol_to_isin,
+        token_to_name=bundle["token_to_name"],
+        symbol_to_name=bundle["symbol_to_name"],
+        token_to_kite_sector=bundle["token_to_kite_sector"],
+        symbol_to_kite_sector=bundle["symbol_to_kite_sector"],
+        nse_symbol_to_industry=bundle["nse_symbol_to_industry"],
+        isin_to_industry=bundle["isin_to_industry"],
+        token_to_isin=bundle["token_to_isin"],
+        symbol_to_isin=bundle["symbol_to_isin"],
     )
 
     _print_position_table("Positions: Equity (NSE / BSE)", equity, **common_kw)
@@ -919,7 +929,7 @@ def _print_user_profile(kite) -> None:
     print(f"Enabled Exchanges: {exchanges}")
 
 
-def _print_watch_list(kite) -> None:
+def _print_watch_list(kite, *, lookup_bundle: dict[str, Any] | None = None) -> None:
     """Print Nifty 50 watch list snapshot (same source as web dashboard)."""
     print()
     print("=== Watch List (Nifty 50) ===")
@@ -933,12 +943,7 @@ def _print_watch_list(kite) -> None:
         print("Watch list is empty (Nifty 50 symbols unavailable).")
         return
 
-    token_to_name, symbol_to_name = get_cash_equity_name_lookups(kite)
-    token_to_kite_sector, symbol_to_kite_sector = get_cash_equity_kite_sector_lookups(kite)
-    token_to_isin, symbol_to_isin = get_cash_equity_isin_lookups(kite)
-    nse_symbol_to_industry = get_nse_symbol_to_industry()
-    isin_to_industry = get_isin_to_industry()
-    nse_symbol_to_token = get_nse_symbol_to_token_lookup(kite)
+    bundle = lookup_bundle or _build_equity_lookup_bundle(kite)
 
     quote_keys = [f"NSE:{sym}" for sym in symbols]
     try:
@@ -954,7 +959,7 @@ def _print_watch_list(kite) -> None:
     for symbol in symbols:
         qkey = f"NSE:{symbol}"
         qrow = quote_batch.get(qkey) or {}
-        token = int(qrow.get("instrument_token") or nse_symbol_to_token.get(symbol) or 0)
+        token = int(qrow.get("instrument_token") or bundle["nse_symbol_to_token"].get(symbol) or 0)
         ohlc = qrow.get("ohlc") or {}
         prev_close = float(ohlc.get("close") or 0.0)
         last_price = float(qrow.get("last_price") or 0.0)
@@ -971,22 +976,22 @@ def _print_watch_list(kite) -> None:
                 symbol=symbol,
                 exchange="NSE",
                 instrument_token=token,
-                token_to_name=token_to_name,
-                symbol_to_name=symbol_to_name,
-                token_to_kite_sector=token_to_kite_sector,
-                symbol_to_kite_sector=symbol_to_kite_sector,
-                nse_symbol_to_industry=nse_symbol_to_industry,
-                isin_to_industry=isin_to_industry,
-                token_to_isin=token_to_isin,
-                symbol_to_isin=symbol_to_isin,
+                token_to_name=bundle["token_to_name"],
+                symbol_to_name=bundle["symbol_to_name"],
+                token_to_kite_sector=bundle["token_to_kite_sector"],
+                symbol_to_kite_sector=bundle["symbol_to_kite_sector"],
+                nse_symbol_to_industry=bundle["nse_symbol_to_industry"],
+                isin_to_industry=bundle["isin_to_industry"],
+                token_to_isin=bundle["token_to_isin"],
+                symbol_to_isin=bundle["symbol_to_isin"],
             ),
         )
         label = symbol_with_company_name(
             symbol=symbol,
             exchange="NSE",
             instrument_token=token,
-            token_to_name=token_to_name,
-            symbol_to_name=symbol_to_name,
+            token_to_name=bundle["token_to_name"],
+            symbol_to_name=bundle["symbol_to_name"],
         )
         rows.append([label, sector, last_price, change, change_pct])
 
@@ -1016,11 +1021,18 @@ def main() -> None:
         raise SystemExit(f"Authentication failed: {exc}") from exc
 
     try:
+        equity_lookup_bundle: dict[str, Any] | None = None
+        if {"equity", "positions", "watchlist"} & selected_sections:
+            equity_lookup_bundle = _build_equity_lookup_bundle(kite)
+
         if "profile" in selected_sections:
             _print_user_profile(kite)
 
         if "equity" in selected_sections:
-            eq_invested, eq_current, eq_pnl = _print_holdings(kite)
+            eq_invested, eq_current, eq_pnl = _print_holdings(
+                kite,
+                lookup_bundle=equity_lookup_bundle,
+            )
         else:
             eq_invested, eq_current, eq_pnl = _equity_totals_only(kite)
 
@@ -1033,14 +1045,20 @@ def main() -> None:
             mf_invested, mf_current, mf_pnl = _mf_totals_only(kite)
 
         if "positions" in selected_sections:
-            positions_pnl = _print_positions(kite)
+            positions_pnl = _print_positions(
+                kite,
+                lookup_bundle=equity_lookup_bundle,
+            )
         else:
             positions_pnl = _positions_pnl_only(kite)
 
         if "cash" in selected_sections:
             _print_cash_balance(kite)
         if "watchlist" in selected_sections:
-            _print_watch_list(kite)
+            _print_watch_list(
+                kite,
+                lookup_bundle=equity_lookup_bundle,
+            )
         if "summary" in selected_sections:
             total_invested = eq_invested + mf_invested
             total_current = eq_current + mf_current

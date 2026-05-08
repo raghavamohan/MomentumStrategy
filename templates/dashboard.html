@@ -136,7 +136,7 @@
               Equity Holdings <span class="count">{{ equity_holdings|length }}</span>
             </button>
             <button class="tab" data-tab="mf" role="tab">
-              Mutual Funds <span class="count">{{ mf_holdings|length }}</span>
+              Mutual Funds <span class="count" id="mf-tab-count">...</span>
             </button>
             <button class="tab" data-tab="positions-equity" role="tab">
               Equity Positions <span class="count">{{ equity_positions|length }}</span>
@@ -273,83 +273,12 @@
 
     {# ---------------- Mutual Fund Holdings ---------------- #}
     <section class="panel" data-panel="mf">
-    {% if mf_error %}
-      <div class="alert warning">{{ mf_error }}</div>
-    {% endif %}
-
-    {% if mf_holdings %}
-      <div class="summary">
-        <div class="stat">
-          <div class="label">Funds</div>
-          <div class="value">{{ mf_holdings|length }}</div>
-        </div>
-        <div class="stat">
-          <div class="label">Invested</div>
-          <div class="value">{{ mf_totals.invested|inr }}</div>
-        </div>
-        <div class="stat">
-          <div class="label">Current</div>
-          <div class="value">{{ mf_totals.current|inr }}</div>
-        </div>
-        <div class="stat">
-          <div class="label">Total P&amp;L</div>
-          <div class="value {{ mf_totals.pnl|sign_class }}">
-            {{ mf_totals.pnl|inr }}
-          </div>
-        </div>
-      </div>
-      <div class="card" style="padding: 0; overflow: hidden;">
-        <table data-table-sort-key="mf-holdings" data-default-sort-col="5" data-default-sort-type="inr">
-          <thead>
-            <tr>
-              <th class="sortable" scope="col">
-                <button type="button" class="th-sort" data-sort-type="text">Fund <span class="sort-ind" aria-hidden="true"></span></button>
-              </th>
-              <th class="sortable" scope="col">
-                <button type="button" class="th-sort" data-sort-type="text">Folio <span class="sort-ind" aria-hidden="true"></span></button>
-              </th>
-              <th class="num sortable" scope="col">
-                <button type="button" class="th-sort" data-sort-type="num">Units <span class="sort-ind" aria-hidden="true"></span></button>
-              </th>
-              <th class="num sortable" scope="col">
-                <button type="button" class="th-sort" data-sort-type="num">Avg NAV <span class="sort-ind" aria-hidden="true"></span></button>
-              </th>
-              <th class="num sortable" scope="col">
-                <button type="button" class="th-sort" data-sort-type="num">Last NAV <span class="sort-ind" aria-hidden="true"></span></button>
-              </th>
-              <th class="num sortable" scope="col">
-                <button type="button" class="th-sort" data-sort-type="inr">Invested <span class="sort-ind" aria-hidden="true"></span></button>
-              </th>
-              <th class="num sortable" scope="col">
-                <button type="button" class="th-sort" data-sort-type="inr">Current <span class="sort-ind" aria-hidden="true"></span></button>
-              </th>
-              <th class="num sortable" scope="col">
-                <button type="button" class="th-sort" data-sort-type="inr">P&amp;L <span class="sort-ind" aria-hidden="true"></span></button>
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for h in mf_holdings %}
-              <tr>
-                <td class="symbol">{{ h.fund }}</td>
-                <td>{{ h.folio }}</td>
-                <td class="num">{{ h.units|units }}</td>
-                <td class="num">{{ h.average_price|units }}</td>
-                <td class="num">{{ h.last_price|units }}</td>
-                <td class="num">{{ h.invested|inr }}</td>
-                <td class="num">{{ h.current|inr }}</td>
-                <td class="num {{ h.pnl|sign_class }}">{{ h.pnl|inr }}</td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      <div id="mf-underlying-breakdown-block" style="margin-top: 16px;">
-        <div class="card empty">Loading mutual fund underlying breakdown...</div>
-      </div>
-    {% elif not mf_error %}
-      <div class="card empty">No mutual fund holdings found in your Zerodha account.</div>
-    {% endif %}
+    <div id="mf-holdings-block">
+      <div class="card empty">Open this tab to load mutual fund holdings.</div>
+    </div>
+    <div id="mf-underlying-breakdown-block" style="margin-top: 16px;">
+      <div class="card empty">Underlying breakdown loads after MF holdings are available.</div>
+    </div>
     </section>
 
     {# ---------------- Equity Positions ---------------- #}
@@ -1430,6 +1359,9 @@
       panels.forEach(function (panel) {
         panel.classList.toggle('active', panel.dataset.panel === target);
       });
+      if (target === 'mf') {
+        loadMfHoldings();
+      }
     }
 
     function getActiveTab() {
@@ -1478,10 +1410,118 @@
       });
     }
 
+    let mfHoldingsLoaded = false;
+    let mfHoldingsLoading = false;
     let mfUnderlyingsLoading = false;
+    let mfUnderlyingsLoaded = false;
+
+    function setMfTabCount(countText) {
+      const count = document.getElementById('mf-tab-count');
+      if (count) {
+        count.textContent = countText;
+      }
+    }
+
+    function renderMfHoldings(payload) {
+      const host = document.getElementById('mf-holdings-block');
+      if (!host) {
+        return;
+      }
+      const rows = Array.isArray(payload.rows) ? payload.rows : [];
+      const totals = payload.totals || { invested: 0, current: 0, pnl: 0 };
+      setMfTabCount(String(Number(payload.count) || rows.length || 0));
+      bootstrap.mfTotals = {
+        invested: Number(totals.invested) || 0,
+        current: Number(totals.current) || 0,
+        pnl: Number(totals.pnl) || 0,
+      };
+      if (payload.error) {
+        host.innerHTML = '<div class="alert warning">' + escapeHtml(payload.error) + '</div>';
+        return;
+      }
+      if (!rows.length) {
+        host.innerHTML = '<div class="card empty">No mutual fund holdings found in your Zerodha account.</div>';
+        return;
+      }
+
+      const summaryHtml =
+        '<div class="summary">' +
+        '<div class="stat"><div class="label">Funds</div><div class="value">' + rows.length + '</div></div>' +
+        '<div class="stat"><div class="label">Invested</div><div class="value">' + formatInr(totals.invested || 0) + '</div></div>' +
+        '<div class="stat"><div class="label">Current</div><div class="value">' + formatInr(totals.current || 0) + '</div></div>' +
+        '<div class="stat"><div class="label">Total P&L</div><div class="value ' + signClass(totals.pnl || 0) + '">' +
+        formatInr(totals.pnl || 0) +
+        '</div></div>' +
+        '</div>';
+
+      const tableRows = rows
+        .map(function (h) {
+          return (
+            '<tr>' +
+            '<td class="symbol">' + escapeHtml(h.fund) + '</td>' +
+            '<td>' + escapeHtml(h.folio) + '</td>' +
+            '<td class="num">' + Number(h.units || 0).toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 }) + '</td>' +
+            '<td class="num">' + Number(h.average_price || 0).toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 }) + '</td>' +
+            '<td class="num">' + Number(h.last_price || 0).toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 }) + '</td>' +
+            '<td class="num">' + formatInr(h.invested || 0) + '</td>' +
+            '<td class="num">' + formatInr(h.current || 0) + '</td>' +
+            '<td class="num ' + signClass(h.pnl || 0) + '">' + formatInr(h.pnl || 0) + '</td>' +
+            '</tr>'
+          );
+        })
+        .join('');
+
+      host.innerHTML =
+        summaryHtml +
+        '<div class="card" style="padding: 0; overflow: hidden;">' +
+        '<table data-table-sort-key="mf-holdings" data-default-sort-col="5" data-default-sort-type="inr">' +
+        '<thead><tr>' +
+        '<th class="sortable" scope="col"><button type="button" class="th-sort" data-sort-type="text">Fund <span class="sort-ind" aria-hidden="true"></span></button></th>' +
+        '<th class="sortable" scope="col"><button type="button" class="th-sort" data-sort-type="text">Folio <span class="sort-ind" aria-hidden="true"></span></button></th>' +
+        '<th class="num sortable" scope="col"><button type="button" class="th-sort" data-sort-type="num">Units <span class="sort-ind" aria-hidden="true"></span></button></th>' +
+        '<th class="num sortable" scope="col"><button type="button" class="th-sort" data-sort-type="num">Avg NAV <span class="sort-ind" aria-hidden="true"></span></button></th>' +
+        '<th class="num sortable" scope="col"><button type="button" class="th-sort" data-sort-type="num">Last NAV <span class="sort-ind" aria-hidden="true"></span></button></th>' +
+        '<th class="num sortable" scope="col"><button type="button" class="th-sort" data-sort-type="inr">Invested <span class="sort-ind" aria-hidden="true"></span></button></th>' +
+        '<th class="num sortable" scope="col"><button type="button" class="th-sort" data-sort-type="inr">Current <span class="sort-ind" aria-hidden="true"></span></button></th>' +
+        '<th class="num sortable" scope="col"><button type="button" class="th-sort" data-sort-type="inr">P&L <span class="sort-ind" aria-hidden="true"></span></button></th>' +
+        '</tr></thead>' +
+        '<tbody>' + tableRows + '</tbody>' +
+        '</table>' +
+        '</div>';
+      applyInitialTableSorts();
+      recalcSummaries();
+    }
+
+    async function loadMfHoldings() {
+      const host = document.getElementById('mf-holdings-block');
+      if (!host || mfHoldingsLoading || mfHoldingsLoaded) {
+        if (mfHoldingsLoaded) {
+          loadMfUnderlyingBreakdown();
+        }
+        return;
+      }
+      mfHoldingsLoading = true;
+      host.innerHTML = '<div class="card empty">Loading mutual fund holdings...</div>';
+      try {
+        const response = await fetch('/dashboard/mf-holdings', { cache: 'no-store' });
+        if (!response.ok) {
+          host.innerHTML = '<div class="card empty">Unable to load mutual fund holdings right now.</div>';
+          return;
+        }
+        const payload = await response.json();
+        renderMfHoldings(payload);
+        mfHoldingsLoaded = true;
+        loadMfUnderlyingBreakdown();
+      } catch (_err) {
+        host.innerHTML = '<div class="card empty">Unable to load mutual fund holdings right now.</div>';
+      } finally {
+        mfHoldingsLoading = false;
+      }
+    }
+
     async function loadMfUnderlyingBreakdown() {
       const host = document.getElementById('mf-underlying-breakdown-block');
-      if (!host || mfUnderlyingsLoading) {
+      if (!host || mfUnderlyingsLoading || mfUnderlyingsLoaded || !mfHoldingsLoaded) {
         return;
       }
       mfUnderlyingsLoading = true;
@@ -1543,6 +1583,7 @@
           missingText +
           '</div>';
         applyInitialTableSorts();
+        mfUnderlyingsLoaded = true;
       } catch (_err) {
         host.innerHTML = '<div class="card empty">Unable to load MF underlying breakdown right now.</div>';
       } finally {
@@ -1581,7 +1622,12 @@
         bindTabs();
         activateTab(selectedTab || requestedTab);
         applyInitialTableSorts();
-        loadMfUnderlyingBreakdown();
+        mfHoldingsLoaded = false;
+        mfUnderlyingsLoaded = false;
+        setMfTabCount('...');
+        if ((selectedTab || requestedTab) === 'mf') {
+          loadMfHoldings();
+        }
         stampUpdatedNow();
         recalcSummaries();
       } catch (_err) {
@@ -1608,7 +1654,11 @@
     applyInitialTableSorts();
     stampUpdatedNow();
     renderIndexQuotes();
-    loadMfUnderlyingBreakdown();
+    if (selectedTab === 'mf') {
+      loadMfHoldings();
+    } else {
+      setMfTabCount('...');
+    }
     recalcSummaries();
     connectLivePrices();
     window.setInterval(refreshDashboardSnapshot, SNAPSHOT_MS);

@@ -1103,7 +1103,7 @@ def resolve_equity_sector(
 
         if cached_sec:
             sec = cached_sec
-            logger.info(
+            logger.debug(
                 "Sector for %s resolved via yfinance cache: %s",
                 f"{clean_exchange}:{clean_symbol}",
                 sec,

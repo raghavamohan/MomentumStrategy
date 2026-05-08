@@ -155,6 +155,13 @@ SESSION_SECRET_KEYRING_ACCOUNT = "dashboard-session-secret"
 DASHBOARD_TIMING_LOG_FILE = PROJECT_ROOT / ".cache" / "dashboard_timing.log"
 _REFERENCE_WARMUP_LOCK = threading.Lock()
 _REFERENCE_WARMUP_IN_PROGRESS = False
+_PROFILE_CACHE_LOCK = threading.Lock()
+_PROFILE_CACHE_TTL_SECONDS = 600.0
+_PROFILE_CACHE_VALUE: dict[str, Any] = {}
+_PROFILE_CACHE_EXPIRES_AT = 0.0
+_QUOTE_CACHE_LOCK = threading.Lock()
+_QUOTE_CACHE_DAY = ""
+_QUOTE_CACHE: dict[str, dict[str, Any]] = {}
 
 DASHBOARD_HOST = "127.0.0.1"
 DASHBOARD_PORT = 5000
@@ -244,6 +251,12 @@ def _dashboard_index_entries() -> list[tuple[str, str]]:
 
 
 _DASHBOARD_INDEX_ENTRIES = _dashboard_index_entries()
+
+_MF_PERMISSION_ERROR = (
+    "Mutual Funds API is not enabled on this Kite Connect app. "
+    "Enable the MF module at https://developers.kite.trade if you "
+    "want this section."
+)
 
 
 def _session_secret() -> str:
@@ -504,6 +517,57 @@ def _dashboard_timing_mark(
     timings.append((stage, (time.perf_counter() - start_time) * 1000.0))
 
 
+def _today_cache_token() -> str:
+    """Return day token used for quote cache invalidation."""
+    return time.strftime("%Y-%m-%d")
+
+
+def _get_cached_quotes(kite, quote_keys: list[str]) -> dict[str, Any]:
+    """Return quote payload from in-memory day cache, fetching only misses."""
+    global _QUOTE_CACHE_DAY
+    if not quote_keys:
+        return {}
+    day = _today_cache_token()
+    with _QUOTE_CACHE_LOCK:
+        if _QUOTE_CACHE_DAY != day:
+            _QUOTE_CACHE_DAY = day
+            _QUOTE_CACHE.clear()
+        cached = {k: _QUOTE_CACHE.get(k, {}) for k in quote_keys if k in _QUOTE_CACHE}
+    missing = [k for k in quote_keys if k not in cached]
+    if not missing:
+        return cached
+    try:
+        fetched = kite.quote(missing) or {}
+    except Exception:
+        fetched = {}
+    with _QUOTE_CACHE_LOCK:
+        if _QUOTE_CACHE_DAY != day:
+            _QUOTE_CACHE_DAY = day
+            _QUOTE_CACHE.clear()
+        for k in missing:
+            _QUOTE_CACHE[k] = fetched.get(k) or {}
+            cached[k] = _QUOTE_CACHE[k]
+    return cached
+
+
+def _get_cached_profile(kite) -> dict[str, Any]:
+    """Return profile payload cached briefly to avoid per-refresh profile calls."""
+    global _PROFILE_CACHE_EXPIRES_AT
+    now = time.time()
+    with _PROFILE_CACHE_LOCK:
+        if now < _PROFILE_CACHE_EXPIRES_AT and _PROFILE_CACHE_VALUE:
+            return dict(_PROFILE_CACHE_VALUE)
+    try:
+        profile = kite.profile() or {}
+    except Exception:
+        profile = {}
+    with _PROFILE_CACHE_LOCK:
+        _PROFILE_CACHE_VALUE.clear()
+        _PROFILE_CACHE_VALUE.update(profile)
+        _PROFILE_CACHE_EXPIRES_AT = now + _PROFILE_CACHE_TTL_SECONDS
+        return dict(_PROFILE_CACHE_VALUE)
+
+
 def _start_reference_cache_warmup() -> None:
     """Warm/refresh reference caches in background on server startup."""
     global _REFERENCE_WARMUP_IN_PROGRESS
@@ -743,12 +807,10 @@ async def dashboard(request: Request):
     _dashboard_timing_mark(timings, "kite_client", request_start)
 
     mf_error: str | None = None
-    with ThreadPoolExecutor(max_workers=5) as pool:
+    with ThreadPoolExecutor(max_workers=3) as pool:
         future_equity = pool.submit(kite.holdings)
         future_positions = pool.submit(kite.positions)
         future_margins = pool.submit(kite.margins, "equity")
-        future_mf = pool.submit(kite.mf_holdings)
-        future_profile = pool.submit(kite.profile)
 
         try:
             equity_raw = future_equity.result() or []
@@ -759,26 +821,7 @@ async def dashboard(request: Request):
             live_price_stream.close()
             return RedirectResponse("/", status_code=303)
 
-        try:
-            mf_raw = future_mf.result() or []
-        except PermissionException:
-            mf_raw = []
-            mf_error = (
-                "Mutual Funds API is not enabled on this Kite Connect app. "
-                "Enable the MF module at https://developers.kite.trade if you "
-                "want this section."
-            )
-        except TokenException:
-            request.session.clear()
-            live_price_stream.close()
-            return RedirectResponse("/", status_code=303)
-        except Exception:
-            mf_raw = []
-
-        try:
-            profile_raw = future_profile.result() or {}
-        except Exception:
-            profile_raw = {}
+        profile_raw = _get_cached_profile(kite)
     _dashboard_timing_mark(timings, "kite_data_fetch_parallel", request_start)
 
     net_positions = positions_raw.get("net", []) or []
@@ -816,10 +859,7 @@ async def dashboard(request: Request):
     }
 
     quote_keys = index_quote_keys + watch_quote_keys
-    try:
-        quote_batch: dict[str, Any] = kite.quote(quote_keys) if quote_keys else {}
-    except Exception:
-        quote_batch = {}
+    quote_batch: dict[str, Any] = _get_cached_quotes(kite, quote_keys)
     _dashboard_timing_mark(timings, "quote_batch", request_start)
 
     for env_label, ts in _DASHBOARD_INDEX_ENTRIES:
@@ -868,7 +908,9 @@ async def dashboard(request: Request):
             tokens |= watch_tokens
             tokens = {t for t in tokens if t > 0}
             live_price_stream.subscribe(tokens)
-            live_ltp_by_token = live_price_stream.snapshot_ltp(tokens)
+            # Avoid blocking dashboard HTML render waiting for first ticks;
+            # websocket updates land immediately after page load.
+            live_ltp_by_token = live_price_stream.snapshot_ltp(tokens, wait_seconds=0.0)
         except Exception:
             # Keep dashboard resilient if websocket setup fails.
             live_ltp_by_token = {}
@@ -896,10 +938,7 @@ async def dashboard(request: Request):
         ),
         key=lambda r: r["tradingsymbol"],
     )
-    mf_holdings = sorted(
-        (_decorate_mf(h) for h in mf_raw),
-        key=lambda r: r["fund"],
-    )
+    mf_holdings: list[dict[str, Any]] = []
 
     equity_positions = sorted(
         (
@@ -950,7 +989,7 @@ async def dashboard(request: Request):
     equity_totals = summarise(equity_holdings, "invested", "current", "pnl")
     equity_sector_info = equity_sector_breakdown(equity_holdings)
     equity_all_sector_summary = summarise_equity_by_sector(equity_holdings)
-    mf_totals = summarise(mf_holdings, "invested", "current", "pnl")
+    mf_totals = {"invested": 0.0, "current": 0.0, "pnl": 0.0}
     equity_position_totals = summarise(equity_positions, "pnl", "m2m")
     fno_position_totals = summarise(fno_positions, "pnl", "m2m")
 
@@ -1120,11 +1159,7 @@ async def dashboard_mf_underlyings(request: Request) -> JSONResponse:
                 "notAggregatedFunds": [],
                 "aggregatedFundCount": 0,
                 "totalFundCount": 0,
-                "error": (
-                    "Mutual Funds API is not enabled on this Kite Connect app. "
-                    "Enable the MF module at https://developers.kite.trade if you "
-                    "want this section."
-                ),
+                "error": _MF_PERMISSION_ERROR,
             }
         )
     except TokenException:
@@ -1146,6 +1181,47 @@ async def dashboard_mf_underlyings(request: Request) -> JSONResponse:
             "notAggregatedFunds": missing_funds,
             "aggregatedFundCount": aggregated_count,
             "totalFundCount": total_count,
+            "error": "",
+        }
+    )
+
+
+@app.get("/dashboard/mf-holdings")
+async def dashboard_mf_holdings(request: Request) -> JSONResponse:
+    """Return mutual fund holdings/totals as JSON (loaded lazily by MF tab)."""
+    if not _restore_session_if_token_valid(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    kite = _kite_for_request()
+    if kite is None:
+        request.session.clear()
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    try:
+        mf_raw = kite.mf_holdings() or []
+    except PermissionException:
+        return JSONResponse(
+            {
+                "rows": [],
+                "totals": {"invested": 0.0, "current": 0.0, "pnl": 0.0},
+                "count": 0,
+                "error": _MF_PERMISSION_ERROR,
+            }
+        )
+    except TokenException:
+        request.session.clear()
+        live_price_stream.close()
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    except Exception:
+        mf_raw = []
+
+    mf_holdings = sorted((_decorate_mf(h) for h in mf_raw), key=lambda r: r["fund"])
+    mf_totals = summarise(mf_holdings, "invested", "current", "pnl")
+    return JSONResponse(
+        {
+            "rows": mf_holdings,
+            "totals": mf_totals,
+            "count": len(mf_holdings),
             "error": "",
         }
     )
