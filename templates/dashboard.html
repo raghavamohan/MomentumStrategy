@@ -409,6 +409,7 @@
                 data-buy="{{ p.buy_value }}"
                 data-sell="{{ p.sell_value }}"
                 data-mult="{{ p.multiplier }}"
+                data-close="{{ p.close_price }}"
                 data-market="equity"
               >
                 <td class="symbol">{{ p.symbol_label }}</td>
@@ -418,7 +419,7 @@
                 <td class="num">{{ p.average_price|inr }}</td>
                 <td class="num js-pos-ltp live-col-ltp">{{ p.last_price|inr }}</td>
                 <td class="num js-pos-pnl live-col-pnl {{ p.pnl|sign_class }}">{{ p.pnl|inr }}</td>
-                <td class="num {{ p.m2m|sign_class }}">{{ p.m2m|inr }}</td>
+                <td class="num js-pos-m2m {{ p.m2m|sign_class }}">{{ p.m2m|inr }}</td>
               </tr>
             {% endfor %}
           </tbody>
@@ -486,6 +487,7 @@
                 data-buy="{{ p.buy_value }}"
                 data-sell="{{ p.sell_value }}"
                 data-mult="{{ p.multiplier }}"
+                data-close="{{ p.close_price }}"
                 data-market="fno"
               >
                 <td class="symbol">{{ p.symbol_label }}</td>
@@ -494,7 +496,7 @@
                 <td class="num">{{ p.average_price|inr }}</td>
                 <td class="num js-pos-ltp live-col-ltp">{{ p.last_price|inr }}</td>
                 <td class="num js-pos-pnl live-col-pnl {{ p.pnl|sign_class }}">{{ p.pnl|inr }}</td>
-                <td class="num {{ p.m2m|sign_class }}">{{ p.m2m|inr }}</td>
+                <td class="num js-pos-m2m {{ p.m2m|sign_class }}">{{ p.m2m|inr }}</td>
               </tr>
             {% endfor %}
           </tbody>
@@ -875,12 +877,16 @@
       const buy = parseFloat(tr.dataset.buy);
       const sell = parseFloat(tr.dataset.sell);
       const mult = parseFloat(tr.dataset.mult);
+      const close = parseFloat(tr.dataset.close);
       if (!Number.isFinite(ltp) || !Number.isFinite(qty)) {
         return;
       }
       const pnl = (sell - buy) + qty * ltp * mult;
+      const m2m =
+        Number.isFinite(close) && close > 0 ? (ltp - close) * qty * mult : NaN;
       const ltpEl = tr.querySelector('.js-pos-ltp');
       const pnlEl = tr.querySelector('.js-pos-pnl');
+      const m2mEl = tr.querySelector('.js-pos-m2m');
       if (ltpEl) {
         ltpEl.textContent = formatInr(ltp);
       }
@@ -888,6 +894,11 @@
         pnlEl.textContent = formatInr(pnl);
         pnlEl.classList.remove('positive', 'negative', 'neutral');
         pnlEl.classList.add(signClass(pnl));
+      }
+      if (m2mEl && Number.isFinite(m2m)) {
+        m2mEl.textContent = formatInr(m2m);
+        m2mEl.classList.remove('positive', 'negative', 'neutral');
+        m2mEl.classList.add(signClass(m2m));
       }
     }
 
@@ -1169,26 +1180,44 @@
       const totalCurrent = mf.current + equityCurrentSum;
 
       let eqPosPnl = 0;
+      let eqPosM2m = 0;
       document.querySelectorAll('tr.live-position[data-market="equity"]').forEach(function (tr) {
-        const cell = tr.querySelector('.js-pos-pnl');
-        if (!cell) {
+        const pnlCell = tr.querySelector('.js-pos-pnl');
+        if (!pnlCell) {
           return;
         }
-        const v = parseFloat(cell.textContent.replace(/,/g, ''));
-        if (Number.isFinite(v)) {
-          eqPosPnl += v;
+        const pnlVal = parseFloat(pnlCell.textContent.replace(/,/g, ''));
+        if (Number.isFinite(pnlVal)) {
+          eqPosPnl += pnlVal;
+        }
+        const m2mCell = tr.querySelector('.js-pos-m2m');
+        if (!m2mCell) {
+          return;
+        }
+        const m2mVal = parseFloat(m2mCell.textContent.replace(/,/g, ''));
+        if (Number.isFinite(m2mVal)) {
+          eqPosM2m += m2mVal;
         }
       });
 
       let fnoPosPnl = 0;
+      let fnoPosM2m = 0;
       document.querySelectorAll('tr.live-position[data-market="fno"]').forEach(function (tr) {
-        const cell = tr.querySelector('.js-pos-pnl');
-        if (!cell) {
+        const pnlCell = tr.querySelector('.js-pos-pnl');
+        if (!pnlCell) {
           return;
         }
-        const v = parseFloat(cell.textContent.replace(/,/g, ''));
-        if (Number.isFinite(v)) {
-          fnoPosPnl += v;
+        const pnlVal = parseFloat(pnlCell.textContent.replace(/,/g, ''));
+        if (Number.isFinite(pnlVal)) {
+          fnoPosPnl += pnlVal;
+        }
+        const m2mCell = tr.querySelector('.js-pos-m2m');
+        if (!m2mCell) {
+          return;
+        }
+        const m2mVal = parseFloat(m2mCell.textContent.replace(/,/g, ''));
+        if (Number.isFinite(m2mVal)) {
+          fnoPosM2m += m2mVal;
         }
       });
 
@@ -1213,7 +1242,9 @@
       setSignStat('equity-holdings-stat-pnl', equityPnlSum);
 
       setSignStat('equity-pos-panel-pnl', eqPosPnl);
+      setSignStat('equity-pos-panel-m2m', eqPosM2m);
       setSignStat('fno-pos-panel-pnl', fnoPosPnl);
+      setSignStat('fno-pos-panel-m2m', fnoPosM2m);
       recalcEquitySectorSummary();
     }
 

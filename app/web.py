@@ -563,14 +563,17 @@ def _decorate_position(
     """Enrich a Kite positions entry."""
     qty = int(p.get("quantity") or 0)
     ltp = float(p.get("last_price") or 0.0)
+    close_price = float(p.get("close_price") or 0.0)
+    multiplier = float(p.get("multiplier") or 1.0)
     live_ltp_applied = bool(p.get("_live_ltp_applied"))
     if live_ltp_applied:
         buy_value = float(p.get("buy_value") or 0.0)
         sell_value = float(p.get("sell_value") or 0.0)
-        multiplier = float(p.get("multiplier") or 1.0)
         pnl = (sell_value - buy_value) + (qty * ltp * multiplier)
+        m2m = (ltp - close_price) * qty * multiplier if close_price > 0 else float(p.get("m2m") or 0.0)
     else:
         pnl = float(p.get("pnl") or 0.0)
+        m2m = float(p.get("m2m") or 0.0)
     symbol = str(p.get("tradingsymbol", "")).strip()
     symbol_label = symbol_with_company_name(
         symbol=symbol,
@@ -607,9 +610,10 @@ def _decorate_position(
         "last_price": ltp,
         "buy_value": float(p.get("buy_value") or 0.0),
         "sell_value": float(p.get("sell_value") or 0.0),
-        "multiplier": float(p.get("multiplier") or 1.0),
+        "multiplier": multiplier,
+        "close_price": close_price,
         "pnl": pnl,
-        "m2m": float(p.get("m2m") or 0.0),
+        "m2m": m2m,
     }
 
 
