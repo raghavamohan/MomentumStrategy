@@ -424,7 +424,9 @@ def _decorate_holding(
         token_to_name=token_to_name,
         symbol_to_name=symbol_to_name,
     )
-    sector = resolve_equity_sector(
+    sector = _normalize_equity_sector(
+        symbol,
+        resolve_equity_sector(
         symbol=symbol,
         exchange=str(h.get("exchange", "")),
         instrument_token=int(h.get("instrument_token") or 0),
@@ -436,6 +438,7 @@ def _decorate_holding(
         isin_to_industry=isin_to_industry,
         token_to_isin=token_to_isin,
         symbol_to_isin=symbol_to_isin,
+        ),
     )
     return {
         "tradingsymbol": symbol,
@@ -481,6 +484,66 @@ def _decorate_mf(h: dict) -> dict:
     }
 
 
+def _normalize_equity_sector(symbol: str, sector: str) -> str:
+    """Override sector for selected ETFs and keep a safe fallback."""
+    compact = "".join(ch for ch in symbol.upper() if ch.isalnum())
+    if compact in {"GOLDBEES", "GOLDETF", "GOLDSHARE"}:
+        return "Gold"
+    if compact in {"LIQUIDBEES", "LIQUIDBESS", "LIQUIDETF"}:
+        return "Debt"
+    return (sector or "").strip() or "Uncategorized"
+
+
+def _summarise_equity_by_sector(rows: list[dict]) -> list[dict]:
+    """Aggregate equity holdings by sector for dashboard display."""
+    bucket: dict[str, dict[str, float]] = {}
+    for row in rows:
+        sector = str(row.get("sector") or "Uncategorized").strip() or "Uncategorized"
+        entry = bucket.setdefault(
+            sector,
+            {"sector": sector, "invested": 0.0, "current": 0.0, "pnl": 0.0},
+        )
+        entry["invested"] += float(row.get("invested") or 0.0)
+        entry["current"] += float(row.get("current") or 0.0)
+        entry["pnl"] += float(row.get("pnl") or 0.0)
+    return sorted(
+        bucket.values(),
+        key=lambda r: (float(r["invested"]), str(r["sector"]).lower()),
+        reverse=True,
+    )
+
+
+def _equity_sector_breakdown(rows: list[dict]) -> dict[str, list[dict] | dict[str, float]]:
+    """Split holdings into top buckets and equity subsectors.
+
+    Top buckets are Gold, Debt, and Equity. Equity is the sum of all
+    non-Gold/non-Debt sectors.
+    """
+    sector_rows = _summarise_equity_by_sector(rows)
+    gold = {"sector": "Gold", "invested": 0.0, "current": 0.0, "pnl": 0.0}
+    debt = {"sector": "Debt", "invested": 0.0, "current": 0.0, "pnl": 0.0}
+    equity_subsectors: list[dict] = []
+
+    for row in sector_rows:
+        sector_name = str(row.get("sector") or "").strip().lower()
+        if sector_name == "gold":
+            gold = row
+        elif sector_name == "debt":
+            debt = row
+        else:
+            equity_subsectors.append(row)
+
+    equity = _summarise(equity_subsectors, "invested", "current", "pnl")
+    return {
+        "top_level": [
+            {"sector": "Debt", **debt},
+            {"sector": "Gold", **gold},
+            {"sector": "Equity", **equity},
+        ],
+        "equity_subsectors": equity_subsectors,
+    }
+
+
 def _decorate_position(
     p: dict,
     token_to_name: dict[int, str],
@@ -511,7 +574,9 @@ def _decorate_position(
         token_to_name=token_to_name,
         symbol_to_name=symbol_to_name,
     )
-    sector = resolve_equity_sector(
+    sector = _normalize_equity_sector(
+        symbol,
+        resolve_equity_sector(
         symbol=symbol,
         exchange=str(p.get("exchange", "")),
         instrument_token=int(p.get("instrument_token") or 0),
@@ -523,6 +588,7 @@ def _decorate_position(
         isin_to_industry=isin_to_industry,
         token_to_isin=token_to_isin,
         symbol_to_isin=symbol_to_isin,
+        ),
     )
     return {
         "tradingsymbol": symbol,
@@ -940,6 +1006,8 @@ async def dashboard(request: Request):
     }
 
     equity_totals = _summarise(equity_holdings, "invested", "current", "pnl")
+    equity_sector_breakdown = _equity_sector_breakdown(equity_holdings)
+    equity_all_sector_summary = _summarise_equity_by_sector(equity_holdings)
     mf_totals = _summarise(mf_holdings, "invested", "current", "pnl")
     equity_position_totals = _summarise(equity_positions, "pnl", "m2m")
     fno_position_totals = _summarise(fno_positions, "pnl", "m2m")
@@ -1039,6 +1107,9 @@ async def dashboard(request: Request):
         "dashboard_name": _DASHBOARD_DISPLAY_NAME,
         "equity_holdings": equity_holdings,
         "equity_totals": equity_totals,
+        "equity_sector_summary": equity_sector_breakdown["top_level"],
+        "equity_subsector_summary": equity_sector_breakdown["equity_subsectors"],
+        "equity_all_sector_summary": equity_all_sector_summary,
         "mf_holdings": mf_holdings,
         "mf_totals": mf_totals,
         "mf_error": mf_error,

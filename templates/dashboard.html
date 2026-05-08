@@ -56,8 +56,8 @@
       <aside class="card side-nav" aria-label="Dashboard sections">
         <div class="side-nav-title">Sections</div>
         <div class="section-nav">
-          <button class="section-nav-link" data-section="profile" type="button">User Profile</button>
-          <button class="section-nav-link active" data-section="portfolio" type="button">Users Portfolio</button>
+          <button class="section-nav-link" data-section="profile" type="button">Profile</button>
+          <button class="section-nav-link active" data-section="portfolio" type="button">Portfolio</button>
           <button class="section-nav-link" data-section="watchlist" type="button">Watch List</button>
         </div>
       </aside>
@@ -164,6 +164,44 @@
           </div>
         </div>
       </div>
+      <div class="equity-breakdown-grid">
+        <div class="card">
+          <h3 style="margin: 0 0 8px; text-align: center;">Allocation Overview</h3>
+          <div id="equity-top-level-chart" class="pie-panel"></div>
+        </div>
+        <div class="card">
+          <h3 style="margin: 0 0 8px; text-align: center;">Equity Subsector Split</h3>
+          <div id="equity-subsector-chart" class="pie-panel"></div>
+        </div>
+        <div class="card" style="padding: 0; overflow: hidden;">
+          <table data-table-sort-key="equity-sector-summary" data-default-sort-col="1" data-default-sort-type="inr">
+            <thead>
+              <tr>
+                <th class="sortable" scope="col">
+                  <button type="button" class="th-sort" data-sort-type="text">Sector <span class="sort-ind" aria-hidden="true"></span></button>
+                </th>
+                <th class="num sortable" scope="col">
+                  <button type="button" class="th-sort" data-sort-type="inr">Current Value <span class="sort-ind" aria-hidden="true"></span></button>
+                </th>
+                <th class="num sortable" scope="col">
+                  <button type="button" class="th-sort" data-sort-type="pct">% <span class="sort-ind" aria-hidden="true"></span></button>
+                </th>
+              </tr>
+            </thead>
+            <tbody id="equity-subsector-summary-body">
+              {% for sector_row in equity_all_sector_summary %}
+                <tr>
+                  <td class="symbol">{{ sector_row.sector }}</td>
+                  <td class="num">{{ sector_row.current|inr }}</td>
+                  <td class="num">
+                    {{ ((sector_row.current / equity_totals.current) * 100.0) | pct if equity_totals.current > 0 else "0.00%" }}
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
       <div class="card" style="padding: 0; overflow: hidden;">
         <table data-table-sort-key="equity-holdings" data-default-sort-col="5" data-default-sort-type="inr">
           <thead>
@@ -205,6 +243,7 @@
                 data-qty="{{ h.quantity }}"
                 data-avg="{{ h.average_price }}"
                 data-close="{{ h.close_price }}"
+                data-sector="{{ h.sector or 'Uncategorized' }}"
               >
                 <td class="symbol">{{ h.symbol_label }}</td>
                 <td>{{ h.sector or "—" }}</td>
@@ -760,6 +799,12 @@
       );
     }
 
+    function sortRowsByInvestedDesc(rows) {
+      return rows.slice().sort(function (a, b) {
+        return (Number(b.invested) || 0) - (Number(a.invested) || 0);
+      });
+    }
+
     function signClass(value) {
       const v = Number(value);
       if (!Number.isFinite(v) || v === 0) {
@@ -1164,6 +1209,138 @@
 
       setSignStat('equity-pos-panel-pnl', eqPosPnl);
       setSignStat('fno-pos-panel-pnl', fnoPosPnl);
+      recalcEquitySectorSummary();
+    }
+
+    function collectSectorStats() {
+      const bySector = {};
+      document.querySelectorAll('tr.live-holding[data-token]').forEach(function (tr) {
+        const sector = (tr.dataset.sector || 'Uncategorized').trim() || 'Uncategorized';
+        const qty = parseFloat(tr.dataset.qty);
+        const avg = parseFloat(tr.dataset.avg);
+        const ltpCell = tr.querySelector('.js-holding-ltp');
+        if (!ltpCell || !Number.isFinite(qty) || !Number.isFinite(avg)) {
+          return;
+        }
+        const ltp = parseFloat(ltpCell.textContent.replace(/,/g, ''));
+        if (!Number.isFinite(ltp)) {
+          return;
+        }
+        if (!Object.prototype.hasOwnProperty.call(bySector, sector)) {
+          bySector[sector] = { sector: sector, invested: 0, current: 0, pnl: 0 };
+        }
+        bySector[sector].invested += avg * qty;
+        bySector[sector].current += ltp * qty;
+        bySector[sector].pnl += (ltp - avg) * qty;
+      });
+      return Object.keys(bySector).map(function (name) {
+        return bySector[name];
+      });
+    }
+
+    function splitTopLevelBuckets(sectorRows) {
+      let debt = { sector: 'Debt', invested: 0, current: 0, pnl: 0 };
+      let gold = { sector: 'Gold', invested: 0, current: 0, pnl: 0 };
+      const equitySubsectors = [];
+      sectorRows.forEach(function (row) {
+        const key = String(row.sector || '').toLowerCase();
+        if (key === 'debt') {
+          debt = row;
+        } else if (key === 'gold') {
+          gold = row;
+        } else {
+          equitySubsectors.push(row);
+        }
+      });
+      const equity = equitySubsectors.reduce(
+        function (acc, row) {
+          acc.invested += Number(row.invested) || 0;
+          acc.current += Number(row.current) || 0;
+          acc.pnl += Number(row.pnl) || 0;
+          return acc;
+        },
+        { sector: 'Equity', invested: 0, current: 0, pnl: 0 }
+      );
+      return { topLevel: [debt, gold, equity], equitySubsectors: equitySubsectors };
+    }
+
+    function buildPiePanelHtml(rows, colors) {
+      const total = rows.reduce(function (sum, row) {
+        return sum + Math.max(0, Number(row.current) || 0);
+      }, 0);
+      if (!(total > 0)) {
+        return '<div class="pie-empty">No data</div>';
+      }
+      let start = 0;
+      const segments = rows.map(function (row, idx) {
+        const value = Math.max(0, Number(row.current) || 0);
+        const pct = (value / total) * 100;
+        const color = colors[idx % colors.length];
+        const end = start + pct;
+        const seg = color + ' ' + start.toFixed(2) + '% ' + end.toFixed(2) + '%';
+        start = end;
+        return seg;
+      });
+      const pieStyle = 'background: conic-gradient(' + segments.join(', ') + ');';
+      let legend = '';
+      rows.forEach(function (row, idx) {
+        const value = Math.max(0, Number(row.current) || 0);
+        const pct = total > 0 ? (value / total) * 100 : 0;
+        const color = colors[idx % colors.length];
+        legend +=
+          '<li class="pie-legend-item">' +
+          '<span class="pie-dot" style="background:' + color + ';"></span>' +
+          '<span class="pie-label">' + String(row.sector || '-') + '</span>' +
+          '<span class="pie-val">' + formatPct(pct) + '</span>' +
+          '</li>';
+      });
+      return (
+        '<div class="pie-wrap">' +
+        '<div class="pie-chart" style="' + pieStyle + '"></div>' +
+        '</div>' +
+        '<ul class="pie-legend pie-legend--below">' + legend + '</ul>'
+      );
+    }
+
+    function recalcEquitySectorSummary() {
+      const sectors = collectSectorStats();
+      const grouped = splitTopLevelBuckets(sectors);
+      const topLevelRows = grouped.topLevel;
+      const subsectorRows = sortRowsByInvestedDesc(grouped.equitySubsectors);
+      const allSectorRows = sortRowsByInvestedDesc(sectors);
+
+      const topChart = document.getElementById('equity-top-level-chart');
+      if (topChart) {
+        topChart.innerHTML = buildPiePanelHtml(topLevelRows, ['#6366f1', '#f59e0b', '#10b981']);
+      }
+
+      const subsectorChart = document.getElementById('equity-subsector-chart');
+      if (subsectorChart) {
+        subsectorChart.innerHTML = buildPiePanelHtml(
+          subsectorRows,
+          ['#38bdf8', '#22d3ee', '#818cf8', '#a78bfa', '#34d399', '#fbbf24', '#f87171', '#fb7185']
+        );
+      }
+
+      const tbody = document.getElementById('equity-subsector-summary-body');
+      if (!tbody) {
+        return;
+      }
+      const totalCurrent = allSectorRows.reduce(function (sum, row) {
+        return sum + (Number(row.current) || 0);
+      }, 0);
+      tbody.innerHTML = allSectorRows
+        .map(function (row) {
+          const pct = totalCurrent > 0 ? ((Number(row.current) || 0) / totalCurrent) * 100 : 0;
+          return (
+            '<tr>' +
+            '<td class="symbol">' + String(row.sector || '-') + '</td>' +
+            '<td class="num">' + formatInr(row.current) + '</td>' +
+            '<td class="num">' + formatPct(pct) + '</td>' +
+            '</tr>'
+          );
+        })
+        .join('');
     }
 
     let liveWsReconnectTimer = null;
