@@ -22,6 +22,43 @@ There are two interfaces, sharing the same authentication flow and token cache:
   a single page, and live equity/F&O prices overlaid via Kite WebSocket
   (`KiteTicker`).
 
+Both interfaces now use a shared domain/model layer in `app/portfolio_model.py`
+for holdings/MF/positions normalization, aggregation, and MF-underlying
+enrichment. CLI and web remain presentation layers on top of the same model
+logic.
+
+## Architecture
+
+The app is organized in three layers:
+
+1. **Data sources / clients**
+   - Kite Connect (`app/auth.py`, `app/live_prices.py`, `app/instruments.py`)
+   - External metadata (`yfinance`, `mfdata.in`)
+2. **Shared model layer**
+   - `app/portfolio_model.py`
+   - Builds normalized holdings/MF/positions entities and shared aggregates
+   - Owns MF-underlyings metadata caching (`.cache/mfdata_underlyings_cache.json`)
+3. **Presentation layers**
+   - CLI: `app/main.py` (ASCII tables)
+   - Web: `app/web.py` + `templates/` (FastAPI + HTML tabs + WS updates)
+
+```text
+Kite / yfinance / mfdata
+          |
+          v
+  app/portfolio_model.py   <- shared normalization + aggregation + metadata cache
+      |             |
+      v             v
+  app/main.py     app/web.py
+    (CLI)      (Dashboard UI)
+```
+
+Design intent: UI code stays independent from business/data-model logic; both
+CLI and dashboard should only format/render model outputs.
+
+Contribution guideline: add or change portfolio calculations/normalization in
+`app/portfolio_model.py` first, then adapt CLI/web rendering if needed.
+
 ## What it does
 
 - Shows your full portfolio in one place across:
@@ -75,8 +112,6 @@ KITE_DASHBOARD_NAME=Raghava's Portfolio
 # Optional: live index quotes under the dashboard title (NSE). Default: NIFTY50,BANKNIFTY,NIFTYIT,NIFTYFINSERVICE,NIFTYMET
 # KITE_DASHBOARD_INDICES=NIFTY50,BANKNIFTY,NIFTYIT,NIFTYFINSERVICE,NIFTYMET
 DASHBOARD_SNAPSHOT_SECONDS=120
-# optional: parallel workers for MF underlying fetches (mfdata.in), default 6
-MFDATA_MAX_FETCH_WORKERS=6
 # optional: shared TTL for reference cache entries (cash-equity + NSE maps + Nifty50)
 REFERENCE_CACHE_TTL_SECONDS=86400
 # optional for CLI auto request_token capture
@@ -174,6 +209,8 @@ This writes/updates:
 - `.cache/yfinance_industry_cache.json`
 - `.cache/reference_data_cache.json` (NSE industry maps, Nifty 50 list, and
   cash-equity lookup maps when a valid Kite access token is available)
+- `.cache/mfdata_underlyings_cache.json` (mfdata search/family-holdings metadata
+  used by both CLI and dashboard model enrichment; rotated monthly)
 
 Optional backfill for older cache rows that have industry but missing sector:
 
@@ -280,6 +317,7 @@ Section keys accepted by `--sections` / `--exclude-sections`:
 │   ├── auth.py           # Kite login flow + token caching (shared by CLI + web)
 │   ├── live_prices.py    # KiteTicker websocket manager for live LTP snapshots
 │   ├── main.py           # CLI entry point: profile, holdings, MF, positions, cash, watch list
+│   ├── portfolio_model.py # shared data model + transforms used by CLI and web
 │   └── web.py            # FastAPI dashboard entry point (tabs)
 └── templates/
     ├── base.html         # shared layout + CSS
@@ -431,7 +469,7 @@ to enrich folio-level MF holdings with underlying equity composition and sector
 weights.
 
 - **Website** — <https://mfdata.in/>
-- **API base** — `https://api.mfdata.in`
+- **API base** — `https://mfdata.in`
 - **Fund/scheme search** — `GET /api/v1/search?q=<fund_name>`
 - **Family holdings** — `GET /api/v1/families/{family_id}/holdings`
 - **Fields used by this app** — `equity_holdings` entries with
@@ -439,6 +477,9 @@ weights.
   weights across all aggregated funds.
 - **Coverage behavior** — schemes/families without holdings coverage are
   skipped from aggregation and shown as "Not aggregated" in the dashboard.
+- **Local metadata cache** — mfdata search + family-holdings responses are
+  cached to `.cache/mfdata_underlyings_cache.json` (shared by CLI and dashboard,
+  rotated monthly). Live market quotes/ticks are not persisted there.
 
 ## Notes
 

@@ -70,13 +70,7 @@ import argparse
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from difflib import SequenceMatcher
-import json
-import re
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
-from urllib.request import Request as URLRequest, urlopen
 
 from tabulate import tabulate
 
@@ -100,9 +94,18 @@ from app.instruments import (
     resolve_equity_sector,
     symbol_with_company_name,
 )
+from app.portfolio_model import (
+    EQUITY_EXCHANGES,
+    FNO_EXCHANGES,
+    build_equity_holding,
+    build_mf_holding,
+    build_mf_underlying_breakdown,
+    build_position,
+    normalize_equity_sector,
+    split_top_level_allocations,
+    summarise_equity_by_sector,
+)
 
-MFDATA_BASE_URL = "https://mfdata.in"
-MFDATA_HTTP_TIMEOUT_SECONDS = 20
 SECTION_KEYS: tuple[str, ...] = (
     "profile",
     "equity",
@@ -174,28 +177,8 @@ def _row(
     ``t1_quantity`` (today's buy still pending settlement) so that
     freshly bought shares are not invisible.
     """
-    quantity = (holding.get("quantity") or 0) + (holding.get("t1_quantity") or 0)
-    avg_price = float(holding.get("average_price") or 0.0)
-    last_price = float(holding.get("last_price") or 0.0)
-    pnl = float(holding.get("pnl") or 0.0)
-    day_change_pct = float(holding.get("day_change_percentage") or 0.0)
-
-    invested = avg_price * quantity
-    current = last_price * quantity
-
-    symbol_label = symbol_with_company_name(
-        symbol=str(holding.get("tradingsymbol", "")),
-        exchange=str(holding.get("exchange", "")),
-        instrument_token=int(holding.get("instrument_token") or 0),
-        token_to_name=token_to_name,
-        symbol_to_name=symbol_to_name,
-    )
-    sector = _normalize_equity_sector(
-        str(holding.get("tradingsymbol", "")),
-        resolve_equity_sector(
-        symbol=str(holding.get("tradingsymbol", "")),
-        exchange=str(holding.get("exchange", "")),
-        instrument_token=int(holding.get("instrument_token") or 0),
+    model = build_equity_holding(
+        holding,
         token_to_name=token_to_name,
         symbol_to_name=symbol_to_name,
         token_to_kite_sector=token_to_kite_sector,
@@ -204,72 +187,40 @@ def _row(
         isin_to_industry=isin_to_industry,
         token_to_isin=token_to_isin,
         symbol_to_isin=symbol_to_isin,
-        ),
     )
-    sector_disp = sector if sector else "—"
-
+    sector_disp = model.sector if model.sector else "—"
     return [
-        symbol_label,
+        model.symbol_label,
         sector_disp,
-        quantity,
-        avg_price,
-        last_price,
-        invested,
-        current,
-        pnl,
-        day_change_pct,
+        model.quantity,
+        model.average_price,
+        model.last_price,
+        model.invested,
+        model.current,
+        model.pnl,
+        model.day_change_percentage,
     ]
-
-
-def _normalize_equity_sector(symbol: str, sector: str) -> str:
-    """Normalize sector labels and classify selected ETFs explicitly."""
-    compact = "".join(ch for ch in symbol.upper() if ch.isalnum())
-    if compact in {"GOLDBEES", "GOLDETF", "GOLDSHARE"}:
-        return "Gold"
-    if compact in {"LIQUIDBEES", "LIQUIDBESS", "LIQUIDETF"}:
-        return "Debt"
-    return (sector or "").strip() or "Uncategorized"
 
 
 def _summarise_equity_by_sector(rows: list[list]) -> list[dict[str, float | str]]:
     """Aggregate holdings rows by sector and sort by invested descending."""
-    bucket: dict[str, dict[str, float | str]] = {}
-    for row in rows:
-        sector = str(row[1] or "Uncategorized").strip() or "Uncategorized"
-        entry = bucket.setdefault(
-            sector,
-            {"sector": sector, "invested": 0.0, "current": 0.0, "pnl": 0.0},
-        )
-        entry["invested"] = float(entry["invested"]) + float(row[5] or 0.0)
-        entry["current"] = float(entry["current"]) + float(row[6] or 0.0)
-        entry["pnl"] = float(entry["pnl"]) + float(row[7] or 0.0)
-    return sorted(
-        bucket.values(),
-        key=lambda r: float(r["invested"]),
-        reverse=True,
-    )
+    model_rows = [
+        {
+            "sector": row[1],
+            "invested": row[5],
+            "current": row[6],
+            "pnl": row[7],
+        }
+        for row in rows
+    ]
+    return summarise_equity_by_sector(model_rows)
 
 
 def _split_top_level_allocations(
     sector_rows: list[dict[str, float | str]],
 ) -> list[dict[str, float | str]]:
     """Return Debt/Gold/Equity grouped allocation rows."""
-    debt = {"sector": "Debt", "invested": 0.0, "current": 0.0, "pnl": 0.0}
-    gold = {"sector": "Gold", "invested": 0.0, "current": 0.0, "pnl": 0.0}
-    equity = {"sector": "Equity", "invested": 0.0, "current": 0.0, "pnl": 0.0}
-
-    for row in sector_rows:
-        key = str(row["sector"]).strip().lower()
-        if key == "debt":
-            debt = row
-        elif key == "gold":
-            gold = row
-        else:
-            equity["invested"] = float(equity["invested"]) + float(row["invested"])
-            equity["current"] = float(equity["current"]) + float(row["current"])
-            equity["pnl"] = float(equity["pnl"]) + float(row["pnl"])
-
-    return [debt, gold, equity]
+    return split_top_level_allocations(sector_rows)
 
 
 def _print_holdings(kite) -> tuple[float, float, float]:
@@ -437,231 +388,31 @@ def _mf_row(holding: dict) -> list:
     The "Avg" and "LTP" columns are NAVs (per-unit prices). "Invested"
     and "Current" are NAV * units. P&L is taken straight from Kite.
     """
-    units = float(holding.get("quantity") or 0.0)
-    avg_nav = float(holding.get("average_price") or 0.0)
-    last_nav = float(holding.get("last_price") or 0.0)
-
-    invested = avg_nav * units
-    current = last_nav * units
-    api_pnl = holding.get("pnl")
-    # Kite MF holdings can return pnl=0.0 despite valid NAV deltas.
-    # Keep API pnl when non-zero; otherwise derive from invested/current.
-    pnl = (
-        float(api_pnl)
-        if api_pnl not in (None, "") and float(api_pnl) != 0.0
-        else (current - invested)
-    )
-
+    model = build_mf_holding(holding)
     return [
-        holding.get("fund", ""),
-        holding.get("folio", ""),
-        units,
-        avg_nav,
-        last_nav,
-        invested,
-        current,
-        pnl,
+        model.fund,
+        model.folio,
+        model.units,
+        model.average_price,
+        model.last_price,
+        model.invested,
+        model.current,
+        model.pnl,
     ]
-
-
-def _normalize_match_text(value: str) -> str:
-    """Lowercase text with compact spacing for fuzzy scheme matching."""
-    cleaned = re.sub(r"[^a-z0-9]+", " ", (value or "").lower())
-    return " ".join(cleaned.split())
-
-
-def _canonicalize_mf_scheme_name(value: str) -> str:
-    """Drop plan/option tokens so scheme names map reliably."""
-    normalized = _normalize_match_text(value)
-    drop_tokens = {
-        "direct",
-        "regular",
-        "growth",
-        "plan",
-        "option",
-        "idcw",
-        "dividend",
-        "payout",
-        "reinvestment",
-        "reinvest",
-        "bonus",
-        "inst",
-        "institutional",
-    }
-    kept = [token for token in normalized.split() if token not in drop_tokens]
-    return " ".join(kept)
-
-
-def _parse_pct(value: Any) -> float:
-    """Parse percentage-like strings to float; returns 0 on malformed input."""
-    if value is None:
-        return 0.0
-    raw = str(value).strip().replace("%", "").replace(",", "")
-    try:
-        return float(raw)
-    except ValueError:
-        return 0.0
-
-
-def _mfdata_json_get(path: str, query: dict[str, Any] | None = None) -> Any:
-    """GET JSON payload from mfdata.in API."""
-    url = f"{MFDATA_BASE_URL}{path}"
-    if query:
-        url = f"{url}?{urlencode(query)}"
-    req = URLRequest(
-        url,
-        headers={
-            "Accept": "application/json",
-            "User-Agent": "MomentumStrategy/1.0 (+cli)",
-        },
-    )
-    with urlopen(req, timeout=MFDATA_HTTP_TIMEOUT_SECONDS) as resp:
-        payload = resp.read().decode("utf-8", errors="replace")
-    return json.loads(payload)
-
-
-def _mfdata_search_fund(fund_name: str) -> list[dict[str, Any]]:
-    """Search fund variants on mfdata.in."""
-    try:
-        payload = _mfdata_json_get("/api/v1/search", {"q": fund_name})
-    except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError):
-        payload = {}
-    rows = payload.get("data") if isinstance(payload, dict) else []
-    return [row for row in (rows or []) if isinstance(row, dict)]
-
-
-def _mfdata_holdings_for_family(family_id: int) -> dict[str, Any] | None:
-    """Fetch holdings for one mfdata family ID."""
-    try:
-        payload = _mfdata_json_get(f"/api/v1/families/{family_id}/holdings")
-    except HTTPError as exc:
-        if exc.code == 404:
-            payload = {}
-        else:
-            raise
-    except (URLError, TimeoutError, OSError, json.JSONDecodeError):
-        payload = {}
-    data = payload.get("data") if isinstance(payload, dict) else None
-    return data if isinstance(data, dict) else None
-
-
-def _rank_mfdata_variants(fund_name: str, variants: list[dict[str, Any]]) -> list[int]:
-    """Rank candidate mfdata family IDs for a broker fund name."""
-    canonical_fund = _canonicalize_mf_scheme_name(fund_name)
-    if not canonical_fund:
-        return []
-    fund_tokens = set(canonical_fund.split())
-    scored: list[tuple[float, int]] = []
-    seen_family_ids: set[int] = set()
-    for row in variants:
-        family_id = int(row.get("family_id") or 0)
-        if family_id <= 0 or family_id in seen_family_ids:
-            continue
-        seen_family_ids.add(family_id)
-        candidate_name = str(row.get("name") or "").strip()
-        candidate = _canonicalize_mf_scheme_name(candidate_name)
-        if not candidate:
-            continue
-        candidate_tokens = set(candidate.split())
-        overlap = len(fund_tokens & candidate_tokens)
-        score = float(overlap * 10)
-        if canonical_fund in candidate or candidate in canonical_fund:
-            score += 5
-        score += SequenceMatcher(None, canonical_fund, candidate).ratio()
-        if "growth" in candidate_name.lower() or "growth" in str(row.get("option_type") or "").lower():
-            score += 0.25
-        if str(row.get("plan_type") or "").lower() == "direct":
-            score += 0.05
-        scored.append((score, family_id))
-    scored.sort(key=lambda item: item[0], reverse=True)
-    return [family_id for _, family_id in scored]
 
 
 def _build_mf_underlying_breakdown(
     mf_rows: list[list[Any]],
 ) -> tuple[list[dict[str, Any]], str, list[str], int, int]:
     """Combine MF holdings into one instrument/sector weighted view via mfdata."""
-    if not mf_rows:
-        return [], "", [], 0, 0
-
-    fund_current_by_name: dict[str, float] = {}
-    for row in mf_rows:
-        fund_name = str(row[0] or "").strip()
-        current = float(row[6] or 0.0)
-        if not fund_name:
-            continue
-        fund_current_by_name[fund_name] = fund_current_by_name.get(fund_name, 0.0) + current
-
-    total_current = sum(fund_current_by_name.values())
-    if total_current <= 0:
-        unique_count = len(fund_current_by_name)
-        return [], "", [], 0, unique_count
-
-    combined: dict[tuple[str, str], float] = {}
-    used_months: set[str] = set()
-    not_aggregated: list[str] = []
-    aggregated_funds: set[str] = set()
-    all_funds: set[str] = set(fund_current_by_name)
-
-    def _resolve_fund_equity_rows(fund_name: str) -> dict[str, Any] | None:
-        variants = _mfdata_search_fund(fund_name)
-        family_candidates = _rank_mfdata_variants(fund_name, variants)
-        for family_id in family_candidates:
-            try:
-                payload = _mfdata_holdings_for_family(family_id)
-            except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError):
-                payload = None
-            equity_rows = (payload or {}).get("equity_holdings") if isinstance(payload, dict) else []
-            if equity_rows:
-                return payload
-        return None
-
-    fund_items = list(fund_current_by_name.items())
-    fund_payload_by_name: dict[str, dict[str, Any] | None] = {}
-    if fund_items:
-        worker_count = min(6, max(1, len(fund_items)))
-        with ThreadPoolExecutor(max_workers=worker_count) as pool:
-            payloads = pool.map(lambda item: _resolve_fund_equity_rows(item[0]), fund_items)
-            for (fund_name, _), payload in zip(fund_items, payloads, strict=False):
-                fund_payload_by_name[fund_name] = payload
-
-    for fund_name, fund_current in fund_items:
-        if fund_current <= 0:
-            not_aggregated.append(fund_name)
-            continue
-        selected_holdings = fund_payload_by_name.get(fund_name)
-        if not selected_holdings:
-            not_aggregated.append(fund_name)
-            continue
-
-        month = str(selected_holdings.get("month") or "").strip()
-        if month:
-            used_months.add(month)
-        fund_weight = fund_current / total_current
-        for row in selected_holdings.get("equity_holdings") or []:
-            instrument = str(row.get("stock_name") or row.get("isin") or "").strip() or "Unknown"
-            sector = str(row.get("sector") or "Unspecified").strip() or "Unspecified"
-            instrument_weight = max(0.0, _parse_pct(row.get("weight_pct") or row.get("weight")))
-            overall_weight = fund_weight * (instrument_weight / 100.0)
-            if overall_weight <= 0:
-                continue
-            key = (instrument, sector)
-            combined[key] = combined.get(key, 0.0) + overall_weight
-        aggregated_funds.add(fund_name)
-
-    table_rows = [
-        {"instrument": instrument, "sector": sector, "overall_weight": weight * 100.0}
-        for (instrument, sector), weight in combined.items()
+    model_rows = [
+        {
+            "fund": row[0],
+            "current": row[6],
+        }
+        for row in mf_rows
     ]
-    table_rows.sort(
-        key=lambda row: (float(row.get("overall_weight") or 0.0), str(row.get("instrument") or "").lower()),
-        reverse=True,
-    )
-    sorted_months = sorted(used_months, reverse=True)
-    latest_month = sorted_months[0] if sorted_months else ""
-    seen_missing: set[str] = set()
-    missing_unique = [name for name in not_aggregated if not (name in seen_missing or seen_missing.add(name))]
-    return table_rows, latest_month, missing_unique, len(aggregated_funds), len(all_funds)
+    return build_mf_underlying_breakdown(model_rows)
 
 
 def _print_mf_underlying_breakdown(rows: list[list[Any]]) -> None:
@@ -878,13 +629,6 @@ def _positions_pnl_only(kite) -> float:
 #   MCX   - Multi Commodity Exchange (commodity futures and options).
 # ---------------------------------------------------------------------------
 
-EQUITY_EXCHANGES = {"NSE", "BSE"}
-"""Exchanges treated as cash-market equity positions in the output."""
-
-FNO_EXCHANGES = {"NFO", "BFO", "CDS", "BCD", "MCX"}
-"""Exchanges treated as F&O / derivatives positions in the output."""
-
-
 def _position_row(
     position: dict,
     token_to_name: dict[int, str],
@@ -920,49 +664,28 @@ def _position_row(
     ``m2m``
         Mark-to-market for the day (today's price movement only).
     """
-    qty = int(position.get("quantity") or 0)
-    avg = float(position.get("average_price") or 0.0)
-    ltp = float(position.get("last_price") or 0.0)
-    pnl = float(position.get("pnl") or 0.0)
-    m2m = float(position.get("m2m") or 0.0)
-    symbol_label = symbol_with_company_name(
-        symbol=str(position.get("tradingsymbol", "")),
-        exchange=str(position.get("exchange", "")),
-        instrument_token=int(position.get("instrument_token") or 0),
+    model = build_position(
+        position,
         token_to_name=token_to_name,
         symbol_to_name=symbol_to_name,
+        token_to_kite_sector=token_to_kite_sector,
+        symbol_to_kite_sector=symbol_to_kite_sector,
+        nse_symbol_to_industry=nse_symbol_to_industry,
+        isin_to_industry=isin_to_industry,
+        token_to_isin=token_to_isin,
+        symbol_to_isin=symbol_to_isin,
     )
-    exch = str(position.get("exchange", ""))
-    if exch in EQUITY_EXCHANGES:
-        sector = _normalize_equity_sector(
-            str(position.get("tradingsymbol", "")),
-            resolve_equity_sector(
-            symbol=str(position.get("tradingsymbol", "")),
-            exchange=exch,
-            instrument_token=int(position.get("instrument_token") or 0),
-            token_to_name=token_to_name,
-            symbol_to_name=symbol_to_name,
-            token_to_kite_sector=token_to_kite_sector,
-            symbol_to_kite_sector=symbol_to_kite_sector,
-            nse_symbol_to_industry=nse_symbol_to_industry,
-            isin_to_industry=isin_to_industry,
-            token_to_isin=token_to_isin,
-            symbol_to_isin=symbol_to_isin,
-            ),
-        )
-        ind_disp = sector if sector else "—"
-    else:
-        ind_disp = "—"
+    ind_disp = model.sector if model.sector else "—"
     return [
-        symbol_label,
+        model.symbol_label,
         ind_disp,
-        exch,
-        position.get("product", ""),
-        qty,
-        avg,
-        ltp,
-        pnl,
-        m2m,
+        model.exchange,
+        model.product,
+        model.quantity,
+        model.average_price,
+        model.last_price,
+        model.pnl,
+        model.m2m,
     ]
 
 
@@ -1242,7 +965,7 @@ def _print_watch_list(kite) -> None:
             change = 0.0
             change_pct = 0.0
 
-        sector = _normalize_equity_sector(
+        sector = normalize_equity_sector(
             symbol,
             resolve_equity_sector(
                 symbol=symbol,
