@@ -40,7 +40,13 @@ Sections produced
    (HTTP: `GET /user/margins/{segment} <https://kite.trade/docs/connect/v3/user/#funds-and-margins>`_)
    called with ``segment="equity"``.
 
-5. **Overall Portfolio Summary** — consolidated totals for invested,
+5. **User Profile** — basic account/profile metadata from
+   ``KiteConnect.profile()``.
+
+6. **Watch List (Nifty 50)** — quote snapshot for Nifty 50 constituents
+   with LTP, day change, and sector.
+
+7. **Overall Portfolio Summary** — consolidated totals for invested,
    current, and overall P&L across equity holdings, mutual fund holdings,
    and open positions.
 
@@ -60,9 +66,17 @@ References
 
 from __future__ import annotations
 
+import argparse
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from difflib import SequenceMatcher
+import json
+import re
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request as URLRequest, urlopen
 
 from tabulate import tabulate
 
@@ -80,9 +94,23 @@ from app.instruments import (
     get_cash_equity_isin_lookups,
     get_cash_equity_name_lookups,
     get_isin_to_industry,
+    get_nifty50_symbols,
+    get_nse_symbol_to_token_lookup,
     get_nse_symbol_to_industry,
     resolve_equity_sector,
     symbol_with_company_name,
+)
+
+MFDATA_BASE_URL = "https://mfdata.in"
+MFDATA_HTTP_TIMEOUT_SECONDS = 20
+SECTION_KEYS: tuple[str, ...] = (
+    "profile",
+    "equity",
+    "mf",
+    "positions",
+    "cash",
+    "watchlist",
+    "summary",
 )
 
 
@@ -436,7 +464,241 @@ def _mf_row(holding: dict) -> list:
     ]
 
 
-def _print_mf_holdings(kite) -> tuple[float, float, float]:
+def _normalize_match_text(value: str) -> str:
+    """Lowercase text with compact spacing for fuzzy scheme matching."""
+    cleaned = re.sub(r"[^a-z0-9]+", " ", (value or "").lower())
+    return " ".join(cleaned.split())
+
+
+def _canonicalize_mf_scheme_name(value: str) -> str:
+    """Drop plan/option tokens so scheme names map reliably."""
+    normalized = _normalize_match_text(value)
+    drop_tokens = {
+        "direct",
+        "regular",
+        "growth",
+        "plan",
+        "option",
+        "idcw",
+        "dividend",
+        "payout",
+        "reinvestment",
+        "reinvest",
+        "bonus",
+        "inst",
+        "institutional",
+    }
+    kept = [token for token in normalized.split() if token not in drop_tokens]
+    return " ".join(kept)
+
+
+def _parse_pct(value: Any) -> float:
+    """Parse percentage-like strings to float; returns 0 on malformed input."""
+    if value is None:
+        return 0.0
+    raw = str(value).strip().replace("%", "").replace(",", "")
+    try:
+        return float(raw)
+    except ValueError:
+        return 0.0
+
+
+def _mfdata_json_get(path: str, query: dict[str, Any] | None = None) -> Any:
+    """GET JSON payload from mfdata.in API."""
+    url = f"{MFDATA_BASE_URL}{path}"
+    if query:
+        url = f"{url}?{urlencode(query)}"
+    req = URLRequest(
+        url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "MomentumStrategy/1.0 (+cli)",
+        },
+    )
+    with urlopen(req, timeout=MFDATA_HTTP_TIMEOUT_SECONDS) as resp:
+        payload = resp.read().decode("utf-8", errors="replace")
+    return json.loads(payload)
+
+
+def _mfdata_search_fund(fund_name: str) -> list[dict[str, Any]]:
+    """Search fund variants on mfdata.in."""
+    try:
+        payload = _mfdata_json_get("/api/v1/search", {"q": fund_name})
+    except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError):
+        payload = {}
+    rows = payload.get("data") if isinstance(payload, dict) else []
+    return [row for row in (rows or []) if isinstance(row, dict)]
+
+
+def _mfdata_holdings_for_family(family_id: int) -> dict[str, Any] | None:
+    """Fetch holdings for one mfdata family ID."""
+    try:
+        payload = _mfdata_json_get(f"/api/v1/families/{family_id}/holdings")
+    except HTTPError as exc:
+        if exc.code == 404:
+            payload = {}
+        else:
+            raise
+    except (URLError, TimeoutError, OSError, json.JSONDecodeError):
+        payload = {}
+    data = payload.get("data") if isinstance(payload, dict) else None
+    return data if isinstance(data, dict) else None
+
+
+def _rank_mfdata_variants(fund_name: str, variants: list[dict[str, Any]]) -> list[int]:
+    """Rank candidate mfdata family IDs for a broker fund name."""
+    canonical_fund = _canonicalize_mf_scheme_name(fund_name)
+    if not canonical_fund:
+        return []
+    fund_tokens = set(canonical_fund.split())
+    scored: list[tuple[float, int]] = []
+    seen_family_ids: set[int] = set()
+    for row in variants:
+        family_id = int(row.get("family_id") or 0)
+        if family_id <= 0 or family_id in seen_family_ids:
+            continue
+        seen_family_ids.add(family_id)
+        candidate_name = str(row.get("name") or "").strip()
+        candidate = _canonicalize_mf_scheme_name(candidate_name)
+        if not candidate:
+            continue
+        candidate_tokens = set(candidate.split())
+        overlap = len(fund_tokens & candidate_tokens)
+        score = float(overlap * 10)
+        if canonical_fund in candidate or candidate in canonical_fund:
+            score += 5
+        score += SequenceMatcher(None, canonical_fund, candidate).ratio()
+        if "growth" in candidate_name.lower() or "growth" in str(row.get("option_type") or "").lower():
+            score += 0.25
+        if str(row.get("plan_type") or "").lower() == "direct":
+            score += 0.05
+        scored.append((score, family_id))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [family_id for _, family_id in scored]
+
+
+def _build_mf_underlying_breakdown(
+    mf_rows: list[list[Any]],
+) -> tuple[list[dict[str, Any]], str, list[str], int, int]:
+    """Combine MF holdings into one instrument/sector weighted view via mfdata."""
+    if not mf_rows:
+        return [], "", [], 0, 0
+
+    fund_current_by_name: dict[str, float] = {}
+    for row in mf_rows:
+        fund_name = str(row[0] or "").strip()
+        current = float(row[6] or 0.0)
+        if not fund_name:
+            continue
+        fund_current_by_name[fund_name] = fund_current_by_name.get(fund_name, 0.0) + current
+
+    total_current = sum(fund_current_by_name.values())
+    if total_current <= 0:
+        unique_count = len(fund_current_by_name)
+        return [], "", [], 0, unique_count
+
+    combined: dict[tuple[str, str], float] = {}
+    used_months: set[str] = set()
+    not_aggregated: list[str] = []
+    aggregated_funds: set[str] = set()
+    all_funds: set[str] = set(fund_current_by_name)
+
+    def _resolve_fund_equity_rows(fund_name: str) -> dict[str, Any] | None:
+        variants = _mfdata_search_fund(fund_name)
+        family_candidates = _rank_mfdata_variants(fund_name, variants)
+        for family_id in family_candidates:
+            try:
+                payload = _mfdata_holdings_for_family(family_id)
+            except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError):
+                payload = None
+            equity_rows = (payload or {}).get("equity_holdings") if isinstance(payload, dict) else []
+            if equity_rows:
+                return payload
+        return None
+
+    fund_items = list(fund_current_by_name.items())
+    fund_payload_by_name: dict[str, dict[str, Any] | None] = {}
+    if fund_items:
+        worker_count = min(6, max(1, len(fund_items)))
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            payloads = pool.map(lambda item: _resolve_fund_equity_rows(item[0]), fund_items)
+            for (fund_name, _), payload in zip(fund_items, payloads, strict=False):
+                fund_payload_by_name[fund_name] = payload
+
+    for fund_name, fund_current in fund_items:
+        if fund_current <= 0:
+            not_aggregated.append(fund_name)
+            continue
+        selected_holdings = fund_payload_by_name.get(fund_name)
+        if not selected_holdings:
+            not_aggregated.append(fund_name)
+            continue
+
+        month = str(selected_holdings.get("month") or "").strip()
+        if month:
+            used_months.add(month)
+        fund_weight = fund_current / total_current
+        for row in selected_holdings.get("equity_holdings") or []:
+            instrument = str(row.get("stock_name") or row.get("isin") or "").strip() or "Unknown"
+            sector = str(row.get("sector") or "Unspecified").strip() or "Unspecified"
+            instrument_weight = max(0.0, _parse_pct(row.get("weight_pct") or row.get("weight")))
+            overall_weight = fund_weight * (instrument_weight / 100.0)
+            if overall_weight <= 0:
+                continue
+            key = (instrument, sector)
+            combined[key] = combined.get(key, 0.0) + overall_weight
+        aggregated_funds.add(fund_name)
+
+    table_rows = [
+        {"instrument": instrument, "sector": sector, "overall_weight": weight * 100.0}
+        for (instrument, sector), weight in combined.items()
+    ]
+    table_rows.sort(
+        key=lambda row: (float(row.get("overall_weight") or 0.0), str(row.get("instrument") or "").lower()),
+        reverse=True,
+    )
+    sorted_months = sorted(used_months, reverse=True)
+    latest_month = sorted_months[0] if sorted_months else ""
+    seen_missing: set[str] = set()
+    missing_unique = [name for name in not_aggregated if not (name in seen_missing or seen_missing.add(name))]
+    return table_rows, latest_month, missing_unique, len(aggregated_funds), len(all_funds)
+
+
+def _print_mf_underlying_breakdown(rows: list[list[Any]]) -> None:
+    """Print aggregated MF underlying breakdown via mfdata.in."""
+    print()
+    print("=== MF Underlying Breakdown (mfdata.in) ===")
+    try:
+        table_rows, month, missing_funds, aggregated_count, total_count = _build_mf_underlying_breakdown(rows)
+    except Exception as exc:  # noqa: BLE001 - best-effort enrichment only
+        print(f"Unable to build MF underlying breakdown right now: {exc}")
+        return
+
+    if not table_rows:
+        print("Underlying holdings are unavailable on mfdata.in for the current MF set.")
+        print(f"Aggregated funds: {aggregated_count} / {total_count}")
+        if missing_funds:
+            print("Not aggregated:", ", ".join(missing_funds))
+        return
+
+    print()
+    print(
+        tabulate(
+            [[r["instrument"], r["sector"], float(r["overall_weight"])] for r in table_rows],
+            headers=["Underlying Instrument", "Sector", "Overall Weight (MF Portfolio) %"],
+            tablefmt="github",
+            floatfmt=("", "", ",.2f"),
+        )
+    )
+    print()
+    if month:
+        print(f"Latest month: {month}")
+    print(f"Aggregated funds: {aggregated_count} / {total_count}")
+    if missing_funds:
+        print("Not aggregated:", ", ".join(missing_funds))
+
+
+def _print_mf_holdings(kite, *, include_underlyings: bool = True) -> tuple[float, float, float]:
     """Print the mutual fund holdings table.
 
     Calls
@@ -495,7 +757,101 @@ def _print_mf_holdings(kite) -> tuple[float, float, float]:
     print(f"Invested   : {total_invested:>14,.2f}")
     print(f"Current    : {total_current:>14,.2f}")
     print(f"P&L        : {total_pnl:>14,.2f}")
+    if include_underlyings:
+        _print_mf_underlying_breakdown(rows)
+    else:
+        print()
+        print("MF underlying breakdown skipped (--no-mf-underlyings).")
     return (total_invested, total_current, total_pnl)
+
+
+def _parse_args() -> argparse.Namespace:
+    """Parse CLI flags for optional report sections."""
+    parser = argparse.ArgumentParser(
+        prog="python -m app.main",
+        description="Render Zerodha account snapshot in terminal tables.",
+        epilog=(
+            "Section keys: "
+            + ", ".join(SECTION_KEYS)
+            + ". Example: python -m app.main --sections equity mf summary"
+        ),
+    )
+    parser.add_argument(
+        "--sections",
+        nargs="+",
+        choices=SECTION_KEYS,
+        help=(
+            "Show only these sections (space-separated). "
+            "Default is all sections."
+        ),
+    )
+    parser.add_argument(
+        "--exclude-sections",
+        nargs="+",
+        choices=SECTION_KEYS,
+        default=[],
+        help="Hide specific sections from the output.",
+    )
+    parser.add_argument(
+        "--no-mf-underlyings",
+        action="store_true",
+        help="Skip MF underlying breakdown enrichment from mfdata.in.",
+    )
+    return parser.parse_args()
+
+
+def _resolve_sections(args: argparse.Namespace) -> set[str]:
+    """Resolve final section set from include/exclude flags."""
+    selected = set(args.sections) if args.sections else set(SECTION_KEYS)
+    selected -= set(args.exclude_sections or [])
+    return selected
+
+
+def _equity_totals_only(kite) -> tuple[float, float, float]:
+    """Fetch equity totals without printing section tables."""
+    try:
+        holdings = _call_with_transient_retry(lambda: kite.holdings() or {})
+    except Exception:
+        return (0.0, 0.0, 0.0)
+    total_invested = 0.0
+    total_current = 0.0
+    total_pnl = 0.0
+    for h in holdings:
+        quantity = (h.get("quantity") or 0) + (h.get("t1_quantity") or 0)
+        avg = float(h.get("average_price") or 0.0)
+        ltp = float(h.get("last_price") or 0.0)
+        total_invested += avg * quantity
+        total_current += ltp * quantity
+        total_pnl += float(h.get("pnl") or 0.0)
+    return (total_invested, total_current, total_pnl)
+
+
+def _mf_totals_only(kite) -> tuple[float, float, float]:
+    """Fetch MF totals without printing section tables."""
+    try:
+        holdings = _call_with_transient_retry(lambda: kite.mf_holdings() or [])
+    except Exception:
+        return (0.0, 0.0, 0.0)
+    total_invested = 0.0
+    total_current = 0.0
+    total_pnl = 0.0
+    for h in holdings:
+        row = _mf_row(h)
+        total_invested += float(row[5] or 0.0)
+        total_current += float(row[6] or 0.0)
+        total_pnl += float(row[7] or 0.0)
+    return (total_invested, total_current, total_pnl)
+
+
+def _positions_pnl_only(kite) -> float:
+    """Fetch open-positions total P&L without printing tables."""
+    try:
+        positions = _call_with_transient_retry(lambda: kite.positions() or {})
+    except Exception:
+        return 0.0
+    net_positions = positions.get("net", []) or []
+    open_positions = [p for p in net_positions if int(p.get("quantity") or 0) != 0]
+    return sum(float(p.get("pnl") or 0.0) for p in open_positions)
 
 
 # ---------------------------------------------------------------------------
@@ -809,8 +1165,126 @@ def _print_overall_summary(
     print(f"Overall P&L   : {overall_pnl:>14,.2f}")
 
 
+def _print_user_profile(kite) -> None:
+    """Print basic account/profile details."""
+    print()
+    print("=== User Profile ===")
+    try:
+        profile = _call_with_transient_retry(lambda: kite.profile() or {})
+    except KiteException as exc:
+        print(f"Unable to fetch user profile right now: {exc}")
+        return
+    except Exception as exc:  # noqa: BLE001 - keep CLI resilient
+        print(f"Unexpected error while fetching user profile: {exc}")
+        return
+
+    name = str(profile.get("user_name") or profile.get("user_shortname") or "--")
+    user_id = str(profile.get("user_id") or "--")
+    email = str(profile.get("email") or "--")
+    broker = str(profile.get("broker") or "Zerodha")
+    user_type = str(profile.get("user_type") or "--")
+    products = ", ".join(profile.get("products") or []) or "--"
+    exchanges = ", ".join(profile.get("exchanges") or []) or "--"
+
+    print()
+    print(f"Name             : {name}")
+    print(f"User ID          : {user_id}")
+    print(f"Email            : {email}")
+    print(f"Broker           : {broker}")
+    print(f"Account Type     : {user_type}")
+    print(f"Enabled Products : {products}")
+    print(f"Enabled Exchanges: {exchanges}")
+
+
+def _print_watch_list(kite) -> None:
+    """Print Nifty 50 watch list snapshot (same source as web dashboard)."""
+    print()
+    print("=== Watch List (Nifty 50) ===")
+
+    try:
+        symbols = get_nifty50_symbols()
+    except Exception as exc:  # noqa: BLE001 - reference cache/network guard
+        print(f"Unable to load Nifty 50 symbols right now: {exc}")
+        return
+    if not symbols:
+        print("Watch list is empty (Nifty 50 symbols unavailable).")
+        return
+
+    token_to_name, symbol_to_name = get_cash_equity_name_lookups(kite)
+    token_to_kite_sector, symbol_to_kite_sector = get_cash_equity_kite_sector_lookups(kite)
+    token_to_isin, symbol_to_isin = get_cash_equity_isin_lookups(kite)
+    nse_symbol_to_industry = get_nse_symbol_to_industry()
+    isin_to_industry = get_isin_to_industry()
+    nse_symbol_to_token = get_nse_symbol_to_token_lookup(kite)
+
+    quote_keys = [f"NSE:{sym}" for sym in symbols]
+    try:
+        quote_batch = _call_with_transient_retry(lambda: kite.quote(quote_keys) if quote_keys else {})
+    except KiteException as exc:
+        print(f"Unable to fetch watch-list quotes right now: {exc}")
+        return
+    except Exception as exc:  # noqa: BLE001 - keep CLI resilient
+        print(f"Unexpected error while fetching watch-list quotes: {exc}")
+        return
+
+    rows: list[list[Any]] = []
+    for symbol in symbols:
+        qkey = f"NSE:{symbol}"
+        qrow = quote_batch.get(qkey) or {}
+        token = int(qrow.get("instrument_token") or nse_symbol_to_token.get(symbol) or 0)
+        ohlc = qrow.get("ohlc") or {}
+        prev_close = float(ohlc.get("close") or 0.0)
+        last_price = float(qrow.get("last_price") or 0.0)
+        if prev_close > 0:
+            change = last_price - prev_close
+            change_pct = (change / prev_close) * 100.0
+        else:
+            change = 0.0
+            change_pct = 0.0
+
+        sector = _normalize_equity_sector(
+            symbol,
+            resolve_equity_sector(
+                symbol=symbol,
+                exchange="NSE",
+                instrument_token=token,
+                token_to_name=token_to_name,
+                symbol_to_name=symbol_to_name,
+                token_to_kite_sector=token_to_kite_sector,
+                symbol_to_kite_sector=symbol_to_kite_sector,
+                nse_symbol_to_industry=nse_symbol_to_industry,
+                isin_to_industry=isin_to_industry,
+                token_to_isin=token_to_isin,
+                symbol_to_isin=symbol_to_isin,
+            ),
+        )
+        label = symbol_with_company_name(
+            symbol=symbol,
+            exchange="NSE",
+            instrument_token=token,
+            token_to_name=token_to_name,
+            symbol_to_name=symbol_to_name,
+        )
+        rows.append([label, sector, last_price, change, change_pct])
+
+    rows.sort(key=lambda r: r[4], reverse=True)
+    print()
+    print(
+        tabulate(
+            rows,
+            headers=["Company", "Sector", "Live Price", "Change", "% Change Today"],
+            tablefmt="github",
+            floatfmt=("", "", ",.2f", ",.2f", ",.2f"),
+        )
+    )
+    print()
+    print(f"Watch list rows: {len(rows)}")
+
+
 def main() -> None:
     """Authenticate and emit the account-snapshot sections."""
+    args = _parse_args()
+    selected_sections = _resolve_sections(args)
     try:
         kite = get_kite_client()
     except SystemExit:
@@ -819,14 +1293,36 @@ def main() -> None:
         raise SystemExit(f"Authentication failed: {exc}") from exc
 
     try:
-        eq_invested, eq_current, eq_pnl = _print_holdings(kite)
-        mf_invested, mf_current, mf_pnl = _print_mf_holdings(kite)
-        positions_pnl = _print_positions(kite)
-        _print_cash_balance(kite)
-        total_invested = eq_invested + mf_invested
-        total_current = eq_current + mf_current
-        overall_pnl = eq_pnl + mf_pnl + positions_pnl
-        _print_overall_summary(total_invested, total_current, overall_pnl)
+        if "profile" in selected_sections:
+            _print_user_profile(kite)
+
+        if "equity" in selected_sections:
+            eq_invested, eq_current, eq_pnl = _print_holdings(kite)
+        else:
+            eq_invested, eq_current, eq_pnl = _equity_totals_only(kite)
+
+        if "mf" in selected_sections:
+            mf_invested, mf_current, mf_pnl = _print_mf_holdings(
+                kite,
+                include_underlyings=not args.no_mf_underlyings,
+            )
+        else:
+            mf_invested, mf_current, mf_pnl = _mf_totals_only(kite)
+
+        if "positions" in selected_sections:
+            positions_pnl = _print_positions(kite)
+        else:
+            positions_pnl = _positions_pnl_only(kite)
+
+        if "cash" in selected_sections:
+            _print_cash_balance(kite)
+        if "watchlist" in selected_sections:
+            _print_watch_list(kite)
+        if "summary" in selected_sections:
+            total_invested = eq_invested + mf_invested
+            total_current = eq_current + mf_current
+            overall_pnl = eq_pnl + mf_pnl + positions_pnl
+            _print_overall_summary(total_invested, total_current, overall_pnl)
     except TokenException as exc:
         raise SystemExit(
             "Your Kite session expired during data fetch. "

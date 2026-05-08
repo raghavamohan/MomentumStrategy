@@ -14,8 +14,9 @@ current state of your Zerodha account using the official
 
 There are two interfaces, sharing the same authentication flow and token cache:
 
-- **CLI** — `python -m app.main`. Prints these sections as ASCII tables (five
-  blocks, including the portfolio summary), suitable for terminals and scripting.
+- **CLI** — `python -m app.main`. Prints account sections as ASCII tables
+  (profile, holdings, MF, positions, cash, watch list, summary), suitable for
+  terminals and scripting.
 - **Web dashboard** — `python -m app.web`. Starts a FastAPI server on
   http://127.0.0.1:5000/ with portfolio summary cards, one tab per category on
   a single page, and live equity/F&O prices overlaid via Kite WebSocket
@@ -28,6 +29,7 @@ There are two interfaces, sharing the same authentication flow and token cache:
   - Mutual fund holdings
   - Open positions (equity and F&O)
   - Cash/margin balance
+- Adds account profile and Nifty 50 watch list snapshots in the CLI.
 - Gives both a **CLI view** and a **local web dashboard**, so you can choose
   terminal output or a visual tabbed UI.
 - Displays live market movement in the dashboard, including refreshed
@@ -35,7 +37,7 @@ There are two interfaces, sharing the same authentication flow and token cache:
 - Provides a portfolio summary with key totals such as invested value,
   current value, and overall profit/loss.
 - Adds mutual fund underlying insights (stock/sector breakdown and weights)
-  in the dashboard when holdings data is available from `mfdata.in`.
+  in both dashboard and CLI when holdings data is available from `mfdata.in`.
 - Reuses login state between runs, so day-to-day usage usually requires less
   repeated sign-in.
 
@@ -200,6 +202,30 @@ the same core portfolio sections as readable console output after login.
 python -m app.main
 ```
 
+Show only selected sections:
+
+```powershell
+python -m app.main --sections profile equity mf summary
+```
+
+Hide selected sections:
+
+```powershell
+python -m app.main --exclude-sections watchlist cash
+```
+
+Skip MF underlying enrichment (faster run, no `mfdata.in` aggregation call):
+
+```powershell
+python -m app.main --no-mf-underlyings
+```
+
+List all available options (including section keys):
+
+```powershell
+python -m app.main --help
+```
+
 On the first run (and once per day after the access token expires), CLI
 opens the login URL in your default browser and tries to capture
 `request_token` automatically from the local callback endpoint configured
@@ -225,8 +251,19 @@ Automatic capture unavailable. Falling back to manual entry.
 Paste request_token here:
 ```
 
-After authentication succeeds, all sections (including the portfolio
-summary) are printed.
+After authentication succeeds, all sections are printed:
+
+1. User Profile
+2. Equity Holdings
+3. Mutual Fund Holdings
+4. MF Underlying Breakdown (via `mfdata.in`, unless `--no-mf-underlyings` is used)
+5. Open Positions (Equity and F&O)
+6. Equity Cash Balance
+7. Watch List (Nifty 50 snapshot)
+8. Overall Portfolio Summary
+
+Section keys accepted by `--sections` / `--exclude-sections`:
+`profile`, `equity`, `mf`, `positions`, `cash`, `watchlist`, `summary`.
 
 ## Project layout
 
@@ -242,7 +279,7 @@ summary) are printed.
 │   ├── __init__.py       # package docstring + entry point index
 │   ├── auth.py           # Kite login flow + token caching (shared by CLI + web)
 │   ├── live_prices.py    # KiteTicker websocket manager for live LTP snapshots
-│   ├── main.py           # CLI entry point: holdings, MF, positions, cash
+│   ├── main.py           # CLI entry point: profile, holdings, MF, positions, cash, watch list
 │   └── web.py            # FastAPI dashboard entry point (tabs)
 └── templates/
     ├── base.html         # shared layout + CSS
@@ -389,8 +426,9 @@ Used in:
 
 ### mfdata.in (MF underlying aggregation)
 
-`mfdata.in` is used in the dashboard's Mutual Funds tab to enrich folio-level
-MF holdings with underlying equity composition and sector weights.
+`mfdata.in` is used in the dashboard's Mutual Funds tab and in the CLI report
+to enrich folio-level MF holdings with underlying equity composition and sector
+weights.
 
 - **Website** — <https://mfdata.in/>
 - **API base** — `https://api.mfdata.in`
