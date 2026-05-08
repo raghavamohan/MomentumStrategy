@@ -557,7 +557,9 @@
     let selectedHoldingTone = 'all';
     let selectedHoldingSector = 'all';
     let selectedMfTone = 'all';
+    const MF_UNDERLYING_OTHERS_LABEL = 'Others';
     let selectedMfUnderlyingSector = 'all';
+    let mfUnderlyingOtherSectors = new Set();
     let tableDensity = 'comfortable';
     const indexQuotesBar = document.getElementById('index-quotes-bar');
     const updatedIndicator = document.getElementById('last-updated-indicator');
@@ -1957,6 +1959,37 @@
         });
     }
 
+    function buildMfUnderlyingSectorFilterModel(rows, maxRows, othersLabel) {
+      const ordered = sortRowsByCurrentDesc(buildMfSectorPieRows(rows)).filter(function (row) {
+        return (Number(row.current) || 0) > 0;
+      });
+      if (ordered.length <= maxRows) {
+        return {
+          sectorRows: ordered,
+          availableSectors: new Set(ordered.map(function (row) {
+            return String(row.sector || 'Unspecified').trim() || 'Unspecified';
+          })),
+          othersSectorSet: new Set(),
+        };
+      }
+      const label = String(othersLabel || MF_UNDERLYING_OTHERS_LABEL).trim() || MF_UNDERLYING_OTHERS_LABEL;
+      const head = ordered.slice(0, maxRows);
+      const tail = ordered.slice(maxRows);
+      const othersCurrent = tail.reduce(function (sum, row) {
+        return sum + (Number(row.current) || 0);
+      }, 0);
+      const sectorRows = head.concat([{ sector: label, current: othersCurrent }]);
+      return {
+        sectorRows: sectorRows,
+        availableSectors: new Set(sectorRows.map(function (row) {
+          return String(row.sector || 'Unspecified').trim() || 'Unspecified';
+        })),
+        othersSectorSet: new Set(tail.map(function (row) {
+          return String(row.sector || 'Unspecified').trim() || 'Unspecified';
+        })),
+      };
+    }
+
     function applyMfUnderlyingSectorFilter() {
       const rows = document.querySelectorAll('#mf-underlying-breakdown-block tr.mf-underlying-row');
       let total = 0;
@@ -1964,7 +1997,9 @@
       rows.forEach(function (tr) {
         total += 1;
         const sector = String(tr.dataset.sector || 'Unspecified').trim() || 'Unspecified';
-        const show = selectedMfUnderlyingSector === 'all' || selectedMfUnderlyingSector === sector;
+        const show = selectedMfUnderlyingSector === 'all' ||
+          selectedMfUnderlyingSector === sector ||
+          (selectedMfUnderlyingSector === MF_UNDERLYING_OTHERS_LABEL && mfUnderlyingOtherSectors.has(sector));
         tr.hidden = !show;
         if (show) {
           visible += 1;
@@ -2172,6 +2207,7 @@
       mfHoldingsLoading = false;
       mfUnderlyingsLoading = false;
       mfPrefetchScheduled = false;
+      mfUnderlyingOtherSectors = new Set();
     }
 
     function setMfTabCount(countText) {
@@ -2310,6 +2346,103 @@
       }
     }
 
+    function renderMfUnderlyingBreakdownPayload(host, payload) {
+      const rows = Array.isArray(payload.rows) ? payload.rows : [];
+      const sectorFilterModel = buildMfUnderlyingSectorFilterModel(rows, 5, MF_UNDERLYING_OTHERS_LABEL);
+      const mfSectorRows = sectorFilterModel.sectorRows;
+      mfUnderlyingOtherSectors = sectorFilterModel.othersSectorSet;
+      if (
+        selectedMfUnderlyingSector !== 'all' &&
+        !sectorFilterModel.availableSectors.has(selectedMfUnderlyingSector)
+      ) {
+        selectedMfUnderlyingSector = 'all';
+      }
+      const month = String(payload.month || '');
+      const missing = Array.isArray(payload.notAggregatedFunds) ? payload.notAggregatedFunds : [];
+      const aggregated = Number(payload.aggregatedFundCount) || 0;
+      const total = Number(payload.totalFundCount) || 0;
+      const tableRowsHtml = rows.length
+        ? rows
+            .map(function (row) {
+              const sector = String(row.sector || 'Unspecified').trim() || 'Unspecified';
+              return (
+                '<tr class="mf-underlying-row" data-sector="' + escapeHtml(sector) + '">' +
+                '<td class="symbol">' + escapeHtml(row.instrument || 'Unknown') + '</td>' +
+                '<td>' + escapeHtml(sector) + '</td>' +
+                '<td class="num">' + formatPct(Number(row.overall_weight) || 0) + '</td>' +
+                '</tr>'
+              );
+            })
+            .join('')
+        : (
+            '<tr>' +
+            '<td colspan="3" class="empty empty-left">' +
+            'Underlying holdings are unavailable on mfdata.in for the current MF set.' +
+            '</td>' +
+            '</tr>'
+          );
+      const missingText = missing.length
+        ? (' Not aggregated (no underlying data on mfdata.in): ' +
+            escapeHtml(missing.join(', ')) +
+            '.')
+        : '';
+      const monthText = month ? (' (latest month ' + escapeHtml(month) + ')') : '';
+      const pieHtml = buildDonutPanelHtml(
+        mfSectorRows,
+        ['#6366f1', '#22d3ee', '#10b981', '#f59e0b', '#f87171', '#a78bfa', '#fb7185', '#38bdf8'],
+        'Top 5 Sectors'
+      );
+      const filterOptionsHtml = mfSectorRows
+        .map(function (row) {
+          const sector = String(row.sector || 'Unspecified').trim() || 'Unspecified';
+          const selectedAttr = selectedMfUnderlyingSector === sector ? ' selected' : '';
+          return (
+            '<option value="' + escapeHtml(sector) + '"' + selectedAttr + '>' +
+            escapeHtml(sector) +
+            ' (' + formatPct(Number(row.current) || 0) + ')' +
+            '</option>'
+          );
+        })
+        .join('');
+      host.innerHTML =
+        '<div class="split-layout">' +
+        '<div class="card card-overflow-hidden">' +
+        '<h3 class="chart-card-title">Underlying Sector Split</h3>' +
+        pieHtml +
+        '</div>' +
+        '<div class="card card-table">' +
+        '<div class="equity-toolbar equity-toolbar--flush">' +
+        '<div class="toolbar-group">' +
+        '<span class="toolbar-label">Sector filter</span>' +
+        '<select id="mf-underlying-sector-filter" aria-label="Filter underlyings by sector">' +
+        '<option value="all"' + (selectedMfUnderlyingSector === 'all' ? ' selected' : '') + '>All sectors</option>' +
+        filterOptionsHtml +
+        '</select>' +
+        '<button type="button" class="toolbar-reset-btn" id="mf-underlying-reset-filters">Reset filters</button>' +
+        '<button type="button" class="toolbar-reset-btn js-download-current-table-csv" data-export-table-key="mf-underlying-breakdown">Download CSV</button>' +
+        '<span class="toolbar-meta" id="mf-underlying-filter-summary"></span>' +
+        '</div>' +
+        '</div>' +
+        '<table data-table-sort-key="mf-underlying-breakdown" data-default-sort-col="2" data-default-sort-type="pct">' +
+        '<thead><tr>' +
+        '<th class="sortable" scope="col"><button type="button" class="th-sort" data-sort-type="text">Underlying Instrument <span class="sort-ind" aria-hidden="true"></span></button></th>' +
+        '<th class="sortable" scope="col"><button type="button" class="th-sort" data-sort-type="text">Sector <span class="sort-ind" aria-hidden="true"></span></button></th>' +
+        '<th class="num sortable" scope="col"><button type="button" class="th-sort" data-sort-type="pct">Overall Weight (MF Portfolio) <span class="sort-ind" aria-hidden="true"></span></button></th>' +
+        '</tr></thead>' +
+        '<tbody>' + tableRowsHtml + '</tbody>' +
+        '</table>' +
+        '</div>' +
+        '</div>' +
+        '<div class="alert alert-top-gap">' +
+        'Combined from mutual fund underlyings available on mfdata.in' + monthText + '. ' +
+        'Aggregated funds: ' + aggregated + ' / ' + total + '.' +
+        missingText +
+        '</div>';
+      applyDynamicTemplateStyles(host);
+      applyInitialTableSorts();
+      applyMfUnderlyingSectorFilter();
+    }
+
     async function loadMfUnderlyingBreakdown() {
       ensureMfClientCacheDay();
       const host = document.getElementById('mf-underlying-breakdown-block');
@@ -2323,100 +2456,7 @@
           mfUnderlyingsLoaded = true;
           return;
         }
-        const rows = Array.isArray(payload.rows) ? payload.rows : [];
-        const mfSectorRows = withTopNAndOthers(buildMfSectorPieRows(rows), 5, 'Others');
-        if (
-          selectedMfUnderlyingSector !== 'all' &&
-          !mfSectorRows.some(function (row) {
-            return String(row.sector || '') === selectedMfUnderlyingSector;
-          })
-        ) {
-          selectedMfUnderlyingSector = 'all';
-        }
-        const month = String(payload.month || '');
-        const missing = Array.isArray(payload.notAggregatedFunds) ? payload.notAggregatedFunds : [];
-        const aggregated = Number(payload.aggregatedFundCount) || 0;
-        const total = Number(payload.totalFundCount) || 0;
-        const tableRowsHtml = rows.length
-          ? rows
-              .map(function (row) {
-                const sector = String(row.sector || 'Unspecified').trim() || 'Unspecified';
-                return (
-                  '<tr class="mf-underlying-row" data-sector="' + escapeHtml(sector) + '">' +
-                  '<td class="symbol">' + escapeHtml(row.instrument || 'Unknown') + '</td>' +
-                  '<td>' + escapeHtml(sector) + '</td>' +
-                  '<td class="num">' + formatPct(Number(row.overall_weight) || 0) + '</td>' +
-                  '</tr>'
-                );
-              })
-              .join('')
-          : (
-              '<tr>' +
-              '<td colspan="3" class="empty empty-left">' +
-              'Underlying holdings are unavailable on mfdata.in for the current MF set.' +
-              '</td>' +
-              '</tr>'
-            );
-        const missingText = missing.length
-          ? (' Not aggregated (no underlying data on mfdata.in): ' +
-              escapeHtml(missing.join(', ')) +
-              '.')
-          : '';
-        const monthText = month ? (' (latest month ' + escapeHtml(month) + ')') : '';
-        const pieHtml = buildDonutPanelHtml(
-          mfSectorRows,
-          ['#6366f1', '#22d3ee', '#10b981', '#f59e0b', '#f87171', '#a78bfa', '#fb7185', '#38bdf8'],
-          'Top 5 Sectors'
-        );
-        const filterOptionsHtml = mfSectorRows
-          .map(function (row) {
-            const sector = String(row.sector || 'Unspecified').trim() || 'Unspecified';
-            const selectedAttr = selectedMfUnderlyingSector === sector ? ' selected' : '';
-            return (
-              '<option value="' + escapeHtml(sector) + '"' + selectedAttr + '>' +
-              escapeHtml(sector) +
-              ' (' + formatPct(Number(row.current) || 0) + ')' +
-              '</option>'
-            );
-          })
-          .join('');
-        host.innerHTML =
-          '<div class="split-layout">' +
-          '<div class="card card-overflow-hidden">' +
-          '<h3 class="chart-card-title">Underlying Sector Split</h3>' +
-          pieHtml +
-          '</div>' +
-          '<div class="card card-table">' +
-          '<div class="equity-toolbar equity-toolbar--flush">' +
-          '<div class="toolbar-group">' +
-          '<span class="toolbar-label">Sector filter</span>' +
-          '<select id="mf-underlying-sector-filter" aria-label="Filter underlyings by sector">' +
-          '<option value="all"' + (selectedMfUnderlyingSector === 'all' ? ' selected' : '') + '>All sectors</option>' +
-          filterOptionsHtml +
-          '</select>' +
-          '<button type="button" class="toolbar-reset-btn" id="mf-underlying-reset-filters">Reset filters</button>' +
-          '<button type="button" class="toolbar-reset-btn js-download-current-table-csv" data-export-table-key="mf-underlying-breakdown">Download CSV</button>' +
-          '<span class="toolbar-meta" id="mf-underlying-filter-summary"></span>' +
-          '</div>' +
-          '</div>' +
-          '<table data-table-sort-key="mf-underlying-breakdown" data-default-sort-col="2" data-default-sort-type="pct">' +
-          '<thead><tr>' +
-          '<th class="sortable" scope="col"><button type="button" class="th-sort" data-sort-type="text">Underlying Instrument <span class="sort-ind" aria-hidden="true"></span></button></th>' +
-          '<th class="sortable" scope="col"><button type="button" class="th-sort" data-sort-type="text">Sector <span class="sort-ind" aria-hidden="true"></span></button></th>' +
-          '<th class="num sortable" scope="col"><button type="button" class="th-sort" data-sort-type="pct">Overall Weight (MF Portfolio) <span class="sort-ind" aria-hidden="true"></span></button></th>' +
-          '</tr></thead>' +
-          '<tbody>' + tableRowsHtml + '</tbody>' +
-          '</table>' +
-          '</div>' +
-          '</div>' +
-          '<div class="alert alert-top-gap">' +
-          'Combined from mutual fund underlyings available on mfdata.in' + monthText + '. ' +
-          'Aggregated funds: ' + aggregated + ' / ' + total + '.' +
-          missingText +
-          '</div>';
-        applyDynamicTemplateStyles(host);
-        applyInitialTableSorts();
-        applyMfUnderlyingSectorFilter();
+        renderMfUnderlyingBreakdownPayload(host, payload);
         mfUnderlyingsLoaded = true;
         syncCsvActionState();
         return;
@@ -2434,100 +2474,7 @@
           host.innerHTML = '<div class="alert warning">' + escapeHtml(payload.error) + '</div>';
           return;
         }
-        const rows = Array.isArray(payload.rows) ? payload.rows : [];
-        const mfSectorRows = withTopNAndOthers(buildMfSectorPieRows(rows), 5, 'Others');
-        if (
-          selectedMfUnderlyingSector !== 'all' &&
-          !mfSectorRows.some(function (row) {
-            return String(row.sector || '') === selectedMfUnderlyingSector;
-          })
-        ) {
-          selectedMfUnderlyingSector = 'all';
-        }
-        const month = String(payload.month || '');
-        const missing = Array.isArray(payload.notAggregatedFunds) ? payload.notAggregatedFunds : [];
-        const aggregated = Number(payload.aggregatedFundCount) || 0;
-        const total = Number(payload.totalFundCount) || 0;
-        const tableRowsHtml = rows.length
-          ? rows
-              .map(function (row) {
-                const sector = String(row.sector || 'Unspecified').trim() || 'Unspecified';
-                return (
-                  '<tr class="mf-underlying-row" data-sector="' + escapeHtml(sector) + '">' +
-                  '<td class="symbol">' + escapeHtml(row.instrument || 'Unknown') + '</td>' +
-                  '<td>' + escapeHtml(sector) + '</td>' +
-                  '<td class="num">' + formatPct(Number(row.overall_weight) || 0) + '</td>' +
-                  '</tr>'
-                );
-              })
-              .join('')
-          : (
-              '<tr>' +
-              '<td colspan="3" class="empty empty-left">' +
-              'Underlying holdings are unavailable on mfdata.in for the current MF set.' +
-              '</td>' +
-              '</tr>'
-            );
-        const missingText = missing.length
-          ? (' Not aggregated (no underlying data on mfdata.in): ' +
-              escapeHtml(missing.join(', ')) +
-              '.')
-          : '';
-        const monthText = month ? (' (latest month ' + escapeHtml(month) + ')') : '';
-        const pieHtml = buildDonutPanelHtml(
-          mfSectorRows,
-          ['#6366f1', '#22d3ee', '#10b981', '#f59e0b', '#f87171', '#a78bfa', '#fb7185', '#38bdf8'],
-          'Top 5 Sectors'
-        );
-        const filterOptionsHtml = mfSectorRows
-          .map(function (row) {
-            const sector = String(row.sector || 'Unspecified').trim() || 'Unspecified';
-            const selectedAttr = selectedMfUnderlyingSector === sector ? ' selected' : '';
-            return (
-              '<option value="' + escapeHtml(sector) + '"' + selectedAttr + '>' +
-              escapeHtml(sector) +
-              ' (' + formatPct(Number(row.current) || 0) + ')' +
-              '</option>'
-            );
-          })
-          .join('');
-        host.innerHTML =
-          '<div class="split-layout">' +
-          '<div class="card card-overflow-hidden">' +
-          '<h3 class="chart-card-title">Underlying Sector Split</h3>' +
-          pieHtml +
-          '</div>' +
-          '<div class="card card-table">' +
-          '<div class="equity-toolbar equity-toolbar--flush">' +
-          '<div class="toolbar-group">' +
-          '<span class="toolbar-label">Sector filter</span>' +
-          '<select id="mf-underlying-sector-filter" aria-label="Filter underlyings by sector">' +
-          '<option value="all"' + (selectedMfUnderlyingSector === 'all' ? ' selected' : '') + '>All sectors</option>' +
-          filterOptionsHtml +
-          '</select>' +
-          '<button type="button" class="toolbar-reset-btn" id="mf-underlying-reset-filters">Reset filters</button>' +
-          '<button type="button" class="toolbar-reset-btn js-download-current-table-csv" data-export-table-key="mf-underlying-breakdown">Download CSV</button>' +
-          '<span class="toolbar-meta" id="mf-underlying-filter-summary"></span>' +
-          '</div>' +
-          '</div>' +
-          '<table data-table-sort-key="mf-underlying-breakdown" data-default-sort-col="2" data-default-sort-type="pct">' +
-          '<thead><tr>' +
-          '<th class="sortable" scope="col"><button type="button" class="th-sort" data-sort-type="text">Underlying Instrument <span class="sort-ind" aria-hidden="true"></span></button></th>' +
-          '<th class="sortable" scope="col"><button type="button" class="th-sort" data-sort-type="text">Sector <span class="sort-ind" aria-hidden="true"></span></button></th>' +
-          '<th class="num sortable" scope="col"><button type="button" class="th-sort" data-sort-type="pct">Overall Weight (MF Portfolio) <span class="sort-ind" aria-hidden="true"></span></button></th>' +
-          '</tr></thead>' +
-          '<tbody>' + tableRowsHtml + '</tbody>' +
-          '</table>' +
-          '</div>' +
-          '</div>' +
-          '<div class="alert alert-top-gap">' +
-          'Combined from mutual fund underlyings available on mfdata.in' + monthText + '. ' +
-          'Aggregated funds: ' + aggregated + ' / ' + total + '.' +
-          missingText +
-          '</div>';
-        applyDynamicTemplateStyles(host);
-        applyInitialTableSorts();
-        applyMfUnderlyingSectorFilter();
+        renderMfUnderlyingBreakdownPayload(host, payload);
         mfUnderlyingsLoaded = true;
         syncCsvActionState();
       } catch (_err) {
