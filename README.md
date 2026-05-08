@@ -33,6 +33,7 @@ The app is organized in three layers:
 
 1. **Data sources / clients**
    - Kite Connect (`app/auth.py`, `app/live_prices.py`, `app/instruments.py`)
+   - NSE India archives (`app/instruments.py`)
    - External metadata (`yfinance`, `mfdata.in`)
 2. **Shared model layer**
    - `app/portfolio_model.py`
@@ -43,7 +44,7 @@ The app is organized in three layers:
    - Web: `app/web.py` + `templates/` (FastAPI + HTML tabs + WS updates)
 
 ```text
-Kite / yfinance / mfdata
+Kite / NSE India / yfinance / mfdata
           |
           v
   app/portfolio_model.py   <- shared normalization + aggregation + metadata cache
