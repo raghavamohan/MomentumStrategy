@@ -91,10 +91,21 @@ class Position:
 def normalize_equity_sector(symbol: str, sector: str) -> str:
     """Normalize sector labels and classify selected ETFs explicitly."""
     compact = "".join(ch for ch in symbol.upper() if ch.isalnum())
+    normalized_sector = _normalize_match_text(sector or "")
     if compact in {"GOLDBEES", "GOLDETF", "GOLDSHARE"}:
         return "Gold"
-    if compact in {"LIQUIDBEES", "LIQUIDBESS", "LIQUIDETF"}:
+    if compact in {"LIQUIDBEES", "LIQUIDBESS", "LIQUIDETF", "BHARATBOND"}:
         return "Debt"
+    if _is_gold_sector_label(normalized_sector):
+        return "Gold"
+    if _is_debt_sector_label(normalized_sector):
+        return "Debt"
+    # Some APIs report category as plain "ETF". Reclassify common debt/gold ETF symbols.
+    if normalized_sector == "etf":
+        if any(token in compact for token in {"GOLD", "SILVER"}):
+            return "Gold"
+        if any(token in compact for token in {"LIQUID", "BOND", "GILT", "DEBT", "SDL", "TREPS"}):
+            return "Debt"
     return (sector or "").strip() or "Uncategorized"
 
 
@@ -288,6 +299,38 @@ def summarise_equity_by_sector(rows: list[dict[str, Any]]) -> list[dict[str, flo
     return sorted(bucket.values(), key=lambda r: float(r["invested"]), reverse=True)
 
 
+def _is_debt_sector_label(normalized_label: str) -> bool:
+    label = str(normalized_label or "").strip()
+    if not label:
+        return False
+    debt_markers = (
+        "debt",
+        "bond",
+        "gilt",
+        "liquid",
+        "money market",
+        "fixed income",
+        "overnight",
+        "treasury",
+        "t bill",
+        "tbill",
+        "sdl",
+    )
+    return any(marker in label for marker in debt_markers)
+
+
+def _is_gold_sector_label(normalized_label: str) -> bool:
+    label = str(normalized_label or "").strip()
+    if not label:
+        return False
+    # Keep this strict to avoid classifying ordinary equities by symbol/company names.
+    if label == "gold":
+        return True
+    if "gold" in label and ("etf" in label or "commodity" in label or "precious" in label):
+        return True
+    return False
+
+
 def split_top_level_allocations(
     sector_rows: list[dict[str, float | str]],
 ) -> list[dict[str, float | str]]:
@@ -295,11 +338,15 @@ def split_top_level_allocations(
     gold = {"sector": "Gold", "invested": 0.0, "current": 0.0, "pnl": 0.0}
     equity = {"sector": "Equity", "invested": 0.0, "current": 0.0, "pnl": 0.0}
     for row in sector_rows:
-        key = str(row.get("sector") or "").strip().lower()
-        if key == "debt":
-            debt = row
-        elif key == "gold":
-            gold = row
+        key = _normalize_match_text(str(row.get("sector") or ""))
+        if _is_debt_sector_label(key):
+            debt["invested"] = float(debt["invested"]) + float(row.get("invested") or 0.0)
+            debt["current"] = float(debt["current"]) + float(row.get("current") or 0.0)
+            debt["pnl"] = float(debt["pnl"]) + float(row.get("pnl") or 0.0)
+        elif _is_gold_sector_label(key):
+            gold["invested"] = float(gold["invested"]) + float(row.get("invested") or 0.0)
+            gold["current"] = float(gold["current"]) + float(row.get("current") or 0.0)
+            gold["pnl"] = float(gold["pnl"]) + float(row.get("pnl") or 0.0)
         else:
             equity["invested"] = float(equity["invested"]) + float(row.get("invested") or 0.0)
             equity["current"] = float(equity["current"]) + float(row.get("current") or 0.0)
@@ -310,7 +357,12 @@ def split_top_level_allocations(
 def equity_sector_breakdown(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, float | str]]]:
     sector_rows = summarise_equity_by_sector(rows)
     top_level = split_top_level_allocations(sector_rows)
-    equity_subsectors = [r for r in sector_rows if str(r.get("sector") or "").strip().lower() not in {"debt", "gold"}]
+    equity_subsectors = [
+        r
+        for r in sector_rows
+        if not _is_debt_sector_label(_normalize_match_text(str(r.get("sector") or "")))
+        and not _is_gold_sector_label(_normalize_match_text(str(r.get("sector") or "")))
+    ]
     return {"top_level": top_level, "equity_subsectors": equity_subsectors}
 
 

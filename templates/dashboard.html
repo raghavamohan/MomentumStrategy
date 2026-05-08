@@ -45,13 +45,41 @@
 {% block content %}
   <div class="topbar dashboard-topbar">
     <div class="dashboard-topbar-header">
-      <h1>{{ dashboard_name }}</h1>
+      <div class="dashboard-title-block">
+        <h1>{{ dashboard_name }}</h1>
+        <div class="dashboard-subtitle">Portfolio Command Center</div>
+      </div>
       <div class="right">
         <a class="button secondary" href="/logout">Logout</a>
       </div>
     </div>
+    <div class="dashboard-kpi-strip">
+      <div class="kpi-card">
+        <div class="kpi-label">Total Invested</div>
+        <div class="kpi-value" id="stat-portfolio-invested">{{ portfolio_summary.total_invested|inr }}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Current Value</div>
+        <div class="kpi-value" id="stat-portfolio-current">{{ portfolio_summary.total_current|inr }}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Overall P&amp;L</div>
+        <div class="kpi-value {{ portfolio_summary.overall_pnl|sign_class }}" id="stat-portfolio-overall-pnl">
+          {{ portfolio_summary.overall_pnl|inr }}
+        </div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Open Positions P&amp;L</div>
+        <div class="kpi-value {{ portfolio_summary.positions_pnl|sign_class }}" id="stat-portfolio-positions-pnl">
+          {{ portfolio_summary.positions_pnl|inr }}
+        </div>
+      </div>
+    </div>
     <div class="topbar-main">
       <div class="subtitle nifty-quote index-quotes-marquee" id="index-quotes-bar" aria-live="off"></div>
+      <div class="dashboard-meta-row">
+        <span class="last-updated-indicator" id="last-updated-indicator">Snapshot refreshed: --:--:--</span>
+      </div>
     </div>
   </div>
 
@@ -108,27 +136,9 @@
         </section>
 
         <section class="section-panel active" data-section-panel="portfolio">
-          <div class="summary">
-            <div class="stat">
-              <div class="label">Total Invested (Equity + MF)</div>
-              <div class="value" id="stat-portfolio-invested">{{ portfolio_summary.total_invested|inr }}</div>
-            </div>
-            <div class="stat">
-              <div class="label">Current Value (Equity + MF)</div>
-              <div class="value" id="stat-portfolio-current">{{ portfolio_summary.total_current|inr }}</div>
-            </div>
-            <div class="stat">
-              <div class="label">Overall P&amp;L</div>
-              <div class="value {{ portfolio_summary.overall_pnl|sign_class }}" id="stat-portfolio-overall-pnl">
-                {{ portfolio_summary.overall_pnl|inr }}
-              </div>
-            </div>
-            <div class="stat">
-              <div class="label">Open Positions P&amp;L</div>
-              <div class="value {{ portfolio_summary.positions_pnl|sign_class }}" id="stat-portfolio-positions-pnl">
-                {{ portfolio_summary.positions_pnl|inr }}
-              </div>
-            </div>
+          <div class="section-context">
+            <h2 class="section-title">Portfolio Details</h2>
+            <p class="section-description">Review holdings, mutual funds, positions, and cash with live pricing updates.</p>
           </div>
 
           <div class="tabs" role="tablist">
@@ -205,6 +215,26 @@
               {% endfor %}
             </tbody>
           </table>
+        </div>
+      </div>
+      <div class="equity-toolbar card">
+        <div class="toolbar-group">
+          <span class="toolbar-label">View density</span>
+          <div class="density-toggle" role="group" aria-label="Table density">
+            <button type="button" class="density-toggle-btn active" data-density="comfortable" aria-pressed="true">Comfortable</button>
+            <button type="button" class="density-toggle-btn" data-density="compact" aria-pressed="false">Compact</button>
+          </div>
+        </div>
+        <div class="toolbar-group">
+          <span class="toolbar-label">Quick filter</span>
+          <div class="holding-filter-group" data-filter-group="tone" role="group" aria-label="Performance filter">
+            <button type="button" class="holding-filter-chip active" data-filter-group="tone" data-filter-value="all" data-chip-label="All" aria-pressed="true">All</button>
+            <button type="button" class="holding-filter-chip" data-filter-group="tone" data-filter-value="gainers" data-chip-label="Gainers" aria-pressed="false">Gainers</button>
+            <button type="button" class="holding-filter-chip" data-filter-group="tone" data-filter-value="losers" data-chip-label="Losers" aria-pressed="false">Losers</button>
+          </div>
+          <div class="holding-filter-group" id="holding-sector-filters" role="group" aria-label="Sector filter"></div>
+          <button type="button" class="toolbar-reset-btn" id="equity-reset-filters">Reset filters</button>
+          <span class="toolbar-meta" id="equity-filter-summary"></span>
         </div>
       </div>
       <div class="card" style="padding: 0; overflow: hidden;">
@@ -518,9 +548,13 @@
   (function () {
     const SNAPSHOT_MS = {{ snapshot_interval_ms }};
     const TABLE_SORT_STORAGE_PREFIX = 'momentumDashboard:tableSort:';
+    const TABLE_DENSITY_STORAGE_KEY = 'momentumDashboard:tableDensity';
     let isRefreshing = false;
     let selectedTab = 'equity';
     let selectedSection = 'portfolio';
+    let selectedHoldingTone = 'all';
+    let selectedHoldingSector = 'all';
+    let tableDensity = 'comfortable';
     const indexQuotesBar = document.getElementById('index-quotes-bar');
     const updatedIndicator = document.getElementById('last-updated-indicator');
 
@@ -537,6 +571,180 @@
     }
 
     let bootstrap = readBootstrap();
+
+    function readTableDensityPreference() {
+      try {
+        const raw = localStorage.getItem(TABLE_DENSITY_STORAGE_KEY);
+        return raw === 'compact' ? 'compact' : 'comfortable';
+      } catch (_e) {
+        return 'comfortable';
+      }
+    }
+
+    function persistTableDensityPreference() {
+      try {
+        localStorage.setItem(TABLE_DENSITY_STORAGE_KEY, tableDensity);
+      } catch (_e) {}
+    }
+
+    function syncDensityButtonsUi() {
+      document.querySelectorAll('.density-toggle-btn').forEach(function (btn) {
+        const isActive = btn.dataset.density === tableDensity;
+        btn.classList.toggle('active', isActive);
+        btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+      });
+    }
+
+    function applyDashboardDensity() {
+      const root = document.getElementById('dashboard-root');
+      if (root) {
+        root.classList.toggle('density-compact', tableDensity === 'compact');
+      }
+      syncDensityButtonsUi();
+    }
+
+    function getHoldingTone(row) {
+      const dayCell = row.querySelector('.js-holding-day');
+      if (!dayCell) {
+        return 'neutral';
+      }
+      if (dayCell.classList.contains('positive')) {
+        return 'gainers';
+      }
+      if (dayCell.classList.contains('negative')) {
+        return 'losers';
+      }
+      return 'neutral';
+    }
+
+    function collectHoldingFilterCounts() {
+      const counts = {
+        total: 0,
+        gainers: 0,
+        losers: 0,
+        sectors: {},
+      };
+      document.querySelectorAll('tr.live-holding[data-token]').forEach(function (tr) {
+        counts.total += 1;
+        const sector = String(tr.dataset.sector || 'Uncategorized').trim() || 'Uncategorized';
+        counts.sectors[sector] = (counts.sectors[sector] || 0) + 1;
+        const tone = getHoldingTone(tr);
+        if (tone === 'gainers') {
+          counts.gainers += 1;
+        } else if (tone === 'losers') {
+          counts.losers += 1;
+        }
+      });
+      return counts;
+    }
+
+    function updateHoldingFilterChipCounts(counts) {
+      document.querySelectorAll('.holding-filter-chip').forEach(function (btn) {
+        const group = btn.dataset.filterGroup;
+        const value = btn.dataset.filterValue || 'all';
+        const label = btn.dataset.chipLabel || btn.textContent || value;
+        let count = 0;
+        if (group === 'tone') {
+          if (value === 'all') {
+            count = counts.total;
+          } else if (value === 'gainers') {
+            count = counts.gainers;
+          } else if (value === 'losers') {
+            count = counts.losers;
+          }
+        } else if (group === 'sector') {
+          if (value === 'all') {
+            count = counts.total;
+          } else {
+            count = counts.sectors[value] || 0;
+          }
+        }
+        btn.textContent = label + ' (' + String(count) + ')';
+      });
+    }
+
+    function syncHoldingFilterButtonsUi() {
+      document
+        .querySelectorAll('.holding-filter-chip[data-filter-group="tone"]')
+        .forEach(function (btn) {
+          const isActive = btn.dataset.filterValue === selectedHoldingTone;
+          btn.classList.toggle('active', isActive);
+          btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+        });
+      document
+        .querySelectorAll('.holding-filter-chip[data-filter-group="sector"]')
+        .forEach(function (btn) {
+          const isActive = btn.dataset.filterValue === selectedHoldingSector;
+          btn.classList.toggle('active', isActive);
+          btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+        });
+      const resetBtn = document.getElementById('equity-reset-filters');
+      if (resetBtn) {
+        const isDefault = selectedHoldingTone === 'all' && selectedHoldingSector === 'all';
+        resetBtn.disabled = isDefault;
+      }
+    }
+
+    function buildHoldingSectorFilterChips() {
+      const host = document.getElementById('holding-sector-filters');
+      if (!host) {
+        return;
+      }
+      const counts = collectHoldingFilterCounts();
+      const ordered = Object.keys(counts.sectors).sort(function (a, b) {
+        return a.localeCompare(b);
+      });
+      if (selectedHoldingSector !== 'all' && !Object.prototype.hasOwnProperty.call(counts.sectors, selectedHoldingSector)) {
+        selectedHoldingSector = 'all';
+      }
+      host.innerHTML =
+        '<button type="button" class="holding-filter-chip" data-filter-group="sector" data-filter-value="all" data-chip-label="All sectors" aria-pressed="false">All sectors</button>' +
+        ordered
+          .map(function (sector) {
+            return (
+              '<button type="button" class="holding-filter-chip" data-filter-group="sector" data-filter-value="' +
+              escapeHtml(sector) +
+              '" data-chip-label="' +
+              escapeHtml(sector) +
+              '" aria-pressed="false">' +
+              escapeHtml(sector) +
+              '</button>'
+            );
+          })
+          .join('');
+      updateHoldingFilterChipCounts(counts);
+    }
+
+    function applyHoldingFilters() {
+      const rows = document.querySelectorAll('tr.live-holding[data-token]');
+      const counts = collectHoldingFilterCounts();
+      let total = 0;
+      let visible = 0;
+      rows.forEach(function (tr) {
+        total += 1;
+        const sector = String(tr.dataset.sector || 'Uncategorized').trim() || 'Uncategorized';
+        const tone = getHoldingTone(tr);
+        const toneMatch = selectedHoldingTone === 'all' || selectedHoldingTone === tone;
+        const sectorMatch = selectedHoldingSector === 'all' || selectedHoldingSector === sector;
+        const show = toneMatch && sectorMatch;
+        tr.hidden = !show;
+        if (show) {
+          visible += 1;
+        }
+      });
+      const summary = document.getElementById('equity-filter-summary');
+      if (summary) {
+        summary.textContent = total ? (String(visible) + ' of ' + String(total) + ' visible') : '';
+      }
+      updateHoldingFilterChipCounts(counts);
+      syncHoldingFilterButtonsUi();
+    }
+
+    function initEquityHoldingsControls() {
+      buildHoldingSectorFilterChips();
+      applyHoldingFilters();
+      applyDashboardDensity();
+    }
 
     function numOrNaN(v) {
       if (v == null || v === '') {
@@ -1049,6 +1257,32 @@
     const dashboardRootEl = document.getElementById('dashboard-root');
     if (dashboardRootEl) {
       dashboardRootEl.addEventListener('click', function (e) {
+        const densityBtn = e.target.closest('.density-toggle-btn');
+        if (densityBtn && dashboardRootEl.contains(densityBtn)) {
+          tableDensity = densityBtn.dataset.density === 'compact' ? 'compact' : 'comfortable';
+          persistTableDensityPreference();
+          applyDashboardDensity();
+          return;
+        }
+        const filterChip = e.target.closest('.holding-filter-chip');
+        if (filterChip && dashboardRootEl.contains(filterChip)) {
+          const group = filterChip.dataset.filterGroup;
+          const value = filterChip.dataset.filterValue || 'all';
+          if (group === 'tone') {
+            selectedHoldingTone = value;
+          } else if (group === 'sector') {
+            selectedHoldingSector = value;
+          }
+          applyHoldingFilters();
+          return;
+        }
+        const resetFiltersBtn = e.target.closest('#equity-reset-filters');
+        if (resetFiltersBtn && dashboardRootEl.contains(resetFiltersBtn)) {
+          selectedHoldingTone = 'all';
+          selectedHoldingSector = 'all';
+          applyHoldingFilters();
+          return;
+        }
         const btn = e.target.closest('.th-sort');
         if (!btn || !dashboardRootEl.contains(btn)) {
           return;
@@ -1093,6 +1327,7 @@
         }
       });
       syncIndexQuoteDom();
+      applyHoldingFilters();
       recalcSummaries();
       reapplyPersistedTableSorts();
     }
@@ -1215,16 +1450,53 @@
       });
     }
 
+    function normalizeSectorLabel(sector) {
+      return String(sector || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim();
+    }
+
+    function isDebtSectorLabel(sector) {
+      const label = normalizeSectorLabel(sector);
+      if (!label) {
+        return false;
+      }
+      const markers = ['debt', 'bond', 'gilt', 'liquid', 'money market', 'fixed income', 'overnight', 'treasury', 't bill', 'tbill', 'sdl'];
+      return markers.some(function (marker) {
+        return label.indexOf(marker) !== -1;
+      });
+    }
+
+    function isGoldSectorLabel(sector) {
+      const label = normalizeSectorLabel(sector);
+      if (!label) {
+        return false;
+      }
+      if (label === 'gold') {
+        return true;
+      }
+      return label.indexOf('gold') !== -1 && (
+        label.indexOf('etf') !== -1 ||
+        label.indexOf('commodity') !== -1 ||
+        label.indexOf('precious') !== -1
+      );
+    }
+
     function splitTopLevelBuckets(sectorRows) {
       let debt = { sector: 'Debt', invested: 0, current: 0, pnl: 0 };
       let gold = { sector: 'Gold', invested: 0, current: 0, pnl: 0 };
       const equitySubsectors = [];
       sectorRows.forEach(function (row) {
-        const key = String(row.sector || '').toLowerCase();
-        if (key === 'debt') {
-          debt = row;
-        } else if (key === 'gold') {
-          gold = row;
+        const sectorName = row.sector || '';
+        if (isDebtSectorLabel(sectorName)) {
+          debt.invested += Number(row.invested) || 0;
+          debt.current += Number(row.current) || 0;
+          debt.pnl += Number(row.pnl) || 0;
+        } else if (isGoldSectorLabel(sectorName)) {
+          gold.invested += Number(row.invested) || 0;
+          gold.current += Number(row.current) || 0;
+          gold.pnl += Number(row.pnl) || 0;
         } else {
           equitySubsectors.push(row);
         }
@@ -1622,6 +1894,7 @@
         bindTabs();
         activateTab(selectedTab || requestedTab);
         applyInitialTableSorts();
+        initEquityHoldingsControls();
         mfHoldingsLoaded = false;
         mfUnderlyingsLoaded = false;
         setMfTabCount('...');
@@ -1651,7 +1924,9 @@
     selectedSection = getActiveSection();
     bindTabs();
     selectedTab = getActiveTab();
+    tableDensity = readTableDensityPreference();
     applyInitialTableSorts();
+    initEquityHoldingsControls();
     stampUpdatedNow();
     renderIndexQuotes();
     if (selectedTab === 'mf') {
