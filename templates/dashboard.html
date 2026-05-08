@@ -234,6 +234,7 @@
           </div>
           <div class="holding-filter-group" id="holding-sector-filters" role="group" aria-label="Sector filter"></div>
           <button type="button" class="toolbar-reset-btn" id="equity-reset-filters">Reset filters</button>
+          <button type="button" class="toolbar-reset-btn js-download-current-table-csv" data-export-table-key="equity-holdings">Download CSV</button>
           <span class="toolbar-meta" id="equity-filter-summary"></span>
         </div>
       </div>
@@ -549,6 +550,7 @@
     const SNAPSHOT_MS = {{ snapshot_interval_ms }};
     const TABLE_SORT_STORAGE_PREFIX = 'momentumDashboard:tableSort:';
     const TABLE_DENSITY_STORAGE_KEY = 'momentumDashboard:tableDensity';
+    let toastTimer = null;
     let isRefreshing = false;
     let selectedTab = 'equity';
     let selectedSection = 'portfolio';
@@ -1250,6 +1252,227 @@
       persistTableSortPreference(table);
     }
 
+    function isElementVisible(el) {
+      if (!el || el.hidden) {
+        return false;
+      }
+      if (el.closest('[hidden]')) {
+        return false;
+      }
+      if (el.closest('.section-panel:not(.active)')) {
+        return false;
+      }
+      if (el.closest('.panel:not(.active)')) {
+        return false;
+      }
+      return true;
+    }
+
+    function normalizeCellText(text) {
+      return String(text || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function csvEscape(value) {
+      const text = String(value == null ? '' : value);
+      if (/[",\r\n]/.test(text)) {
+        return '"' + text.replace(/"/g, '""') + '"';
+      }
+      return text;
+    }
+
+    function buildCsvContent(headers, rows) {
+      const lines = [];
+      lines.push(headers.map(csvEscape).join(','));
+      rows.forEach(function (row) {
+        lines.push(row.map(csvEscape).join(','));
+      });
+      return lines.join('\r\n');
+    }
+
+    function getTableHeaders(table) {
+      const headerCells = table.querySelectorAll('thead th');
+      return Array.prototype.map.call(headerCells, function (th) {
+        const sortBtn = th.querySelector('.th-sort');
+        if (sortBtn) {
+          const clone = sortBtn.cloneNode(true);
+          clone.querySelectorAll('.sort-ind').forEach(function (ind) {
+            ind.remove();
+          });
+          return normalizeCellText(clone.textContent);
+        }
+        return normalizeCellText(th.textContent);
+      });
+    }
+
+    function getVisibleTableRows(table) {
+      const bodyRows = table.querySelectorAll('tbody tr');
+      const rows = [];
+      bodyRows.forEach(function (tr) {
+        if (tr.hidden) {
+          return;
+        }
+        const cells = Array.prototype.slice.call(tr.children).map(function (cell) {
+          return normalizeCellText(cell.textContent);
+        });
+        if (cells.length) {
+          rows.push(cells);
+        }
+      });
+      return rows;
+    }
+
+    function toFileSlug(label) {
+      const cleaned = String(label || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+      return cleaned || 'table-view';
+    }
+
+    function preferredTableScore(table) {
+      const visibleRows = table.querySelectorAll('tbody tr:not([hidden])').length;
+      const visibleCols = table.querySelectorAll('thead th').length;
+      return (visibleRows * 1000) + visibleCols;
+    }
+
+    function findCurrentViewTable(scopeRoot, preferredTableKey) {
+      if (preferredTableKey) {
+        const direct = (scopeRoot || document).querySelector(
+          'table[data-table-sort-key="' + preferredTableKey + '"]'
+        );
+        if (direct && isElementVisible(direct)) {
+          return direct;
+        }
+      }
+      const activeSection = document.querySelector('.section-panel.active');
+      const activeTabPanel = activeSection ? activeSection.querySelector('.panel.active') : null;
+      const scope = scopeRoot || activeTabPanel || activeSection || document;
+      const candidates = Array.prototype.slice
+        .call(scope.querySelectorAll('table'))
+        .filter(isElementVisible);
+      if (!candidates.length) {
+        return null;
+      }
+      candidates.sort(function (a, b) {
+        return preferredTableScore(b) - preferredTableScore(a);
+      });
+      return candidates[0];
+    }
+
+    function resolveExportScopeFromButton(btn) {
+      if (!btn) {
+        return null;
+      }
+      const panel = btn.closest('.panel');
+      if (panel) {
+        return panel;
+      }
+      const section = btn.closest('.section-panel');
+      if (section) {
+        return section;
+      }
+      return null;
+    }
+
+    function resolveExportTableKeyFromButton(btn) {
+      if (!btn) {
+        return '';
+      }
+      return String(btn.dataset.exportTableKey || '').trim();
+    }
+
+    function inferTableLabel(table) {
+      const panel = table.closest('.panel[data-panel]');
+      if (panel && panel.dataset.panel) {
+        return panel.dataset.panel;
+      }
+      const section = table.closest('.section-panel[data-section-panel]');
+      if (section && section.dataset.sectionPanel) {
+        return section.dataset.sectionPanel;
+      }
+      const sortKey = table.dataset.tableSortKey;
+      if (sortKey) {
+        return sortKey;
+      }
+      return 'table-view';
+    }
+
+    function triggerCsvDownload(filename, content) {
+      const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    function showDashboardToast(message, tone) {
+      let toastEl = document.getElementById('dashboard-toast');
+      if (!toastEl) {
+        toastEl = document.createElement('div');
+        toastEl.id = 'dashboard-toast';
+        toastEl.className = 'dashboard-toast';
+        toastEl.setAttribute('aria-live', 'polite');
+        toastEl.setAttribute('role', 'status');
+        document.body.appendChild(toastEl);
+      }
+      toastEl.textContent = String(message || '').trim();
+      toastEl.classList.remove('toast-success', 'toast-error');
+      toastEl.classList.add(tone === 'error' ? 'toast-error' : 'toast-success');
+      toastEl.classList.add('visible');
+      if (toastTimer != null) {
+        window.clearTimeout(toastTimer);
+      }
+      toastTimer = window.setTimeout(function () {
+        toastEl.classList.remove('visible');
+      }, 2400);
+    }
+
+    function downloadCurrentTableCsv(scopeRoot, preferredTableKey) {
+      const table = findCurrentViewTable(scopeRoot, preferredTableKey);
+      if (!table) {
+        showDashboardToast('No visible table to export.', 'error');
+        return false;
+      }
+      const headers = getTableHeaders(table);
+      const rows = getVisibleTableRows(table);
+      if (!headers.length || !rows.length) {
+        showDashboardToast('No visible rows to export.', 'error');
+        return false;
+      }
+      const stamp = new Date();
+      const y = String(stamp.getFullYear());
+      const m = String(stamp.getMonth() + 1).padStart(2, '0');
+      const d = String(stamp.getDate()).padStart(2, '0');
+      const hh = String(stamp.getHours()).padStart(2, '0');
+      const mm = String(stamp.getMinutes()).padStart(2, '0');
+      const ss = String(stamp.getSeconds()).padStart(2, '0');
+      const filename = toFileSlug(inferTableLabel(table)) + '-' + y + m + d + '-' + hh + mm + ss + '.csv';
+      const content = buildCsvContent(headers, rows);
+      triggerCsvDownload(filename, content);
+      showDashboardToast('Exported ' + String(rows.length) + ' row(s) to CSV.', 'success');
+      return true;
+    }
+
+    function syncCsvActionState() {
+      document.querySelectorAll('.js-download-current-table-csv').forEach(function (btn) {
+        const scope = resolveExportScopeFromButton(btn);
+        const preferredTableKey = resolveExportTableKeyFromButton(btn);
+        const table = findCurrentViewTable(scope, preferredTableKey);
+        if (!table) {
+          btn.disabled = true;
+          btn.title = 'No visible table to export';
+          return;
+        }
+        const rowCount = getVisibleTableRows(table).length;
+        btn.disabled = rowCount === 0;
+        btn.title = rowCount ? 'Download current table view as CSV' : 'No visible rows to export';
+      });
+    }
+
     function persistTableSortPreference(table) {
       const key = table.dataset.tableSortKey;
       if (!key || table.dataset.sortCol === undefined || table.dataset.sortCol === '') {
@@ -1308,6 +1531,7 @@
         }
         sortDataTable(table, parseInt(col, 10), typ, dir);
       });
+      syncCsvActionState();
     }
 
     function applyInitialTableSorts() {
@@ -1353,6 +1577,7 @@
           tableDensity = densityBtn.dataset.density === 'compact' ? 'compact' : 'comfortable';
           persistTableDensityPreference();
           applyDashboardDensity();
+          syncCsvActionState();
           return;
         }
         const filterChip = e.target.closest('.holding-filter-chip');
@@ -1360,6 +1585,7 @@
           if (filterChip.classList.contains('mf-filter-chip')) {
             selectedMfTone = filterChip.dataset.mfFilterValue || 'all';
             applyMfFilters();
+            syncCsvActionState();
             return;
           }
           const group = filterChip.dataset.filterGroup;
@@ -1370,6 +1596,7 @@
             selectedHoldingSector = value;
           }
           applyHoldingFilters();
+          syncCsvActionState();
           return;
         }
         const resetFiltersBtn = e.target.closest('#equity-reset-filters');
@@ -1377,18 +1604,30 @@
           selectedHoldingTone = 'all';
           selectedHoldingSector = 'all';
           applyHoldingFilters();
+          syncCsvActionState();
+          return;
+        }
+        const downloadCsvBtn = e.target.closest('.js-download-current-table-csv');
+        if (downloadCsvBtn && dashboardRootEl.contains(downloadCsvBtn)) {
+          e.preventDefault();
+          const scope = resolveExportScopeFromButton(downloadCsvBtn);
+          const preferredTableKey = resolveExportTableKeyFromButton(downloadCsvBtn);
+          downloadCurrentTableCsv(scope, preferredTableKey);
+          syncCsvActionState();
           return;
         }
         const mfResetFiltersBtn = e.target.closest('#mf-reset-filters');
         if (mfResetFiltersBtn && dashboardRootEl.contains(mfResetFiltersBtn)) {
           selectedMfTone = 'all';
           applyMfFilters();
+          syncCsvActionState();
           return;
         }
         const mfUnderlyingResetBtn = e.target.closest('#mf-underlying-reset-filters');
         if (mfUnderlyingResetBtn && dashboardRootEl.contains(mfUnderlyingResetBtn)) {
           selectedMfUnderlyingSector = 'all';
           applyMfUnderlyingSectorFilter();
+          syncCsvActionState();
           return;
         }
         const btn = e.target.closest('.th-sort');
@@ -1397,6 +1636,7 @@
         }
         e.preventDefault();
         onSortHeaderClick(btn);
+        syncCsvActionState();
       });
       dashboardRootEl.addEventListener('keydown', function (e) {
         if (e.key !== 'Enter' && e.key !== ' ') {
@@ -1408,6 +1648,7 @@
         }
         e.preventDefault();
         onSortHeaderClick(btn);
+        syncCsvActionState();
       });
       dashboardRootEl.addEventListener('change', function (e) {
         const sectorFilter = e.target.closest('#mf-underlying-sector-filter');
@@ -1416,6 +1657,7 @@
         }
         selectedMfUnderlyingSector = sectorFilter.value || 'all';
         applyMfUnderlyingSectorFilter();
+        syncCsvActionState();
       });
     }
 
@@ -1850,6 +2092,7 @@
       if (target === 'mf') {
         loadMfHoldings();
       }
+      syncCsvActionState();
     }
 
     function getActiveTab() {
@@ -1879,6 +2122,7 @@
       sections.forEach(function (section) {
         section.classList.toggle('active', section.dataset.sectionPanel === target);
       });
+      syncCsvActionState();
     }
 
     function getActiveSection() {
@@ -1985,6 +2229,7 @@
         '<button type="button" class="holding-filter-chip mf-filter-chip" data-mf-filter-value="losers" data-chip-label="Losers" aria-pressed="false">Losers</button>' +
         '</div>' +
         '<button type="button" class="toolbar-reset-btn" id="mf-reset-filters">Reset filters</button>' +
+        '<button type="button" class="toolbar-reset-btn js-download-current-table-csv" data-export-table-key="mf-holdings">Download CSV</button>' +
         '<span class="toolbar-meta" id="mf-filter-summary"></span>' +
         '</div>' +
         '</div>';
@@ -2027,6 +2272,7 @@
       applyInitialTableSorts();
       initMfHoldingsControls();
       recalcSummaries();
+      syncCsvActionState();
     }
 
     async function loadMfHoldings() {
@@ -2149,6 +2395,7 @@
           filterOptionsHtml +
           '</select>' +
           '<button type="button" class="toolbar-reset-btn" id="mf-underlying-reset-filters">Reset filters</button>' +
+          '<button type="button" class="toolbar-reset-btn js-download-current-table-csv" data-export-table-key="mf-underlying-breakdown">Download CSV</button>' +
           '<span class="toolbar-meta" id="mf-underlying-filter-summary"></span>' +
           '</div>' +
           '</div>' +
@@ -2171,6 +2418,7 @@
         applyInitialTableSorts();
         applyMfUnderlyingSectorFilter();
         mfUnderlyingsLoaded = true;
+        syncCsvActionState();
         return;
       }
       mfUnderlyingsLoading = true;
@@ -2258,6 +2506,7 @@
           filterOptionsHtml +
           '</select>' +
           '<button type="button" class="toolbar-reset-btn" id="mf-underlying-reset-filters">Reset filters</button>' +
+          '<button type="button" class="toolbar-reset-btn js-download-current-table-csv" data-export-table-key="mf-underlying-breakdown">Download CSV</button>' +
           '<span class="toolbar-meta" id="mf-underlying-filter-summary"></span>' +
           '</div>' +
           '</div>' +
@@ -2280,6 +2529,7 @@
         applyInitialTableSorts();
         applyMfUnderlyingSectorFilter();
         mfUnderlyingsLoaded = true;
+        syncCsvActionState();
       } catch (_err) {
         host.innerHTML = '<div class="card empty">Unable to load MF underlying breakdown right now.</div>';
       } finally {
@@ -2359,6 +2609,7 @@
         }
         stampUpdatedNow();
         recalcSummaries();
+        syncCsvActionState();
       } catch (_err) {
       } finally {
         isRefreshing = false;
@@ -2405,6 +2656,7 @@
       }
     }
     recalcSummaries();
+    syncCsvActionState();
     connectLivePrices();
     window.setInterval(refreshDashboardSnapshot, SNAPSHOT_MS);
   })();

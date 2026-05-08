@@ -262,8 +262,40 @@
     }
     .dashboard-meta-row {
       display: flex;
+      align-items: center;
+      gap: 10px;
       justify-content: flex-end;
       margin-top: 8px;
+    }
+    .dashboard-toast {
+      position: fixed;
+      right: 24px;
+      bottom: 24px;
+      z-index: 1200;
+      min-width: 240px;
+      max-width: min(92vw, 420px);
+      padding: 10px 12px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: rgba(17, 27, 46, 0.96);
+      color: var(--text);
+      box-shadow: var(--shadow-card);
+      font-size: 13px;
+      line-height: 1.35;
+      opacity: 0;
+      transform: translateY(8px);
+      pointer-events: none;
+      transition: opacity 0.2s ease, transform 0.2s ease;
+    }
+    .dashboard-toast.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    .dashboard-toast.toast-success {
+      border-left: 4px solid var(--positive);
+    }
+    .dashboard-toast.toast-error {
+      border-left: 4px solid var(--negative);
     }
     .last-updated-indicator {
       color: var(--muted);
