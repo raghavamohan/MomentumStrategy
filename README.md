@@ -31,6 +31,13 @@ There are two interfaces, sharing the same authentication flow and token cache:
   fund name, folio, units, average NAV, latest NAV, invested value,
   current value, and P&L. If the Mutual Funds module isn't enabled on
   your Kite Connect app, a friendly notice is shown instead.
+- In the web dashboard, the Mutual Funds tab also builds a combined
+  **underlying instrument + sector + overall MF weight** table using
+  `mfdata.in` holdings. This is loaded lazily from
+  `GET /dashboard/mf-underlyings` after the main page renders, so first
+  paint is faster. Funds without holdings coverage on `mfdata.in` are
+  skipped from aggregation and shown under a "Not aggregated" note with
+  an `Aggregated funds: X / Y` count.
 - Calls `kite.positions()` and shows two tables for currently open
   positions (`quantity != 0`):
     - **Equity** positions on NSE / BSE.
@@ -127,7 +134,8 @@ The dashboard is a single page: **summary cards** at the top (total invested,
 current value, overall P&L, open positions P&L), then five tabs:
 
 1. **Equity Holdings** — table of demat stocks with totals.
-2. **Mutual Funds** — table of MF folios with NAVs and totals.
+2. **Mutual Funds** — MF folio table with NAVs/totals plus an aggregated
+   underlying holdings breakdown (instrument, sector, overall weight).
 3. **Equity Positions** — open NSE / BSE positions.
 4. **F&O Positions** — open NFO / BFO / CDS / BCD / MCX positions.
 5. **Cash Balance** — available cash, live balance, utilised.
@@ -147,8 +155,8 @@ watch list) is resolved in this order:
    sector is forced to `ETF`.
 2. **Local yfinance cache** (`.cache/yfinance_industry_cache.json`) using the
    `sector` field.
-3. **Live yfinance** lookup (only if that symbol is not present in the local
-   yfinance cache). The result is written back to the local cache.
+3. **Background yfinance refresh** is queued on cache miss (non-blocking for
+   the request path). The refreshed value is written back to the local cache.
 4. **Kite instruments `sector`** field (when available for the equity row).
 5. **NSE index CSV `Industry`** fallback (coarse backup label).
 6. **ISIN -> Industry** fallback from the same NSE CSV merges.
@@ -158,6 +166,18 @@ Notes:
 - ETFs are intentionally mapped to `ETF` because exchange/API sector metadata is
   commonly missing or inconsistent for ETFs.
 - yfinance cache refresh runs in background about once every 30 days.
+- The dashboard also warms heavy reference caches in the background on startup
+  and after successful login (`/callback`) to reduce cold-load latency.
+
+## Dashboard timing logs
+
+Per-request dashboard timing is written to:
+
+- `.cache/dashboard_timing.log`
+
+Each line includes total duration and cumulative stage marks (for example:
+`kite_data_fetch_parallel`, `instrument_and_reference_lookups`,
+`live_price_stream_bootstrap`) to help isolate bottlenecks.
 
 ### Build initial yfinance cache offline (recommended)
 
@@ -366,6 +386,10 @@ only a subset), refer to the Kite Connect HTTP API docs:
   `kite.positions()`, `kite.margins()`, `kite.profile()`, and (for web)
   subscribes to live quote ticks via `KiteTicker`. It does not place,
   modify, or cancel any orders.
+- MF underlying aggregation in the dashboard is sourced from
+  [`mfdata.in`](https://mfdata.in/) only. If a scheme/family does not have
+  holdings there, it is excluded from the combined underlying table and
+  explicitly listed as "Not aggregated".
 - The web dashboard binds to `127.0.0.1` only, so it is **not**
   reachable from other machines on the network. To expose it elsewhere,
   change the `host` argument in `app.web.main`.
@@ -384,3 +408,19 @@ only a subset), refer to the Kite Connect HTTP API docs:
   <https://nsearchives.nseindia.com/content/indices/ind_nifty50list.csv>
   (note: NSE applies anti-bot protection; you'll need a session warm-up
   with browser-like headers to fetch it server-side).
+
+### Data Sources
+
+- **Zerodha Kite Connect (account data)**:
+  - Holdings: `GET /portfolio/holdings`
+  - Mutual fund folios: `GET /mf/holdings`
+  - Positions: `GET /portfolio/positions`
+  - Cash/margins: `GET /user/margins/equity`
+  - Profile: `GET /user/profile`
+  - Live prices: `wss://ws.kite.trade` (`KiteTicker`)
+
+- **mfdata.in (MF underlying aggregation)**:
+  - Scheme/fund search: `GET /api/v1/search?q=<fund_name>`
+  - Family holdings: `GET /api/v1/families/{family_id}/holdings`
+  - Dashboard uses `equity_holdings` (`stock_name`, `sector`, `weight_pct`)
+    to compute overall underlying weights across all available MF holdings.
