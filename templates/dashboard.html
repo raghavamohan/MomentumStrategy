@@ -554,6 +554,8 @@
     let selectedSection = 'portfolio';
     let selectedHoldingTone = 'all';
     let selectedHoldingSector = 'all';
+    let selectedMfTone = 'all';
+    let selectedMfUnderlyingSector = 'all';
     let tableDensity = 'comfortable';
     const indexQuotesBar = document.getElementById('index-quotes-bar');
     const updatedIndicator = document.getElementById('last-updated-indicator');
@@ -743,6 +745,89 @@
     function initEquityHoldingsControls() {
       buildHoldingSectorFilterChips();
       applyHoldingFilters();
+      applyDashboardDensity();
+    }
+
+    function getMfTone(row) {
+      const pnlCell = row.querySelector('.js-mf-pnl');
+      if (!pnlCell) {
+        return 'neutral';
+      }
+      if (pnlCell.classList.contains('positive')) {
+        return 'gainers';
+      }
+      if (pnlCell.classList.contains('negative')) {
+        return 'losers';
+      }
+      return 'neutral';
+    }
+
+    function collectMfFilterCounts() {
+      const counts = { total: 0, gainers: 0, losers: 0 };
+      document.querySelectorAll('#mf-holdings-block tr.mf-holding-row').forEach(function (tr) {
+        counts.total += 1;
+        const tone = getMfTone(tr);
+        if (tone === 'gainers') {
+          counts.gainers += 1;
+        } else if (tone === 'losers') {
+          counts.losers += 1;
+        }
+      });
+      return counts;
+    }
+
+    function updateMfFilterChipCounts(counts) {
+      document.querySelectorAll('#mf-holdings-block .mf-filter-chip').forEach(function (btn) {
+        const value = btn.dataset.mfFilterValue || 'all';
+        const label = btn.dataset.chipLabel || btn.textContent || value;
+        let count = 0;
+        if (value === 'all') {
+          count = counts.total;
+        } else if (value === 'gainers') {
+          count = counts.gainers;
+        } else if (value === 'losers') {
+          count = counts.losers;
+        }
+        btn.textContent = label + ' (' + String(count) + ')';
+      });
+    }
+
+    function syncMfFilterButtonsUi() {
+      document.querySelectorAll('#mf-holdings-block .mf-filter-chip').forEach(function (btn) {
+        const isActive = btn.dataset.mfFilterValue === selectedMfTone;
+        btn.classList.toggle('active', isActive);
+        btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+      });
+      const resetBtn = document.getElementById('mf-reset-filters');
+      if (resetBtn) {
+        resetBtn.disabled = selectedMfTone === 'all';
+      }
+    }
+
+    function applyMfFilters() {
+      const rows = document.querySelectorAll('#mf-holdings-block tr.mf-holding-row');
+      const counts = collectMfFilterCounts();
+      let total = 0;
+      let visible = 0;
+      rows.forEach(function (tr) {
+        total += 1;
+        const tone = getMfTone(tr);
+        const show = selectedMfTone === 'all' || selectedMfTone === tone;
+        tr.hidden = !show;
+        if (show) {
+          visible += 1;
+        }
+      });
+      const summary = document.getElementById('mf-filter-summary');
+      if (summary) {
+        summary.textContent = total ? (String(visible) + ' of ' + String(total) + ' visible') : '';
+      }
+      updateMfFilterChipCounts(counts);
+      syncMfFilterButtonsUi();
+    }
+
+    function initMfHoldingsControls() {
+      applyMfFilters();
       applyDashboardDensity();
     }
 
@@ -1266,6 +1351,11 @@
         }
         const filterChip = e.target.closest('.holding-filter-chip');
         if (filterChip && dashboardRootEl.contains(filterChip)) {
+          if (filterChip.classList.contains('mf-filter-chip')) {
+            selectedMfTone = filterChip.dataset.mfFilterValue || 'all';
+            applyMfFilters();
+            return;
+          }
           const group = filterChip.dataset.filterGroup;
           const value = filterChip.dataset.filterValue || 'all';
           if (group === 'tone') {
@@ -1281,6 +1371,18 @@
           selectedHoldingTone = 'all';
           selectedHoldingSector = 'all';
           applyHoldingFilters();
+          return;
+        }
+        const mfResetFiltersBtn = e.target.closest('#mf-reset-filters');
+        if (mfResetFiltersBtn && dashboardRootEl.contains(mfResetFiltersBtn)) {
+          selectedMfTone = 'all';
+          applyMfFilters();
+          return;
+        }
+        const mfUnderlyingResetBtn = e.target.closest('#mf-underlying-reset-filters');
+        if (mfUnderlyingResetBtn && dashboardRootEl.contains(mfUnderlyingResetBtn)) {
+          selectedMfUnderlyingSector = 'all';
+          applyMfUnderlyingSectorFilter();
           return;
         }
         const btn = e.target.closest('.th-sort');
@@ -1300,6 +1402,14 @@
         }
         e.preventDefault();
         onSortHeaderClick(btn);
+      });
+      dashboardRootEl.addEventListener('change', function (e) {
+        const sectorFilter = e.target.closest('#mf-underlying-sector-filter');
+        if (!sectorFilter || !dashboardRootEl.contains(sectorFilter)) {
+          return;
+        }
+        selectedMfUnderlyingSector = sectorFilter.value || 'all';
+        applyMfUnderlyingSectorFilter();
       });
     }
 
@@ -1551,6 +1661,87 @@
       );
     }
 
+    function buildMfSectorPieRows(rows) {
+      const bySector = {};
+      rows.forEach(function (row) {
+        const sector = String(row.sector || 'Unspecified').trim() || 'Unspecified';
+        const weight = Number(row.overall_weight) || 0;
+        bySector[sector] = (bySector[sector] || 0) + weight;
+      });
+      return Object.keys(bySector)
+        .map(function (sector) {
+          return { sector: sector, current: bySector[sector] };
+        })
+        .sort(function (a, b) {
+          return (Number(b.current) || 0) - (Number(a.current) || 0);
+        });
+    }
+
+    function buildMfSectorPieHtml(rows, colors) {
+      const total = rows.reduce(function (sum, row) {
+        return sum + Math.max(0, Number(row.current) || 0);
+      }, 0);
+      if (!(total > 0)) {
+        return '<div class="pie-empty">No data</div>';
+      }
+      let start = 0;
+      const segments = rows.map(function (row, idx) {
+        const value = Math.max(0, Number(row.current) || 0);
+        const pct = (value / total) * 100;
+        const color = colors[idx % colors.length];
+        const end = start + pct;
+        const seg = color + ' ' + start.toFixed(2) + '% ' + end.toFixed(2) + '%';
+        start = end;
+        return seg;
+      });
+      const pieStyle = 'background: conic-gradient(' + segments.join(', ') + ');';
+      let legend = '';
+      rows.forEach(function (row, idx) {
+        const value = Math.max(0, Number(row.current) || 0);
+        const pct = total > 0 ? (value / total) * 100 : 0;
+        const color = colors[idx % colors.length];
+        legend +=
+          '<li class="pie-legend-item">' +
+          '<span class="pie-dot" style="background:' + color + ';"></span>' +
+          '<span class="pie-label">' + escapeHtml(String(row.sector || 'Unspecified')) + '</span>' +
+          '<span class="pie-val">' + formatPct(pct) + '</span>' +
+          '</li>';
+      });
+      return (
+        '<div class="pie-wrap">' +
+        '<div class="pie-chart" style="' + pieStyle + '"></div>' +
+        '</div>' +
+        '<ul class="pie-legend pie-legend--below">' + legend + '</ul>'
+      );
+    }
+
+    function applyMfUnderlyingSectorFilter() {
+      const rows = document.querySelectorAll('#mf-underlying-breakdown-block tr.mf-underlying-row');
+      let total = 0;
+      let visible = 0;
+      rows.forEach(function (tr) {
+        total += 1;
+        const sector = String(tr.dataset.sector || 'Unspecified').trim() || 'Unspecified';
+        const show = selectedMfUnderlyingSector === 'all' || selectedMfUnderlyingSector === sector;
+        tr.hidden = !show;
+        if (show) {
+          visible += 1;
+        }
+      });
+      const summary = document.getElementById('mf-underlying-filter-summary');
+      if (summary) {
+        summary.textContent = total ? (String(visible) + ' of ' + String(total) + ' visible') : '';
+      }
+      const resetBtn = document.getElementById('mf-underlying-reset-filters');
+      if (resetBtn) {
+        resetBtn.disabled = selectedMfUnderlyingSector === 'all';
+      }
+      const sectorFilter = document.getElementById('mf-underlying-sector-filter');
+      if (sectorFilter) {
+        sectorFilter.value = selectedMfUnderlyingSector;
+      }
+    }
+
     function recalcEquitySectorSummary() {
       const sectors = collectSectorStats();
       const grouped = splitTopLevelBuckets(sectors);
@@ -1686,6 +1877,33 @@
     let mfHoldingsLoading = false;
     let mfUnderlyingsLoading = false;
     let mfUnderlyingsLoaded = false;
+    let mfPrefetchScheduled = false;
+    let mfClientCacheDay = '';
+    let mfHoldingsCachedPayload = null;
+    let mfUnderlyingsCachedPayload = null;
+
+    function currentDayToken() {
+      const now = new Date();
+      const yyyy = now.getFullYear();
+      const mm = String(now.getMonth() + 1).padStart(2, '0');
+      const dd = String(now.getDate()).padStart(2, '0');
+      return String(yyyy) + '-' + mm + '-' + dd;
+    }
+
+    function ensureMfClientCacheDay() {
+      const day = currentDayToken();
+      if (mfClientCacheDay === day) {
+        return;
+      }
+      mfClientCacheDay = day;
+      mfHoldingsCachedPayload = null;
+      mfUnderlyingsCachedPayload = null;
+      mfHoldingsLoaded = false;
+      mfUnderlyingsLoaded = false;
+      mfHoldingsLoading = false;
+      mfUnderlyingsLoading = false;
+      mfPrefetchScheduled = false;
+    }
 
     function setMfTabCount(countText) {
       const count = document.getElementById('mf-tab-count');
@@ -1725,11 +1943,31 @@
         formatInr(totals.pnl || 0) +
         '</div></div>' +
         '</div>';
+      const toolbarHtml =
+        '<div class="equity-toolbar card">' +
+        '<div class="toolbar-group">' +
+        '<span class="toolbar-label">View density</span>' +
+        '<div class="density-toggle" role="group" aria-label="MF table density">' +
+        '<button type="button" class="density-toggle-btn active" data-density="comfortable" aria-pressed="true">Comfortable</button>' +
+        '<button type="button" class="density-toggle-btn" data-density="compact" aria-pressed="false">Compact</button>' +
+        '</div>' +
+        '</div>' +
+        '<div class="toolbar-group">' +
+        '<span class="toolbar-label">Quick filter</span>' +
+        '<div class="holding-filter-group" role="group" aria-label="MF performance filter">' +
+        '<button type="button" class="holding-filter-chip mf-filter-chip active" data-mf-filter-value="all" data-chip-label="All" aria-pressed="true">All</button>' +
+        '<button type="button" class="holding-filter-chip mf-filter-chip" data-mf-filter-value="gainers" data-chip-label="Gainers" aria-pressed="false">Gainers</button>' +
+        '<button type="button" class="holding-filter-chip mf-filter-chip" data-mf-filter-value="losers" data-chip-label="Losers" aria-pressed="false">Losers</button>' +
+        '</div>' +
+        '<button type="button" class="toolbar-reset-btn" id="mf-reset-filters">Reset filters</button>' +
+        '<span class="toolbar-meta" id="mf-filter-summary"></span>' +
+        '</div>' +
+        '</div>';
 
       const tableRows = rows
         .map(function (h) {
           return (
-            '<tr>' +
+            '<tr class="mf-holding-row">' +
             '<td class="symbol">' + escapeHtml(h.fund) + '</td>' +
             '<td>' + escapeHtml(h.folio) + '</td>' +
             '<td class="num">' + Number(h.units || 0).toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 }) + '</td>' +
@@ -1737,7 +1975,7 @@
             '<td class="num">' + Number(h.last_price || 0).toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 }) + '</td>' +
             '<td class="num">' + formatInr(h.invested || 0) + '</td>' +
             '<td class="num">' + formatInr(h.current || 0) + '</td>' +
-            '<td class="num ' + signClass(h.pnl || 0) + '">' + formatInr(h.pnl || 0) + '</td>' +
+            '<td class="num js-mf-pnl ' + signClass(h.pnl || 0) + '">' + formatInr(h.pnl || 0) + '</td>' +
             '</tr>'
           );
         })
@@ -1745,6 +1983,7 @@
 
       host.innerHTML =
         summaryHtml +
+        toolbarHtml +
         '<div class="card" style="padding: 0; overflow: hidden;">' +
         '<table data-table-sort-key="mf-holdings" data-default-sort-col="5" data-default-sort-type="inr">' +
         '<thead><tr>' +
@@ -1761,15 +2000,23 @@
         '</table>' +
         '</div>';
       applyInitialTableSorts();
+      initMfHoldingsControls();
       recalcSummaries();
     }
 
     async function loadMfHoldings() {
+      ensureMfClientCacheDay();
       const host = document.getElementById('mf-holdings-block');
       if (!host || mfHoldingsLoading || mfHoldingsLoaded) {
         if (mfHoldingsLoaded) {
           loadMfUnderlyingBreakdown();
         }
+        return;
+      }
+      if (mfHoldingsCachedPayload) {
+        renderMfHoldings(mfHoldingsCachedPayload);
+        mfHoldingsLoaded = true;
+        loadMfUnderlyingBreakdown();
         return;
       }
       mfHoldingsLoading = true;
@@ -1781,6 +2028,7 @@
           return;
         }
         const payload = await response.json();
+        mfHoldingsCachedPayload = payload;
         renderMfHoldings(payload);
         mfHoldingsLoaded = true;
         loadMfUnderlyingBreakdown();
@@ -1792,23 +2040,28 @@
     }
 
     async function loadMfUnderlyingBreakdown() {
+      ensureMfClientCacheDay();
       const host = document.getElementById('mf-underlying-breakdown-block');
       if (!host || mfUnderlyingsLoading || mfUnderlyingsLoaded || !mfHoldingsLoaded) {
         return;
       }
-      mfUnderlyingsLoading = true;
-      try {
-        const response = await fetch('/dashboard/mf-underlyings', { cache: 'no-store' });
-        if (!response.ok) {
-          host.innerHTML = '<div class="card empty">Unable to load MF underlying breakdown right now.</div>';
-          return;
-        }
-        const payload = await response.json();
+      if (mfUnderlyingsCachedPayload) {
+        const payload = mfUnderlyingsCachedPayload;
         if (payload.error) {
           host.innerHTML = '<div class="alert warning">' + escapeHtml(payload.error) + '</div>';
+          mfUnderlyingsLoaded = true;
           return;
         }
         const rows = Array.isArray(payload.rows) ? payload.rows : [];
+        const mfSectorRows = buildMfSectorPieRows(rows);
+        if (
+          selectedMfUnderlyingSector !== 'all' &&
+          !mfSectorRows.some(function (row) {
+            return String(row.sector || '') === selectedMfUnderlyingSector;
+          })
+        ) {
+          selectedMfUnderlyingSector = 'all';
+        }
         const month = String(payload.month || '');
         const missing = Array.isArray(payload.notAggregatedFunds) ? payload.notAggregatedFunds : [];
         const aggregated = Number(payload.aggregatedFundCount) || 0;
@@ -1816,10 +2069,11 @@
         const tableRowsHtml = rows.length
           ? rows
               .map(function (row) {
+                const sector = String(row.sector || 'Unspecified').trim() || 'Unspecified';
                 return (
-                  '<tr>' +
+                  '<tr class="mf-underlying-row" data-sector="' + escapeHtml(sector) + '">' +
                   '<td class="symbol">' + escapeHtml(row.instrument || 'Unknown') + '</td>' +
-                  '<td>' + escapeHtml(row.sector || 'Unspecified') + '</td>' +
+                  '<td>' + escapeHtml(sector) + '</td>' +
                   '<td class="num">' + formatPct(Number(row.overall_weight) || 0) + '</td>' +
                   '</tr>'
                 );
@@ -1838,8 +2092,40 @@
               '.')
           : '';
         const monthText = month ? (' (latest month ' + escapeHtml(month) + ')') : '';
+        const pieHtml = buildMfSectorPieHtml(
+          mfSectorRows,
+          ['#6366f1', '#22d3ee', '#10b981', '#f59e0b', '#f87171', '#a78bfa', '#fb7185', '#38bdf8']
+        );
+        const filterOptionsHtml = mfSectorRows
+          .map(function (row) {
+            const sector = String(row.sector || 'Unspecified').trim() || 'Unspecified';
+            const selectedAttr = selectedMfUnderlyingSector === sector ? ' selected' : '';
+            return (
+              '<option value="' + escapeHtml(sector) + '"' + selectedAttr + '>' +
+              escapeHtml(sector) +
+              ' (' + formatPct(Number(row.current) || 0) + ')' +
+              '</option>'
+            );
+          })
+          .join('');
         host.innerHTML =
+          '<div style="display: grid; grid-template-columns: minmax(260px, 32%) minmax(0, 68%); gap: 12px; align-items: stretch;">' +
+          '<div class="card" style="overflow: hidden;">' +
+          '<h3 style="margin: 0 0 8px; text-align: center;">Underlying Sector Split</h3>' +
+          pieHtml +
+          '</div>' +
           '<div class="card" style="padding: 0; overflow: hidden;">' +
+          '<div class="equity-toolbar" style="margin: 0; border-radius: 0;">' +
+          '<div class="toolbar-group">' +
+          '<span class="toolbar-label">Sector filter</span>' +
+          '<select id="mf-underlying-sector-filter" aria-label="Filter underlyings by sector">' +
+          '<option value="all"' + (selectedMfUnderlyingSector === 'all' ? ' selected' : '') + '>All sectors</option>' +
+          filterOptionsHtml +
+          '</select>' +
+          '<button type="button" class="toolbar-reset-btn" id="mf-underlying-reset-filters">Reset filters</button>' +
+          '<span class="toolbar-meta" id="mf-underlying-filter-summary"></span>' +
+          '</div>' +
+          '</div>' +
           '<table data-table-sort-key="mf-underlying-breakdown" data-default-sort-col="2" data-default-sort-type="pct">' +
           '<thead><tr>' +
           '<th class="sortable" scope="col"><button type="button" class="th-sort" data-sort-type="text">Underlying Instrument <span class="sort-ind" aria-hidden="true"></span></button></th>' +
@@ -1849,17 +2135,142 @@
           '<tbody>' + tableRowsHtml + '</tbody>' +
           '</table>' +
           '</div>' +
+          '</div>' +
           '<div class="alert" style="margin-top: 12px;">' +
           'Combined from mutual fund underlyings available on mfdata.in' + monthText + '. ' +
           'Aggregated funds: ' + aggregated + ' / ' + total + '.' +
           missingText +
           '</div>';
         applyInitialTableSorts();
+        applyMfUnderlyingSectorFilter();
+        mfUnderlyingsLoaded = true;
+        return;
+      }
+      mfUnderlyingsLoading = true;
+      try {
+        const response = await fetch('/dashboard/mf-underlyings', { cache: 'no-store' });
+        if (!response.ok) {
+          host.innerHTML = '<div class="card empty">Unable to load MF underlying breakdown right now.</div>';
+          return;
+        }
+        const payload = await response.json();
+        mfUnderlyingsCachedPayload = payload;
+        if (payload.error) {
+          host.innerHTML = '<div class="alert warning">' + escapeHtml(payload.error) + '</div>';
+          return;
+        }
+        const rows = Array.isArray(payload.rows) ? payload.rows : [];
+        const mfSectorRows = buildMfSectorPieRows(rows);
+        if (
+          selectedMfUnderlyingSector !== 'all' &&
+          !mfSectorRows.some(function (row) {
+            return String(row.sector || '') === selectedMfUnderlyingSector;
+          })
+        ) {
+          selectedMfUnderlyingSector = 'all';
+        }
+        const month = String(payload.month || '');
+        const missing = Array.isArray(payload.notAggregatedFunds) ? payload.notAggregatedFunds : [];
+        const aggregated = Number(payload.aggregatedFundCount) || 0;
+        const total = Number(payload.totalFundCount) || 0;
+        const tableRowsHtml = rows.length
+          ? rows
+              .map(function (row) {
+                const sector = String(row.sector || 'Unspecified').trim() || 'Unspecified';
+                return (
+                  '<tr class="mf-underlying-row" data-sector="' + escapeHtml(sector) + '">' +
+                  '<td class="symbol">' + escapeHtml(row.instrument || 'Unknown') + '</td>' +
+                  '<td>' + escapeHtml(sector) + '</td>' +
+                  '<td class="num">' + formatPct(Number(row.overall_weight) || 0) + '</td>' +
+                  '</tr>'
+                );
+              })
+              .join('')
+          : (
+              '<tr>' +
+              '<td colspan="3" class="empty" style="text-align: left;">' +
+              'Underlying holdings are unavailable on mfdata.in for the current MF set.' +
+              '</td>' +
+              '</tr>'
+            );
+        const missingText = missing.length
+          ? (' Not aggregated (no underlying data on mfdata.in): ' +
+              escapeHtml(missing.join(', ')) +
+              '.')
+          : '';
+        const monthText = month ? (' (latest month ' + escapeHtml(month) + ')') : '';
+        const pieHtml = buildMfSectorPieHtml(
+          mfSectorRows,
+          ['#6366f1', '#22d3ee', '#10b981', '#f59e0b', '#f87171', '#a78bfa', '#fb7185', '#38bdf8']
+        );
+        const filterOptionsHtml = mfSectorRows
+          .map(function (row) {
+            const sector = String(row.sector || 'Unspecified').trim() || 'Unspecified';
+            const selectedAttr = selectedMfUnderlyingSector === sector ? ' selected' : '';
+            return (
+              '<option value="' + escapeHtml(sector) + '"' + selectedAttr + '>' +
+              escapeHtml(sector) +
+              ' (' + formatPct(Number(row.current) || 0) + ')' +
+              '</option>'
+            );
+          })
+          .join('');
+        host.innerHTML =
+          '<div style="display: grid; grid-template-columns: minmax(260px, 32%) minmax(0, 68%); gap: 12px; align-items: stretch;">' +
+          '<div class="card" style="overflow: hidden;">' +
+          '<h3 style="margin: 0 0 8px; text-align: center;">Underlying Sector Split</h3>' +
+          pieHtml +
+          '</div>' +
+          '<div class="card" style="padding: 0; overflow: hidden;">' +
+          '<div class="equity-toolbar" style="margin: 0; border-radius: 0;">' +
+          '<div class="toolbar-group">' +
+          '<span class="toolbar-label">Sector filter</span>' +
+          '<select id="mf-underlying-sector-filter" aria-label="Filter underlyings by sector">' +
+          '<option value="all"' + (selectedMfUnderlyingSector === 'all' ? ' selected' : '') + '>All sectors</option>' +
+          filterOptionsHtml +
+          '</select>' +
+          '<button type="button" class="toolbar-reset-btn" id="mf-underlying-reset-filters">Reset filters</button>' +
+          '<span class="toolbar-meta" id="mf-underlying-filter-summary"></span>' +
+          '</div>' +
+          '</div>' +
+          '<table data-table-sort-key="mf-underlying-breakdown" data-default-sort-col="2" data-default-sort-type="pct">' +
+          '<thead><tr>' +
+          '<th class="sortable" scope="col"><button type="button" class="th-sort" data-sort-type="text">Underlying Instrument <span class="sort-ind" aria-hidden="true"></span></button></th>' +
+          '<th class="sortable" scope="col"><button type="button" class="th-sort" data-sort-type="text">Sector <span class="sort-ind" aria-hidden="true"></span></button></th>' +
+          '<th class="num sortable" scope="col"><button type="button" class="th-sort" data-sort-type="pct">Overall Weight (MF Portfolio) <span class="sort-ind" aria-hidden="true"></span></button></th>' +
+          '</tr></thead>' +
+          '<tbody>' + tableRowsHtml + '</tbody>' +
+          '</table>' +
+          '</div>' +
+          '</div>' +
+          '<div class="alert" style="margin-top: 12px;">' +
+          'Combined from mutual fund underlyings available on mfdata.in' + monthText + '. ' +
+          'Aggregated funds: ' + aggregated + ' / ' + total + '.' +
+          missingText +
+          '</div>';
+        applyInitialTableSorts();
+        applyMfUnderlyingSectorFilter();
         mfUnderlyingsLoaded = true;
       } catch (_err) {
         host.innerHTML = '<div class="card empty">Unable to load MF underlying breakdown right now.</div>';
       } finally {
         mfUnderlyingsLoading = false;
+      }
+    }
+
+    function scheduleMfBackgroundPrefetch() {
+      if (mfPrefetchScheduled || mfHoldingsLoaded || mfHoldingsLoading) {
+        return;
+      }
+      mfPrefetchScheduled = true;
+      const kickoff = function () {
+        mfPrefetchScheduled = false;
+        loadMfHoldings();
+      };
+      if (typeof window.requestIdleCallback === 'function') {
+        window.requestIdleCallback(kickoff, { timeout: 1500 });
+      } else {
+        window.setTimeout(kickoff, 0);
       }
     }
 
@@ -1895,11 +2306,27 @@
         activateTab(selectedTab || requestedTab);
         applyInitialTableSorts();
         initEquityHoldingsControls();
-        mfHoldingsLoaded = false;
-        mfUnderlyingsLoaded = false;
-        setMfTabCount('...');
+        ensureMfClientCacheDay();
+        mfHoldingsLoaded = !!mfHoldingsCachedPayload;
+        mfHoldingsLoading = false;
+        mfUnderlyingsLoaded = !!mfUnderlyingsCachedPayload;
+        mfUnderlyingsLoading = false;
+        mfPrefetchScheduled = false;
+        if (mfHoldingsCachedPayload) {
+          const cachedCount = Number(mfHoldingsCachedPayload.count);
+          if (Number.isFinite(cachedCount) && cachedCount >= 0) {
+            setMfTabCount(String(cachedCount));
+          } else {
+            const cachedRows = Array.isArray(mfHoldingsCachedPayload.rows) ? mfHoldingsCachedPayload.rows : [];
+            setMfTabCount(String(cachedRows.length));
+          }
+        } else {
+          setMfTabCount('...');
+        }
         if ((selectedTab || requestedTab) === 'mf') {
           loadMfHoldings();
+        } else if ((selectedSection || requestedSection) === 'portfolio' && !mfHoldingsCachedPayload) {
+          scheduleMfBackgroundPrefetch();
         }
         stampUpdatedNow();
         recalcSummaries();
@@ -1925,6 +2352,7 @@
     bindTabs();
     selectedTab = getActiveTab();
     tableDensity = readTableDensityPreference();
+    ensureMfClientCacheDay();
     applyInitialTableSorts();
     initEquityHoldingsControls();
     stampUpdatedNow();
@@ -1932,7 +2360,20 @@
     if (selectedTab === 'mf') {
       loadMfHoldings();
     } else {
-      setMfTabCount('...');
+      if (mfHoldingsCachedPayload) {
+        const cachedCount = Number(mfHoldingsCachedPayload.count);
+        if (Number.isFinite(cachedCount) && cachedCount >= 0) {
+          setMfTabCount(String(cachedCount));
+        } else {
+          const cachedRows = Array.isArray(mfHoldingsCachedPayload.rows) ? mfHoldingsCachedPayload.rows : [];
+          setMfTabCount(String(cachedRows.length));
+        }
+      } else {
+        setMfTabCount('...');
+      }
+      if (selectedSection === 'portfolio' && !mfHoldingsCachedPayload) {
+        scheduleMfBackgroundPrefetch();
+      }
     }
     recalcSummaries();
     connectLivePrices();

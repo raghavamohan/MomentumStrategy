@@ -162,6 +162,10 @@ _PROFILE_CACHE_EXPIRES_AT = 0.0
 _QUOTE_CACHE_LOCK = threading.Lock()
 _QUOTE_CACHE_DAY = ""
 _QUOTE_CACHE: dict[str, dict[str, Any]] = {}
+_MF_CACHE_LOCK = threading.Lock()
+_MF_CACHE_DAY = ""
+_MF_HOLDINGS_CACHE_PAYLOAD: dict[str, Any] | None = None
+_MF_UNDERLYINGS_CACHE_PAYLOAD: dict[str, Any] | None = None
 
 DASHBOARD_HOST = "127.0.0.1"
 DASHBOARD_PORT = 5000
@@ -376,7 +380,12 @@ async def _lifespan(_: FastAPI):
             "to be enabled for this API key in developers.kite.trade."
         )
         _start_reference_cache_warmup()
-        yield
+        try:
+            yield
+        except asyncio.CancelledError:
+            # Windows shutdown (Ctrl+C) can cancel lifespan receive while uvicorn
+            # is tearing down; treat it as a normal shutdown path.
+            pass
     finally:
         # Ensure websocket/ticker thread is closed when FastAPI exits.
         live_price_stream.close()
@@ -566,6 +575,93 @@ def _get_cached_profile(kite) -> dict[str, Any]:
         _PROFILE_CACHE_VALUE.update(profile)
         _PROFILE_CACHE_EXPIRES_AT = now + _PROFILE_CACHE_TTL_SECONDS
         return dict(_PROFILE_CACHE_VALUE)
+
+
+def _get_cached_mf_holdings_payload(kite) -> dict[str, Any]:
+    """Return MF holdings payload cached for the current day."""
+    global _MF_CACHE_DAY, _MF_HOLDINGS_CACHE_PAYLOAD, _MF_UNDERLYINGS_CACHE_PAYLOAD
+    day = _today_cache_token()
+    with _MF_CACHE_LOCK:
+        if _MF_CACHE_DAY != day:
+            _MF_CACHE_DAY = day
+            _MF_HOLDINGS_CACHE_PAYLOAD = None
+            _MF_UNDERLYINGS_CACHE_PAYLOAD = None
+        if _MF_HOLDINGS_CACHE_PAYLOAD is not None:
+            return dict(_MF_HOLDINGS_CACHE_PAYLOAD)
+
+    try:
+        mf_raw = kite.mf_holdings() or []
+    except PermissionException:
+        payload = {
+            "rows": [],
+            "totals": {"invested": 0.0, "current": 0.0, "pnl": 0.0},
+            "count": 0,
+            "error": _MF_PERMISSION_ERROR,
+        }
+    except TokenException:
+        raise
+    except Exception:
+        payload = {
+            "rows": [],
+            "totals": {"invested": 0.0, "current": 0.0, "pnl": 0.0},
+            "count": 0,
+            "error": "",
+        }
+    else:
+        mf_holdings = sorted((_decorate_mf(h) for h in mf_raw), key=lambda r: r["fund"])
+        mf_totals = summarise(mf_holdings, "invested", "current", "pnl")
+        payload = {
+            "rows": mf_holdings,
+            "totals": mf_totals,
+            "count": len(mf_holdings),
+            "error": "",
+        }
+
+    with _MF_CACHE_LOCK:
+        if _MF_CACHE_DAY == day:
+            _MF_HOLDINGS_CACHE_PAYLOAD = dict(payload)
+    return payload
+
+
+def _get_cached_mf_underlyings_payload(kite) -> dict[str, Any]:
+    """Return MF underlyings payload cached for the current day."""
+    global _MF_CACHE_DAY, _MF_UNDERLYINGS_CACHE_PAYLOAD
+    day = _today_cache_token()
+    with _MF_CACHE_LOCK:
+        if _MF_CACHE_DAY != day:
+            _MF_CACHE_DAY = day
+            _MF_UNDERLYINGS_CACHE_PAYLOAD = None
+        if _MF_UNDERLYINGS_CACHE_PAYLOAD is not None:
+            return dict(_MF_UNDERLYINGS_CACHE_PAYLOAD)
+
+    holdings_payload = _get_cached_mf_holdings_payload(kite)
+    if holdings_payload.get("error"):
+        payload = {
+            "rows": [],
+            "month": "",
+            "notAggregatedFunds": [],
+            "aggregatedFundCount": 0,
+            "totalFundCount": 0,
+            "error": str(holdings_payload.get("error") or ""),
+        }
+    else:
+        mf_holdings = list(holdings_payload.get("rows") or [])
+        rows, month, missing_funds, aggregated_count, total_count = _build_mf_underlying_breakdown(
+            mf_holdings
+        )
+        payload = {
+            "rows": rows,
+            "month": month,
+            "notAggregatedFunds": missing_funds,
+            "aggregatedFundCount": aggregated_count,
+            "totalFundCount": total_count,
+            "error": "",
+        }
+
+    with _MF_CACHE_LOCK:
+        if _MF_CACHE_DAY == day:
+            _MF_UNDERLYINGS_CACHE_PAYLOAD = dict(payload)
+    return payload
 
 
 def _start_reference_cache_warmup() -> None:
@@ -1150,40 +1246,12 @@ async def dashboard_mf_underlyings(request: Request) -> JSONResponse:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
 
     try:
-        mf_raw = kite.mf_holdings() or []
-    except PermissionException:
-        return JSONResponse(
-            {
-                "rows": [],
-                "month": "",
-                "notAggregatedFunds": [],
-                "aggregatedFundCount": 0,
-                "totalFundCount": 0,
-                "error": _MF_PERMISSION_ERROR,
-            }
-        )
+        payload = _get_cached_mf_underlyings_payload(kite)
     except TokenException:
         request.session.clear()
         live_price_stream.close()
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-
-    mf_holdings = sorted(
-        (_decorate_mf(h) for h in mf_raw),
-        key=lambda r: r["fund"],
-    )
-    rows, month, missing_funds, aggregated_count, total_count = _build_mf_underlying_breakdown(
-        mf_holdings
-    )
-    return JSONResponse(
-        {
-            "rows": rows,
-            "month": month,
-            "notAggregatedFunds": missing_funds,
-            "aggregatedFundCount": aggregated_count,
-            "totalFundCount": total_count,
-            "error": "",
-        }
-    )
+    return JSONResponse(payload)
 
 
 @app.get("/dashboard/mf-holdings")
@@ -1198,33 +1266,12 @@ async def dashboard_mf_holdings(request: Request) -> JSONResponse:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
 
     try:
-        mf_raw = kite.mf_holdings() or []
-    except PermissionException:
-        return JSONResponse(
-            {
-                "rows": [],
-                "totals": {"invested": 0.0, "current": 0.0, "pnl": 0.0},
-                "count": 0,
-                "error": _MF_PERMISSION_ERROR,
-            }
-        )
+        payload = _get_cached_mf_holdings_payload(kite)
     except TokenException:
         request.session.clear()
         live_price_stream.close()
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    except Exception:
-        mf_raw = []
-
-    mf_holdings = sorted((_decorate_mf(h) for h in mf_raw), key=lambda r: r["fund"])
-    mf_totals = summarise(mf_holdings, "invested", "current", "pnl")
-    return JSONResponse(
-        {
-            "rows": mf_holdings,
-            "totals": mf_totals,
-            "count": len(mf_holdings),
-            "error": "",
-        }
-    )
+    return JSONResponse(payload)
 
 
 def main() -> None:
