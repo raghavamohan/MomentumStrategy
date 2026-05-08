@@ -23,51 +23,21 @@ There are two interfaces, sharing the same authentication flow and token cache:
 
 ## What it does
 
-- Authenticates against Zerodha using your Kite Connect API key + secret.
-- Calls `kite.holdings()` and renders every stock you own with: symbol,
-  exchange, quantity, average price, last price, invested value, current
-  value, P&L, and day change %.
-- Calls `kite.mf_holdings()` and renders every mutual fund you own with:
-  fund name, folio, units, average NAV, latest NAV, invested value,
-  current value, and P&L. If the Mutual Funds module isn't enabled on
-  your Kite Connect app, a friendly notice is shown instead.
-- In the web dashboard, the Mutual Funds tab also builds a combined
-  **underlying instrument + sector + overall MF weight** table using
-  `mfdata.in` holdings. This is loaded lazily from
-  `GET /dashboard/mf-underlyings` after the main page renders, so first
-  paint is faster. Funds without holdings coverage on `mfdata.in` are
-  skipped from aggregation and shown under a "Not aggregated" note with
-  an `Aggregated funds: X / Y` count.
-- Calls `kite.positions()` and shows two tables for currently open
-  positions (`quantity != 0`):
-    - **Equity** positions on NSE / BSE.
-    - **F&O / derivatives** positions on NFO / BFO / CDS / BCD / MCX.
-- Calls `kite.margins(segment="equity")` and shows available cash, live
-  balance, and utilised margin for the equity segment.
-- For the **web dashboard**, subscribes to equity/F&O instrument tokens
-  over WebSocket (`KiteTicker`) and overlays live LTPs before rendering
-  holdings/positions so current value, P&L, and day change are refreshed
-  from streamed prices.
-- Caches the daily access token in `.access_token.json` so you don't
-  have to log in again until it expires (Kite tokens die at ~6 AM IST
-  the next trading day). The CLI and web dashboard share this cache.
-- Keeps the **browser session cookie** valid across server restarts by
-  signing it with a stable secret: use env `SESSION_SECRET`, or the app
-  stores one in the OS keychain via `keyring` (Windows Credential Manager,
-  macOS Keychain, etc.). A legacy plaintext `.session_secret` file is
-  migrated into the keychain when present. If no backend is available,
-  you may see a **RuntimeWarning** and sessions reset on restart unless
-  you set `SESSION_SECRET`.
-- Streams live LTP ticks to the browser over ``WS /ws/live-prices`` and
-  updates holdings/positions rows client-side without reloading the page.
-- Periodically re-fetches a full HTML snapshot on ``GET /dashboard`` every
-  ``DASHBOARD_SNAPSHOT_SECONDS`` (default **120** seconds; minimum **10**)
-  so mutual funds, cash/margins, and structural changes stay in sync. If
-  ``DASHBOARD_SNAPSHOT_SECONDS`` is unset, ``DASHBOARD_REFRESH_SECONDS`` is
-  used as a fallback for that interval (legacy).
-- Outbound live ticks are **coalesced** on the asyncio loop (fewer frames
-  when the market is busy). Set ``DASHBOARD_DEBUG_WS=1`` for verbose logs
-  if the WebSocket bridge or tick listeners misbehave.
+- Shows your full portfolio in one place across:
+  - Equity holdings
+  - Mutual fund holdings
+  - Open positions (equity and F&O)
+  - Cash/margin balance
+- Gives both a **CLI view** and a **local web dashboard**, so you can choose
+  terminal output or a visual tabbed UI.
+- Displays live market movement in the dashboard, including refreshed
+  holdings/positions values and P&L.
+- Provides a portfolio summary with key totals such as invested value,
+  current value, and overall profit/loss.
+- Adds mutual fund underlying insights (stock/sector breakdown and weights)
+  in the dashboard when holdings data is available from `mfdata.in`.
+- Reuses login state between runs, so day-to-day usage usually requires less
+  repeated sign-in.
 
 ## Prerequisites
 
@@ -117,6 +87,10 @@ restarts). If omitted, the app prefers the OS keychain; see `.env.example`.
 `.env` is gitignored, so it will not be committed.
 
 ## Run — Web dashboard (recommended)
+
+Best for day-to-day use if you want a visual portfolio view with live updates.
+You get summary cards, tabbed sections, and automatic refresh behavior in one
+local page.
 
 ```powershell
 python -m app.web
@@ -217,24 +191,10 @@ Reference-cache only warmup (skip yfinance):
 python scripts/build_cache.py --reference-only
 ```
 
-### yfinance API usage reference
-
-The app uses `yfinance` only for equity metadata enrichment (`industry` and
-`sector`) and does **not** use it for order/trade operations.
-
-- **yfinance documentation** — <https://ranaroussi.github.io/yfinance/>
-- **`Ticker` API reference** — <https://ranaroussi.github.io/yfinance/reference/api/yfinance.Ticker.html>
-- **`Ticker.info` reference** — <https://ranaroussi.github.io/yfinance/reference/api/yfinance.Ticker.info.html>
-- **PyPI package** — <https://pypi.org/project/yfinance/>
-
-Where this app uses it:
-
-- `app/instruments.py` — `yf.Ticker(f"{symbol}.{exchange}").info` for
-  live/cache-backed industry and sector lookup.
-- `scripts/build_cache.py` — `yf.Ticker(...).info` to pre-build
-  `.cache/yfinance_industry_cache.json` offline.
-
 ## Run — CLI
+
+Best for quick terminal checks, scripting, or remote-shell workflows. It prints
+the same core portfolio sections as readable console output after login.
 
 ```powershell
 python -m app.main
@@ -290,9 +250,19 @@ summary) are printed.
     └── dashboard.html    # tabbed dashboard
 ```
 
-## Kite Connect API reference
+## Data Sources
 
-External documentation for everything this app talks to:
+This app combines three external sources:
+
+- **Kite Connect** for account data and live prices.
+- **yfinance** for equity metadata enrichment (`industry`/`sector`).
+- **mfdata.in** for mutual-fund underlying holdings aggregation.
+
+### Zerodha Kite Connect (account and live prices)
+
+Kite Connect is the primary source for account data and live market prices.
+
+External documentation:
 
 - **Kite Connect HTTP API (v3) overview** —
   <https://kite.trade/docs/connect/v3/>
@@ -400,16 +370,44 @@ only a subset), refer to the Kite Connect HTTP API docs:
 - **WebSocket streaming** (live quotes/LTP) —
   <https://kite.trade/docs/connect/v3/websocket/>
 
+### yfinance (equity metadata enrichment)
+
+The app uses `yfinance` only for equity metadata enrichment (`industry` and
+`sector`) and does **not** use it for order/trade operations.
+
+- **yfinance documentation** — <https://ranaroussi.github.io/yfinance/>
+- **`Ticker` API reference** — <https://ranaroussi.github.io/yfinance/reference/api/yfinance.Ticker.html>
+- **`Ticker.info` reference** — <https://ranaroussi.github.io/yfinance/reference/api/yfinance.Ticker.info.html>
+- **PyPI package** — <https://pypi.org/project/yfinance/>
+
+Used in:
+
+- `app/instruments.py` — `yf.Ticker(f"{symbol}.{exchange}").info` for
+  live/cache-backed industry and sector lookup.
+- `scripts/build_cache.py` — `yf.Ticker(...).info` to pre-build
+  `.cache/yfinance_industry_cache.json` offline.
+
+### mfdata.in (MF underlying aggregation)
+
+`mfdata.in` is used in the dashboard's Mutual Funds tab to enrich folio-level
+MF holdings with underlying equity composition and sector weights.
+
+- **Website** — <https://mfdata.in/>
+- **API base** — `https://api.mfdata.in`
+- **Fund/scheme search** — `GET /api/v1/search?q=<fund_name>`
+- **Family holdings** — `GET /api/v1/families/{family_id}/holdings`
+- **Fields used by this app** — `equity_holdings` entries with
+  `stock_name`, `sector`, and `weight_pct` to compute overall underlying
+  weights across all aggregated funds.
+- **Coverage behavior** — schemes/families without holdings coverage are
+  skipped from aggregation and shown as "Not aggregated" in the dashboard.
+
 ## Notes
 
 - This app only reads. It calls `kite.holdings()`, `kite.mf_holdings()`,
   `kite.positions()`, `kite.margins()`, `kite.profile()`, and (for web)
   subscribes to live quote ticks via `KiteTicker`. It does not place,
   modify, or cancel any orders.
-- MF underlying aggregation in the dashboard is sourced from
-  [`mfdata.in`](https://mfdata.in/) only. If a scheme/family does not have
-  holdings there, it is excluded from the combined underlying table and
-  explicitly listed as "Not aggregated".
 - The web dashboard binds to `127.0.0.1` only, so it is **not**
   reachable from other machines on the network. To expose it elsewhere,
   change the `host` argument in `app.web.main`.
@@ -427,20 +425,5 @@ only a subset), refer to the Kite Connect HTTP API docs:
   Use the NSE Indices CSV at
   <https://nsearchives.nseindia.com/content/indices/ind_nifty50list.csv>
   (note: NSE applies anti-bot protection; you'll need a session warm-up
-  with browser-like headers to fetch it server-side).
-
-### Data Sources
-
-- **Zerodha Kite Connect (account data)**:
-  - Holdings: `GET /portfolio/holdings`
-  - Mutual fund folios: `GET /mf/holdings`
-  - Positions: `GET /portfolio/positions`
-  - Cash/margins: `GET /user/margins/equity`
-  - Profile: `GET /user/profile`
-  - Live prices: `wss://ws.kite.trade` (`KiteTicker`)
-
-- **mfdata.in (MF underlying aggregation)**:
-  - Scheme/fund search: `GET /api/v1/search?q=<fund_name>`
-  - Family holdings: `GET /api/v1/families/{family_id}/holdings`
-  - Dashboard uses `equity_holdings` (`stock_name`, `sector`, `weight_pct`)
-    to compute overall underlying weights across all available MF holdings.
+  with browser-like headers to fetch it server-side). See `## Data Sources`
+  for the source summary used by this app.
