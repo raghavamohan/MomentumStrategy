@@ -3,7 +3,8 @@
 This script can warm:
 1) yfinance industry/sector cache
 2) shared reference/model cache sections (NSE maps, Nifty list, cash-equity maps)
-3) MarketSmith India market-regime daily cache
+3) mfdata MF-underlyings metadata cache (from current MF holdings)
+4) MarketSmith India market-regime daily cache
 
 Usage:
   python scripts/build_cache.py
@@ -45,10 +46,17 @@ from app.instruments import (  # noqa: E402
     get_nse_symbol_to_token_lookup,
     get_reference_cache_debug_snapshot,
 )
-from app.model_cache_store import load_model_cache, save_model_cache  # noqa: E402
+from app.model_cache_store import (  # noqa: E402
+    current_effective_day_ist,
+    load_model_cache,
+    save_model_cache,
+)
 from app.portfolio_model import (  # noqa: E402
+    build_mf_holding,
+    build_mf_underlying_breakdown,
     get_marketsmith_market_condition,
 )
+from kiteconnect.exceptions import PermissionException, TokenException  # noqa: E402
 
 try:
     import yfinance as yf  # type: ignore  # noqa: E402
@@ -119,19 +127,20 @@ def model_cache_path(project_root: Path) -> Path:
 
 def _persist_yfinance_section(
     mapping: dict[str, dict[str, str]],
-    last_refresh_epoch: float,
 ) -> None:
     """Write only the ``yfinance`` section; keep other ``model_cache.json`` keys."""
     root = load_model_cache()
     if not isinstance(root, dict):
         root = {}
+    cache_day = current_effective_day_ist(cutoff_hour=9)
     root["yfinance"] = {
         "mapping": mapping,
-        "last_refresh_epoch": float(last_refresh_epoch),
+        "cache_day": cache_day,
     }
     # Older build_cache.py wrote ``mapping`` / ``last_refresh_epoch`` at the root;
     # remove so :func:`app.model_cache_store.read_section` sees a single shape.
     root.pop("mapping", None)
+    root.pop("last_refresh_epoch", None)
     save_model_cache(root)
 
 
@@ -225,13 +234,13 @@ def warm_yfinance_cache(args: argparse.Namespace, project_root: Path) -> Path:
 
             now = time.time()
             if now - saved_at >= 5.0:
-                _persist_yfinance_section(mapping, now)
+                _persist_yfinance_section(mapping)
                 saved_at = now
 
             if args.sleep_ms and args.sleep_ms > 0:
                 time.sleep(args.sleep_ms / 1000.0)
 
-    _persist_yfinance_section(mapping, time.time())
+    _persist_yfinance_section(mapping)
     print(f"Yfinance warmup done. Added/attempted: {len(missing)}. Took {time.time() - started:.1f}s.")
     return cache_file
 
@@ -292,6 +301,41 @@ def warm_reference_cache() -> None:
         print(f"Reference cache debug snapshot unavailable: {exc}")
 
 
+def warm_mfdata_cache() -> None:
+    print()
+    print("Warming mfdata section in .cache/model_cache.json...")
+    token = load_cached_access_token()
+    if not token:
+        print("mfdata warmup skipped: no cached Kite access token.")
+        return
+    try:
+        api_key, _ = load_credentials()
+        kite = build_authenticated_client(api_key, token)
+        if not validate_kite_session(kite):
+            print("mfdata warmup skipped: cached Kite token expired.")
+            return
+        try:
+            mf_raw = kite.mf_holdings() or []
+        except PermissionException:
+            print("mfdata warmup skipped: Kite MF API permission is not enabled for this app.")
+            return
+        except TokenException:
+            print("mfdata warmup skipped: Kite session expired during MF holdings fetch.")
+            return
+        mf_rows = sorted((build_mf_holding(h).to_dict() for h in mf_raw), key=lambda r: r["fund"])
+        if not mf_rows:
+            print("mfdata warmup skipped: no MF holdings in account.")
+            return
+        rows, month, missing_funds, aggregated_count, total_count = build_mf_underlying_breakdown(mf_rows)
+        print(
+            "mfdata warmup result: "
+            f"funds={total_count}, aggregated={aggregated_count}, "
+            f"rows={len(rows)}, month={month or '-'}, missing={len(missing_funds)}"
+        )
+    except Exception as exc:
+        print(f"mfdata warmup FAILED: {exc}")
+
+
 def warm_marketsmith_cache() -> None:
     print()
     print("Warming MarketSmith market-regime section in .cache/model_cache.json...")
@@ -344,6 +388,11 @@ def main() -> int:
         action="store_true",
         help="Warm only reference/MarketSmith sections (skip yfinance cache warmup).",
     )
+    parser.add_argument(
+        "--skip-mfdata-cache",
+        action="store_true",
+        help="Skip warming mfdata section in model_cache.json.",
+    )
     args = parser.parse_args()
 
     if args.reference_only and args.skip_reference_cache:
@@ -357,6 +406,8 @@ def main() -> int:
 
     if not args.skip_reference_cache:
         warm_reference_cache()
+    if not args.skip_mfdata_cache:
+        warm_mfdata_cache()
     warm_marketsmith_cache()
 
     print(f"Done. Model cache file: {cache_file}")

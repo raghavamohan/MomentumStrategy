@@ -87,7 +87,7 @@ References
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 import json
 import logging
 import os
@@ -132,7 +132,8 @@ from app.instruments import (
     warm_reference_caches,
 )
 from app.env_util import log_dashboard_ws_debug_exception
-from app.live_prices import live_price_stream
+from app.live_prices import live_price_stream, notify_dashboard_cache_refresh
+from app.model_cache_store import current_effective_day_ist, start_background_refresh_job
 from app.portfolio_model import (
     EQUITY_EXCHANGES,
     FNO_EXCHANGES,
@@ -169,9 +170,15 @@ _QUOTE_CACHE_LOCK = threading.Lock()
 _QUOTE_CACHE_DAY = ""
 _QUOTE_CACHE: dict[str, dict[str, Any]] = {}
 _MF_CACHE_LOCK = threading.Lock()
-_MF_CACHE_DAY = ""
+_MF_HOLDINGS_CACHE_DAY = ""
 _MF_HOLDINGS_CACHE_PAYLOAD: dict[str, Any] | None = None
+_MF_HOLDINGS_REFRESH_IN_PROGRESS = False
+_MF_HOLDINGS_REFRESH_STARTED_AT_MONOTONIC = 0.0
+_MF_UNDERLYINGS_CACHE_DAY_BY_TONE: dict[str, str] = {}
 _MF_UNDERLYINGS_CACHE_PAYLOADS: dict[str, dict[str, Any]] = {}
+_MF_UNDERLYINGS_REFRESH_IN_PROGRESS: set[str] = set()
+_MF_HOLDINGS_REFRESH_TIMEOUT_SECONDS = 25.0
+_MF_HOLDINGS_STUCK_RESET_SECONDS = max(45.0, _MF_HOLDINGS_REFRESH_TIMEOUT_SECONDS + 15.0)
 
 DASHBOARD_HOST = "127.0.0.1"
 DASHBOARD_PORT = 5000
@@ -533,8 +540,8 @@ def _dashboard_timing_mark(
 
 
 def _today_cache_token() -> str:
-    """Return day token used for quote cache invalidation."""
-    return time.strftime("%Y-%m-%d")
+    """Return 09:00-IST cache-day token for all model caches."""
+    return current_effective_day_ist(cutoff_hour=9)
 
 
 def _get_cached_quotes(kite, quote_keys: list[str]) -> dict[str, Any]:
@@ -583,50 +590,173 @@ def _get_cached_profile(kite) -> dict[str, Any]:
         return dict(_PROFILE_CACHE_VALUE)
 
 
+def _mf_holdings_loading_payload(*, stale_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = dict(stale_payload or {})
+    payload.setdefault("rows", [])
+    payload.setdefault("totals", {"invested": 0.0, "current": 0.0, "pnl": 0.0})
+    payload.setdefault("count", len(payload.get("rows") or []))
+    payload.setdefault("error", "")
+    payload["loading"] = True
+    payload["stale"] = stale_payload is not None
+    return payload
+
+
+def _fetch_mf_holdings_with_timeout(kite, timeout_seconds: float) -> list[dict[str, Any]]:
+    """Fetch MF holdings with an upper bound to avoid indefinite loading state."""
+    timeout = max(1.0, float(timeout_seconds))
+    done = threading.Event()
+    result_holder: dict[str, Any] = {}
+
+    def _worker() -> None:
+        try:
+            result_holder["result"] = kite.mf_holdings()
+        except Exception as exc:  # pragma: no cover - passthrough from network client
+            result_holder["error"] = exc
+        finally:
+            done.set()
+
+    threading.Thread(target=_worker, daemon=True).start()
+    if not done.wait(timeout):
+        raise FuturesTimeoutError()
+    error = result_holder.get("error")
+    if error is not None:
+        raise error
+    return list(result_holder.get("result") or [])
+
+
+def _reset_stuck_mf_holdings_refresh_unlocked(now_monotonic: float) -> bool:
+    """Drop stale in-progress flag when refresh exceeded watchdog budget."""
+    global _MF_HOLDINGS_REFRESH_IN_PROGRESS, _MF_HOLDINGS_REFRESH_STARTED_AT_MONOTONIC
+    if not _MF_HOLDINGS_REFRESH_IN_PROGRESS:
+        return False
+    started = float(_MF_HOLDINGS_REFRESH_STARTED_AT_MONOTONIC or 0.0)
+    if started <= 0.0:
+        return False
+    elapsed = now_monotonic - started
+    if elapsed < _MF_HOLDINGS_STUCK_RESET_SECONDS:
+        return False
+    _MF_HOLDINGS_REFRESH_IN_PROGRESS = False
+    _MF_HOLDINGS_REFRESH_STARTED_AT_MONOTONIC = 0.0
+    logger.warning(
+        "Reset stuck MF holdings refresh after %.1fs; scheduling a fresh attempt.",
+        elapsed,
+    )
+    return True
+
+
+def _start_mf_holdings_refresh(kite) -> None:
+    global _MF_HOLDINGS_REFRESH_IN_PROGRESS, _MF_HOLDINGS_REFRESH_STARTED_AT_MONOTONIC
+    with _MF_CACHE_LOCK:
+        if _MF_HOLDINGS_REFRESH_IN_PROGRESS:
+            return
+        _MF_HOLDINGS_REFRESH_IN_PROGRESS = True
+        _MF_HOLDINGS_REFRESH_STARTED_AT_MONOTONIC = time.monotonic()
+
+    def _job() -> None:
+        global _MF_HOLDINGS_CACHE_PAYLOAD, _MF_HOLDINGS_CACHE_DAY, _MF_HOLDINGS_REFRESH_IN_PROGRESS, _MF_HOLDINGS_REFRESH_STARTED_AT_MONOTONIC
+        try:
+            day = _today_cache_token()
+            with _MF_CACHE_LOCK:
+                previous_payload = (
+                    dict(_MF_HOLDINGS_CACHE_PAYLOAD)
+                    if _MF_HOLDINGS_CACHE_PAYLOAD is not None
+                    else None
+                )
+            try:
+                mf_raw = _fetch_mf_holdings_with_timeout(
+                    kite,
+                    timeout_seconds=_MF_HOLDINGS_REFRESH_TIMEOUT_SECONDS,
+                )
+            except PermissionException:
+                payload = {
+                    "rows": [],
+                    "totals": {"invested": 0.0, "current": 0.0, "pnl": 0.0},
+                    "count": 0,
+                    "error": _MF_PERMISSION_ERROR,
+                }
+            except TokenException:
+                logger.warning("MF holdings refresh skipped: Kite token expired.")
+                payload = {
+                    "rows": [],
+                    "totals": {"invested": 0.0, "current": 0.0, "pnl": 0.0},
+                    "count": 0,
+                    "error": "Kite session expired. Please log in again.",
+                }
+            except FuturesTimeoutError:
+                logger.warning("MF holdings refresh timed out after %.1fs.", _MF_HOLDINGS_REFRESH_TIMEOUT_SECONDS)
+                payload = {
+                    "rows": [],
+                    "totals": {"invested": 0.0, "current": 0.0, "pnl": 0.0},
+                    "count": 0,
+                    "error": "Timed out while loading mutual fund holdings. Please retry.",
+                }
+            except Exception:
+                logger.warning("MF holdings refresh failed.", exc_info=True)
+                payload = {
+                    "rows": [],
+                    "totals": {"invested": 0.0, "current": 0.0, "pnl": 0.0},
+                    "count": 0,
+                    "error": "Unable to load mutual fund holdings right now.",
+                }
+            else:
+                mf_holdings = sorted((_decorate_mf(h) for h in mf_raw), key=lambda r: r["fund"])
+                mf_totals = summarise(mf_holdings, "invested", "current", "pnl")
+                payload = {
+                    "rows": mf_holdings,
+                    "totals": mf_totals,
+                    "count": len(mf_holdings),
+                    "error": "",
+                }
+            payload["loading"] = False
+            payload["stale"] = False
+            if (
+                previous_payload
+                and previous_payload.get("rows")
+                and payload.get("error")
+            ):
+                # Keep stale-but-useful data when the latest refresh fails.
+                payload = dict(previous_payload)
+                payload["loading"] = False
+                payload["stale"] = True
+            with _MF_CACHE_LOCK:
+                _MF_HOLDINGS_CACHE_PAYLOAD = dict(payload)
+                _MF_HOLDINGS_CACHE_DAY = day
+                _MF_UNDERLYINGS_CACHE_DAY_BY_TONE.clear()
+            notify_dashboard_cache_refresh()
+        finally:
+            with _MF_CACHE_LOCK:
+                _MF_HOLDINGS_REFRESH_IN_PROGRESS = False
+                _MF_HOLDINGS_REFRESH_STARTED_AT_MONOTONIC = 0.0
+
+    if not start_background_refresh_job("mf-holdings", _job):
+        with _MF_CACHE_LOCK:
+            _MF_HOLDINGS_REFRESH_IN_PROGRESS = False
+            _MF_HOLDINGS_REFRESH_STARTED_AT_MONOTONIC = 0.0
+        logger.warning("MF holdings refresh already running; using existing background task.")
+
+
 def _get_cached_mf_holdings_payload(kite) -> dict[str, Any]:
-    """Return MF holdings payload cached for the current day."""
-    global _MF_CACHE_DAY, _MF_HOLDINGS_CACHE_PAYLOAD, _MF_UNDERLYINGS_CACHE_PAYLOADS
+    """Return MF holdings payload while refreshing stale/missing cache in background."""
     day = _today_cache_token()
     with _MF_CACHE_LOCK:
-        if _MF_CACHE_DAY != day:
-            _MF_CACHE_DAY = day
-            _MF_HOLDINGS_CACHE_PAYLOAD = None
-            _MF_UNDERLYINGS_CACHE_PAYLOADS = {}
-        if _MF_HOLDINGS_CACHE_PAYLOAD is not None:
-            return dict(_MF_HOLDINGS_CACHE_PAYLOAD)
+        _reset_stuck_mf_holdings_refresh_unlocked(time.monotonic())
+        cached = dict(_MF_HOLDINGS_CACHE_PAYLOAD) if _MF_HOLDINGS_CACHE_PAYLOAD is not None else None
+        cached_day = _MF_HOLDINGS_CACHE_DAY
+        refreshing = _MF_HOLDINGS_REFRESH_IN_PROGRESS
 
-    try:
-        mf_raw = kite.mf_holdings() or []
-    except PermissionException:
-        payload = {
-            "rows": [],
-            "totals": {"invested": 0.0, "current": 0.0, "pnl": 0.0},
-            "count": 0,
-            "error": _MF_PERMISSION_ERROR,
-        }
-    except TokenException:
-        raise
-    except Exception:
-        payload = {
-            "rows": [],
-            "totals": {"invested": 0.0, "current": 0.0, "pnl": 0.0},
-            "count": 0,
-            "error": "",
-        }
-    else:
-        mf_holdings = sorted((_decorate_mf(h) for h in mf_raw), key=lambda r: r["fund"])
-        mf_totals = summarise(mf_holdings, "invested", "current", "pnl")
-        payload = {
-            "rows": mf_holdings,
-            "totals": mf_totals,
-            "count": len(mf_holdings),
-            "error": "",
-        }
+    if cached is not None and cached_day == day:
+        cached["loading"] = False
+        cached["stale"] = False
+        return cached
 
-    with _MF_CACHE_LOCK:
-        if _MF_CACHE_DAY == day:
-            _MF_HOLDINGS_CACHE_PAYLOAD = dict(payload)
-    return payload
+    if cached is not None and cached_day != day:
+        if not refreshing:
+            _start_mf_holdings_refresh(kite)
+        return _mf_holdings_loading_payload(stale_payload=cached)
+
+    if not refreshing:
+        _start_mf_holdings_refresh(kite)
+    return _mf_holdings_loading_payload()
 
 
 def _normalize_mf_underlying_tone(tone: str) -> str:
@@ -651,50 +781,100 @@ def _filter_mf_holdings_by_tone(
     return out
 
 
+def _mf_underlyings_loading_payload(
+    tone_key: str,
+    *,
+    stale_payload: dict[str, Any] | None = None,
+    holdings_error: str = "",
+) -> dict[str, Any]:
+    payload = dict(stale_payload or {})
+    payload.setdefault("rows", [])
+    payload.setdefault("month", "")
+    payload.setdefault("notAggregatedFunds", [])
+    payload.setdefault("aggregatedFundCount", 0)
+    payload.setdefault("totalFundCount", 0)
+    payload["tone"] = tone_key
+    payload["error"] = str(payload.get("error") or holdings_error or "")
+    payload["loading"] = True
+    payload["stale"] = stale_payload is not None
+    return payload
+
+
+def _start_mf_underlyings_refresh(kite, *, tone_key: str) -> None:
+    with _MF_CACHE_LOCK:
+        if tone_key in _MF_UNDERLYINGS_REFRESH_IN_PROGRESS:
+            return
+        _MF_UNDERLYINGS_REFRESH_IN_PROGRESS.add(tone_key)
+
+    def _job() -> None:
+        try:
+            holdings_payload = _get_cached_mf_holdings_payload(kite)
+            if holdings_payload.get("loading"):
+                return
+            if holdings_payload.get("error"):
+                payload = {
+                    "rows": [],
+                    "month": "",
+                    "notAggregatedFunds": [],
+                    "aggregatedFundCount": 0,
+                    "totalFundCount": 0,
+                    "tone": tone_key,
+                    "error": str(holdings_payload.get("error") or ""),
+                    "loading": False,
+                    "stale": False,
+                }
+            else:
+                mf_holdings = list(holdings_payload.get("rows") or [])
+                mf_holdings = _filter_mf_holdings_by_tone(mf_holdings, tone_key)
+                rows, month, missing_funds, aggregated_count, total_count = _build_mf_underlying_breakdown(
+                    mf_holdings
+                )
+                payload = {
+                    "rows": rows,
+                    "month": month,
+                    "notAggregatedFunds": missing_funds,
+                    "aggregatedFundCount": aggregated_count,
+                    "totalFundCount": total_count,
+                    "tone": tone_key,
+                    "error": "",
+                    "loading": False,
+                    "stale": False,
+                }
+            with _MF_CACHE_LOCK:
+                _MF_UNDERLYINGS_CACHE_PAYLOADS[tone_key] = dict(payload)
+                _MF_UNDERLYINGS_CACHE_DAY_BY_TONE[tone_key] = _today_cache_token()
+            notify_dashboard_cache_refresh()
+        finally:
+            with _MF_CACHE_LOCK:
+                _MF_UNDERLYINGS_REFRESH_IN_PROGRESS.discard(tone_key)
+
+    if not start_background_refresh_job(f"mf-underlyings-{tone_key}", _job):
+        with _MF_CACHE_LOCK:
+            _MF_UNDERLYINGS_REFRESH_IN_PROGRESS.discard(tone_key)
+
+
 def _get_cached_mf_underlyings_payload(kite, *, tone: str = "all") -> dict[str, Any]:
-    """Return MF underlyings payload cached for the current day."""
-    global _MF_CACHE_DAY, _MF_UNDERLYINGS_CACHE_PAYLOADS
+    """Return MF underlyings payload while refreshing stale/missing cache in background."""
     tone_key = _normalize_mf_underlying_tone(tone)
     day = _today_cache_token()
     with _MF_CACHE_LOCK:
-        if _MF_CACHE_DAY != day:
-            _MF_CACHE_DAY = day
-            _MF_UNDERLYINGS_CACHE_PAYLOADS = {}
-        cached = _MF_UNDERLYINGS_CACHE_PAYLOADS.get(tone_key)
-        if cached is not None:
-            return dict(cached)
+        cached = dict(_MF_UNDERLYINGS_CACHE_PAYLOADS.get(tone_key) or {})
+        cached_day = _MF_UNDERLYINGS_CACHE_DAY_BY_TONE.get(tone_key, "")
+        refreshing = tone_key in _MF_UNDERLYINGS_REFRESH_IN_PROGRESS
+
+    if cached and cached_day == day:
+        cached["loading"] = False
+        cached["stale"] = False
+        return cached
 
     holdings_payload = _get_cached_mf_holdings_payload(kite)
-    if holdings_payload.get("error"):
-        payload = {
-            "rows": [],
-            "month": "",
-            "notAggregatedFunds": [],
-            "aggregatedFundCount": 0,
-            "totalFundCount": 0,
-            "tone": tone_key,
-            "error": str(holdings_payload.get("error") or ""),
-        }
-    else:
-        mf_holdings = list(holdings_payload.get("rows") or [])
-        mf_holdings = _filter_mf_holdings_by_tone(mf_holdings, tone_key)
-        rows, month, missing_funds, aggregated_count, total_count = _build_mf_underlying_breakdown(
-            mf_holdings
-        )
-        payload = {
-            "rows": rows,
-            "month": month,
-            "notAggregatedFunds": missing_funds,
-            "aggregatedFundCount": aggregated_count,
-            "totalFundCount": total_count,
-            "tone": tone_key,
-            "error": "",
-        }
+    holdings_error = str(holdings_payload.get("error") or "")
+    if not refreshing:
+        _start_mf_underlyings_refresh(kite, tone_key=tone_key)
 
-    with _MF_CACHE_LOCK:
-        if _MF_CACHE_DAY == day:
-            _MF_UNDERLYINGS_CACHE_PAYLOADS[tone_key] = dict(payload)
-    return payload
+    if cached and cached_day != day:
+        return _mf_underlyings_loading_payload(tone_key, stale_payload=cached, holdings_error=holdings_error)
+    return _mf_underlyings_loading_payload(tone_key, holdings_error=holdings_error)
 
 
 def _start_reference_cache_warmup() -> None:
@@ -724,7 +904,9 @@ def _start_reference_cache_warmup() -> None:
             with _REFERENCE_WARMUP_LOCK:
                 _REFERENCE_WARMUP_IN_PROGRESS = False
 
-    threading.Thread(target=_job, daemon=True).start()
+    if not start_background_refresh_job("web-reference-warmup", _job):
+        with _REFERENCE_WARMUP_LOCK:
+            _REFERENCE_WARMUP_IN_PROGRESS = False
 
 
 # ---------------------------------------------------------------------------
@@ -1239,6 +1421,7 @@ async def dashboard(request: Request):
         "equityInvestedTotal": equity_totals["invested"],
         "indexQuotes": index_quotes_bootstrap,
         "marketCondition": marketsmith_market_condition_bootstrap(market_condition),
+        "referenceCache": reference_cache_debug,
     }
     context = {
         "request": request,

@@ -11,23 +11,24 @@ from __future__ import annotations
 import csv
 import io
 import json
-import os
 import threading
 import time
 from typing import Any
-from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 import logging
-from dotenv import load_dotenv
 from app.live_prices import notify_dashboard_cache_refresh
-from app.model_cache_store import load_model_cache, read_section, update_section
+from app.model_cache_store import (
+    current_effective_day_ist,
+    load_model_cache,
+    next_cutoff_epoch_ist,
+    read_section,
+    start_background_refresh_job,
+    update_section,
+)
 
 
 EQUITY_EXCHANGES = ("NSE", "BSE")
-_DEFAULT_REFERENCE_CACHE_TTL_SECONDS = 24 * 60 * 60
-_REFERENCE_CACHE_TTL_SECONDS = _DEFAULT_REFERENCE_CACHE_TTL_SECONDS
-_CACHE_TTL_SECONDS = _REFERENCE_CACHE_TTL_SECONDS
 _CACHE_LOCK = threading.Lock()
 _CACHE_EXPIRES_AT = 0.0
 _CACHED_TOKEN_TO_NAME: dict[int, str] = {}
@@ -52,8 +53,6 @@ _NSE_INDUSTRY_CSV_URLS: tuple[str, ...] = (
     "https://nsearchives.nseindia.com/content/indices/ind_niftylargemidcap250list.csv",
     "https://nsearchives.nseindia.com/content/indices/ind_niftymidsmallcap400list.csv",
 )
-# Keep NSE-reference lookups aligned with the shared reference-cache TTL.
-_NIFTY50_CACHE_TTL_SECONDS = _REFERENCE_CACHE_TTL_SECONDS
 _NIFTY50_CACHE_EXPIRES_AT = 0.0
 _CACHED_NIFTY50_SYMBOLS: list[str] = []
 _NSE_MERGED_INDUSTRY_EXPIRES_AT = 0.0
@@ -83,29 +82,9 @@ _YFINANCE_CACHE_LOADED = False
 _YFINANCE_CACHE_REFRESH_IN_PROGRESS = False
 _YFINANCE_REFRESH_THREAD_STARTED = False
 _YFINANCE_SYMBOL_REFRESH_IN_PROGRESS: set[tuple[str, str]] = set()
+_YFINANCE_CACHE_LAST_SOURCE = "unknown"
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(_PROJECT_ROOT / ".env")
-try:
-    _REFERENCE_CACHE_TTL_SECONDS = max(
-        60,
-        int(
-            float(
-                os.getenv(
-                    "REFERENCE_CACHE_TTL_SECONDS",
-                    str(_DEFAULT_REFERENCE_CACHE_TTL_SECONDS),
-                )
-                or str(_DEFAULT_REFERENCE_CACHE_TTL_SECONDS)
-            )
-        ),
-    )
-except ValueError:
-    _REFERENCE_CACHE_TTL_SECONDS = _DEFAULT_REFERENCE_CACHE_TTL_SECONDS
-_CACHE_TTL_SECONDS = _REFERENCE_CACHE_TTL_SECONDS
-_NIFTY50_CACHE_TTL_SECONDS = _REFERENCE_CACHE_TTL_SECONDS
-_YFINANCE_CACHE_REFRESH_DAYS = 30.0
-
-_YFINANCE_CACHE_LAST_REFRESH_EPOCH = 0.0
+_YFINANCE_CACHE_DAY = ""
 _REFERENCE_DISK_CACHE_LOADED = False
 _REFERENCE_DISK_CACHE: dict[str, Any] = {}
 _REFERENCE_DISK_CACHE_DIRTY = False
@@ -122,6 +101,14 @@ _REFERENCE_CACHE_LAST_SOURCE: dict[str, str] = {
 
 def _yfinance_cache_key(exchange: str, symbol: str) -> tuple[str, str]:
     return (exchange.upper().strip(), _normalise_symbol(symbol))
+
+
+def _current_reference_day_token() -> str:
+    return current_effective_day_ist(cutoff_hour=9)
+
+
+def _next_reference_cutoff_epoch() -> float:
+    return next_cutoff_epoch_ist(cutoff_hour=9)
 
 
 def _prepare_reference_disk_cache_unlocked() -> None:
@@ -147,28 +134,30 @@ def _save_reference_disk_cache_unlocked() -> None:
         logger.warning("Failed to persist shared reference cache: %s", exc)
 
 
-def _reference_cache_get_entry_unlocked(section: str) -> tuple[dict[str, Any], float]:
-    """Return (payload, expires_at) for one shared cache section."""
+def _reference_cache_get_entry_unlocked(section: str) -> tuple[dict[str, Any], str]:
+    """Return (payload, cache_day) for one shared cache section."""
     _prepare_reference_disk_cache_unlocked()
     entry = _REFERENCE_DISK_CACHE.get(section)
     if not isinstance(entry, dict):
-        return ({}, 0.0)
+        return ({}, "")
     payload = entry.get("payload")
     if not isinstance(payload, dict):
         payload = {}
-    try:
-        expires_at = float(entry.get("expires_at") or 0.0)
-    except (TypeError, ValueError):
-        expires_at = 0.0
-    return (payload, expires_at)
+    cache_day = str(entry.get("cache_day") or "").strip()
+    if not cache_day:
+        # Backward compatibility for old TTL-based rows.
+        legacy_expires = float(entry.get("expires_at") or 0.0)
+        if legacy_expires > time.time():
+            cache_day = _current_reference_day_token()
+    return (payload, cache_day)
 
 
-def _reference_cache_set_entry_unlocked(section: str, payload: dict[str, Any], ttl_seconds: float) -> None:
-    """Store one shared cache section with TTL (expects _CACHE_LOCK held)."""
+def _reference_cache_set_entry_unlocked(section: str, payload: dict[str, Any]) -> None:
+    """Store one shared cache section for the current cache day."""
     global _REFERENCE_DISK_CACHE_DIRTY
     _prepare_reference_disk_cache_unlocked()
     _REFERENCE_DISK_CACHE[section] = {
-        "expires_at": time.time() + max(1.0, float(ttl_seconds)),
+        "cache_day": _current_reference_day_token(),
         "payload": payload,
     }
     _REFERENCE_DISK_CACHE_DIRTY = True
@@ -242,13 +231,11 @@ def _load_yfinance_cache_if_needed() -> None:
         try:
             payload = read_section("yfinance")
             mapping = payload.get("mapping") if isinstance(payload, dict) else {}
-            epoch = float(payload.get("last_refresh_epoch") or 0.0)
+            cache_day = str(payload.get("cache_day") or "").strip() if isinstance(payload, dict) else ""
             if not mapping:
                 root = load_model_cache()
                 if isinstance(root, dict) and isinstance(root.get("mapping"), dict):
                     mapping = root["mapping"]
-                    if not epoch:
-                        epoch = float(root.get("last_refresh_epoch") or 0.0)
                     logger.debug(
                         "Yfinance mappings loaded from legacy root-level mapping key "
                         "(re-run scripts/build_cache.py to normalize model_cache.json)"
@@ -268,7 +255,7 @@ def _load_yfinance_cache_if_needed() -> None:
                     sec = ""
                 _CACHED_YFINANCE_KEY_TO_INDUSTRY[key] = ind
                 _CACHED_YFINANCE_KEY_TO_SECTOR[key] = sec
-            globals()["_YFINANCE_CACHE_LAST_REFRESH_EPOCH"] = epoch
+            globals()["_YFINANCE_CACHE_DAY"] = cache_day
         except Exception as exc:
             logger.warning("Failed to read yfinance cache file: %s", exc)
 
@@ -293,7 +280,7 @@ def _persist_yfinance_cache() -> None:
 
             payload = {
                 "mapping": mapping,
-                "last_refresh_epoch": _YFINANCE_CACHE_LAST_REFRESH_EPOCH,
+                "cache_day": _YFINANCE_CACHE_DAY,
             }
             update_section("yfinance", lambda _: dict(payload))
         except Exception as exc:
@@ -301,8 +288,8 @@ def _persist_yfinance_cache() -> None:
 
 
 def _maybe_start_monthly_yfinance_refresh() -> None:
-    """Start a background refresh once per ~month."""
-    global _YFINANCE_REFRESH_THREAD_STARTED, _YFINANCE_CACHE_REFRESH_IN_PROGRESS
+    """Start a daily background refresh aligned to the 09:00 IST cache day."""
+    global _YFINANCE_REFRESH_THREAD_STARTED, _YFINANCE_CACHE_REFRESH_IN_PROGRESS, _YFINANCE_CACHE_LAST_SOURCE
 
     _load_yfinance_cache_if_needed()
     with _YFINANCE_CACHE_LOCK:
@@ -313,17 +300,15 @@ def _maybe_start_monthly_yfinance_refresh() -> None:
         if not cache_has_entries:
             return
 
-        if (
-            _YFINANCE_CACHE_LAST_REFRESH_EPOCH
-            and (time.time() - _YFINANCE_CACHE_LAST_REFRESH_EPOCH)
-            < (_YFINANCE_CACHE_REFRESH_DAYS * 24.0 * 3600.0)
-        ):
+        if _YFINANCE_CACHE_DAY == _current_reference_day_token():
+            _YFINANCE_CACHE_LAST_SOURCE = "memory"
             return
 
+        _YFINANCE_CACHE_LAST_SOURCE = "disk_stale_bg_refresh"
         _YFINANCE_REFRESH_THREAD_STARTED = True
 
     def _refresh_job() -> None:
-        global _YFINANCE_CACHE_REFRESH_IN_PROGRESS, _YFINANCE_CACHE_LAST_REFRESH_EPOCH, _YFINANCE_REFRESH_THREAD_STARTED
+        global _YFINANCE_CACHE_REFRESH_IN_PROGRESS, _YFINANCE_CACHE_DAY, _YFINANCE_REFRESH_THREAD_STARTED, _YFINANCE_CACHE_LAST_SOURCE
         with _YFINANCE_CACHE_LOCK:
             if _YFINANCE_CACHE_REFRESH_IN_PROGRESS:
                 return
@@ -360,17 +345,20 @@ def _maybe_start_monthly_yfinance_refresh() -> None:
                     # Ignore per-ticker failures in background refresh.
                     continue
 
-            _YFINANCE_CACHE_LAST_REFRESH_EPOCH = time.time()
+            _YFINANCE_CACHE_DAY = _current_reference_day_token()
             if updated:
                 logger.info("yfinance cache refreshed for %d symbols", updated)
             _persist_yfinance_cache()
+            _YFINANCE_CACHE_LAST_SOURCE = "network_bg_refresh"
             notify_dashboard_cache_refresh()
         finally:
             with _YFINANCE_CACHE_LOCK:
                 _YFINANCE_CACHE_REFRESH_IN_PROGRESS = False
                 _YFINANCE_REFRESH_THREAD_STARTED = False
 
-    threading.Thread(target=_refresh_job, daemon=True).start()
+    if not start_background_refresh_job("yfinance-daily", _refresh_job):
+        with _YFINANCE_CACHE_LOCK:
+            _YFINANCE_REFRESH_THREAD_STARTED = False
 
 
 def _maybe_start_single_symbol_yfinance_refresh(exchange: str, symbol: str) -> None:
@@ -398,12 +386,12 @@ def _maybe_start_single_symbol_yfinance_refresh(exchange: str, symbol: str) -> N
             if not y_sec:
                 y_sec = y_ind
 
-            global _YFINANCE_CACHE_LAST_REFRESH_EPOCH
+            global _YFINANCE_CACHE_DAY
             with _YFINANCE_CACHE_LOCK:
                 _CACHED_YFINANCE_KEY_TO_INDUSTRY[key] = y_ind
                 _CACHED_YFINANCE_KEY_TO_SECTOR[key] = y_sec
-                if not _YFINANCE_CACHE_LAST_REFRESH_EPOCH:
-                    _YFINANCE_CACHE_LAST_REFRESH_EPOCH = time.time()
+                _YFINANCE_CACHE_DAY = _current_reference_day_token()
+                globals()["_YFINANCE_CACHE_LAST_SOURCE"] = "network_bg_refresh"
             _persist_yfinance_cache()
             notify_dashboard_cache_refresh()
         except Exception as exc:
@@ -417,7 +405,7 @@ def _maybe_start_single_symbol_yfinance_refresh(exchange: str, symbol: str) -> N
             with _YFINANCE_CACHE_LOCK:
                 _YFINANCE_SYMBOL_REFRESH_IN_PROGRESS.discard(key)
 
-    threading.Thread(target=_refresh_one, daemon=True).start()
+    start_background_refresh_job(f"yfinance-symbol-{clean_exchange}-{clean_symbol}", _refresh_one)
 
 
 def _normalise_name(raw: Any) -> str:
@@ -624,11 +612,10 @@ def _maybe_start_cash_equity_refresh_unlocked(kite) -> None:
                 _CACHED_TOKEN_TO_ISIN.update(token_to_isin)
                 _CACHED_SYMBOL_TO_ISIN.clear()
                 _CACHED_SYMBOL_TO_ISIN.update(symbol_to_isin)
-                _CACHE_EXPIRES_AT = time.time() + _CACHE_TTL_SECONDS
+                _CACHE_EXPIRES_AT = _next_reference_cutoff_epoch()
                 _reference_cache_set_entry_unlocked(
                     "cash_equity",
                     _cash_equity_payload_unlocked(),
-                    _CACHE_TTL_SECONDS,
                 )
                 _set_reference_cache_source_unlocked("cash_equity", "network_bg_refresh")
                 ok = True
@@ -642,7 +629,7 @@ def _maybe_start_cash_equity_refresh_unlocked(kite) -> None:
             if ok:
                 notify_dashboard_cache_refresh()
 
-    threading.Thread(target=_job, daemon=True).start()
+    start_background_refresh_job("reference-cash-equity", _job)
 
 
 def _refresh_cash_equity_cache(kite) -> None:
@@ -656,45 +643,18 @@ def _refresh_cash_equity_cache(kite) -> None:
         _set_reference_cache_source_unlocked("cash_equity", "memory")
         return
 
-    payload, expires_at = _reference_cache_get_entry_unlocked("cash_equity")
-    if payload and _apply_cash_equity_payload_unlocked(payload, expires_at):
-        if now >= expires_at:
+    day = _current_reference_day_token()
+    payload, cache_day = _reference_cache_get_entry_unlocked("cash_equity")
+    if payload and _apply_cash_equity_payload_unlocked(payload, _next_reference_cutoff_epoch()):
+        if cache_day != day:
             _set_reference_cache_source_unlocked("cash_equity", "disk_stale_bg_refresh")
             _maybe_start_cash_equity_refresh_unlocked(kite)
         else:
             _set_reference_cache_source_unlocked("cash_equity", "disk")
         return
 
-    (
-        token_to_name,
-        symbol_to_name,
-        symbol_to_token,
-        token_to_industry,
-        symbol_to_industry,
-        token_to_kite_sector,
-        symbol_to_kite_sector,
-        token_to_isin,
-        symbol_to_isin,
-    ) = _build_cash_equity_maps(kite)
-    if not token_to_name or not symbol_to_name:
-        _set_reference_cache_source_unlocked("cash_equity", "network_failed")
-        return
-    _CACHED_TOKEN_TO_NAME = token_to_name
-    _CACHED_SYMBOL_TO_NAME = symbol_to_name
-    _CACHED_SYMBOL_TO_TOKEN = symbol_to_token
-    _CACHED_TOKEN_TO_INDUSTRY = token_to_industry
-    _CACHED_SYMBOL_TO_INDUSTRY = symbol_to_industry
-    _CACHED_TOKEN_TO_KITE_SECTOR = token_to_kite_sector
-    _CACHED_SYMBOL_TO_KITE_SECTOR = symbol_to_kite_sector
-    _CACHED_TOKEN_TO_ISIN = token_to_isin
-    _CACHED_SYMBOL_TO_ISIN = symbol_to_isin
-    _CACHE_EXPIRES_AT = now + _CACHE_TTL_SECONDS
-    _reference_cache_set_entry_unlocked(
-        "cash_equity",
-        _cash_equity_payload_unlocked(),
-        _CACHE_TTL_SECONDS,
-    )
-    _set_reference_cache_source_unlocked("cash_equity", "network_sync")
+    _set_reference_cache_source_unlocked("cash_equity", "cold_start_bg_refresh")
+    _maybe_start_cash_equity_refresh_unlocked(kite)
 
 
 def get_cash_equity_name_lookups(kite) -> tuple[dict[int, str], dict[tuple[str, str], str]]:
@@ -819,11 +779,10 @@ def _maybe_start_nse_merged_refresh_unlocked() -> None:
             with _CACHE_LOCK:
                 _CACHED_NSE_SYMBOL_TO_INDUSTRY = nse_sym
                 _CACHED_ISIN_TO_INDUSTRY = isin_map
-                _NSE_MERGED_INDUSTRY_EXPIRES_AT = time.time() + _NIFTY50_CACHE_TTL_SECONDS
+                _NSE_MERGED_INDUSTRY_EXPIRES_AT = _next_reference_cutoff_epoch()
                 _reference_cache_set_entry_unlocked(
                     "nse_merged_industry",
                     _nse_merged_payload_unlocked(),
-                    _NIFTY50_CACHE_TTL_SECONDS,
                 )
                 _set_reference_cache_source_unlocked("nse_merged_industry", "network_bg_refresh")
                 ok = True
@@ -835,7 +794,7 @@ def _maybe_start_nse_merged_refresh_unlocked() -> None:
             if ok:
                 notify_dashboard_cache_refresh()
 
-    threading.Thread(target=_job, daemon=True).start()
+    start_background_refresh_job("reference-nse-merged-industry", _job)
 
 
 def _refresh_nse_merged_industry_unlocked() -> bool:
@@ -848,30 +807,19 @@ def _refresh_nse_merged_industry_unlocked() -> bool:
         _set_reference_cache_source_unlocked("nse_merged_industry", "memory")
         return True
 
-    payload, expires_at = _reference_cache_get_entry_unlocked("nse_merged_industry")
-    if payload and _apply_nse_merged_payload_unlocked(payload, expires_at):
-        if now >= expires_at:
+    day = _current_reference_day_token()
+    payload, cache_day = _reference_cache_get_entry_unlocked("nse_merged_industry")
+    if payload and _apply_nse_merged_payload_unlocked(payload, _next_reference_cutoff_epoch()):
+        if cache_day != day:
             _set_reference_cache_source_unlocked("nse_merged_industry", "disk_stale_bg_refresh")
             _maybe_start_nse_merged_refresh_unlocked()
         else:
             _set_reference_cache_source_unlocked("nse_merged_industry", "disk")
         return True
 
-    nse_sym, isin_map, any_ok = _fetch_nse_merged_industry_maps()
-    if not any_ok:
-        _set_reference_cache_source_unlocked("nse_merged_industry", "network_failed")
-        return False
-
-    _CACHED_NSE_SYMBOL_TO_INDUSTRY = nse_sym
-    _CACHED_ISIN_TO_INDUSTRY = isin_map
-    _NSE_MERGED_INDUSTRY_EXPIRES_AT = now + _NIFTY50_CACHE_TTL_SECONDS
-    _reference_cache_set_entry_unlocked(
-        "nse_merged_industry",
-        _nse_merged_payload_unlocked(),
-        _NIFTY50_CACHE_TTL_SECONDS,
-    )
-    _set_reference_cache_source_unlocked("nse_merged_industry", "network_sync")
-    return True
+    _set_reference_cache_source_unlocked("nse_merged_industry", "cold_start_bg_refresh")
+    _maybe_start_nse_merged_refresh_unlocked()
+    return bool(_CACHED_NSE_SYMBOL_TO_INDUSTRY or _CACHED_ISIN_TO_INDUSTRY)
 
 
 def get_nse_symbol_to_industry() -> dict[str, str]:
@@ -898,7 +846,8 @@ def _refresh_nifty50_cache_unlocked() -> bool:
         _set_reference_cache_source_unlocked("nifty50_symbols", "memory")
         return True
 
-    payload, expires_at = _reference_cache_get_entry_unlocked("nifty50_symbols")
+    day = _current_reference_day_token()
+    payload, cache_day = _reference_cache_get_entry_unlocked("nifty50_symbols")
     symbols_payload = payload.get("symbols") if isinstance(payload, dict) else None
     if isinstance(symbols_payload, list):
         symbols: list[str] = []
@@ -911,19 +860,17 @@ def _refresh_nifty50_cache_unlocked() -> bool:
             symbols.append(symbol)
         if symbols:
             _CACHED_NIFTY50_SYMBOLS = symbols
-            _NIFTY50_CACHE_EXPIRES_AT = expires_at
-            if now >= expires_at:
+            _NIFTY50_CACHE_EXPIRES_AT = _next_reference_cutoff_epoch()
+            if cache_day != day:
                 _set_reference_cache_source_unlocked("nifty50_symbols", "disk_stale_bg_refresh")
                 _maybe_start_nifty50_refresh_unlocked()
             else:
                 _set_reference_cache_source_unlocked("nifty50_symbols", "disk")
             return True
 
-    if not _refresh_nifty50_from_network_unlocked():
-        _set_reference_cache_source_unlocked("nifty50_symbols", "network_failed")
-        return False
-    _set_reference_cache_source_unlocked("nifty50_symbols", "network_sync")
-    return True
+    _set_reference_cache_source_unlocked("nifty50_symbols", "cold_start_bg_refresh")
+    _maybe_start_nifty50_refresh_unlocked()
+    return bool(_CACHED_NIFTY50_SYMBOLS)
 
 
 def _refresh_nifty50_from_network_unlocked() -> bool:
@@ -943,11 +890,10 @@ def _refresh_nifty50_from_network_unlocked() -> bool:
         ordered_unique.append(symbol)
 
     _CACHED_NIFTY50_SYMBOLS = ordered_unique
-    _NIFTY50_CACHE_EXPIRES_AT = time.time() + _NIFTY50_CACHE_TTL_SECONDS
+    _NIFTY50_CACHE_EXPIRES_AT = _next_reference_cutoff_epoch()
     _reference_cache_set_entry_unlocked(
         "nifty50_symbols",
         {"symbols": ordered_unique},
-        _NIFTY50_CACHE_TTL_SECONDS,
     )
     return True
 
@@ -978,11 +924,10 @@ def _maybe_start_nifty50_refresh_unlocked() -> None:
                 return
             with _CACHE_LOCK:
                 _CACHED_NIFTY50_SYMBOLS[:] = ordered_unique
-                _NIFTY50_CACHE_EXPIRES_AT = time.time() + _NIFTY50_CACHE_TTL_SECONDS
+                _NIFTY50_CACHE_EXPIRES_AT = _next_reference_cutoff_epoch()
                 _reference_cache_set_entry_unlocked(
                     "nifty50_symbols",
                     {"symbols": ordered_unique},
-                    _NIFTY50_CACHE_TTL_SECONDS,
                 )
                 _set_reference_cache_source_unlocked("nifty50_symbols", "network_bg_refresh")
                 ok = True
@@ -994,7 +939,7 @@ def _maybe_start_nifty50_refresh_unlocked() -> None:
             if ok:
                 notify_dashboard_cache_refresh()
 
-    threading.Thread(target=_job, daemon=True).start()
+    start_background_refresh_job("reference-nifty50", _job)
 
 
 def get_nifty50_symbols() -> list[str]:
@@ -1024,6 +969,14 @@ def get_reference_cache_debug_snapshot() -> dict[str, dict[str, Any]]:
                 "source": _REFERENCE_CACHE_LAST_SOURCE.get("nifty50_symbols", "unknown"),
                 "expires_in_ms": max(0.0, (_NIFTY50_CACHE_EXPIRES_AT - now) * 1000.0),
                 "refresh_in_progress": _NIFTY50_REFRESH_IN_PROGRESS,
+            },
+            "yfinance": {
+                "source": _YFINANCE_CACHE_LAST_SOURCE,
+                "expires_in_ms": max(0.0, (_next_reference_cutoff_epoch() - now) * 1000.0),
+                "refresh_in_progress": (
+                    _YFINANCE_CACHE_REFRESH_IN_PROGRESS
+                    or bool(_YFINANCE_SYMBOL_REFRESH_IN_PROGRESS)
+                ),
             },
         }
 

@@ -23,7 +23,12 @@ from urllib.request import Request as URLRequest, urlopen
 
 from app.instruments import resolve_equity_sector, symbol_with_company_name
 from app.live_prices import notify_dashboard_cache_refresh
-from app.model_cache_store import current_effective_day_ist, read_section, update_section
+from app.model_cache_store import (
+    current_effective_day_ist,
+    read_section,
+    start_background_refresh_job,
+    update_section,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -437,17 +442,18 @@ def _prepare_mfdata_cache_locked() -> None:
         pass
 
 
-def _flush_mfdata_disk_cache() -> None:
+def _flush_mfdata_disk_cache() -> bool:
     global _MFDATA_DISK_CACHE_DIRTY
     with _MFDATA_CACHE_LOCK:
         _prepare_mfdata_cache_locked()
         if not _MFDATA_DISK_CACHE_DIRTY:
-            return
+            return False
         try:
             _save_mfdata_disk_cache_locked()
             _MFDATA_DISK_CACHE_DIRTY = False
+            return True
         except Exception:
-            pass
+            return False
 
 
 def _mfdata_json_get(path: str, query: dict[str, Any] | None = None) -> Any:
@@ -622,7 +628,8 @@ def build_mf_underlying_breakdown(
     latest_month = sorted_months[0] if sorted_months else ""
     seen_missing: set[str] = set()
     missing_unique = [name for name in not_aggregated if not (name in seen_missing or seen_missing.add(name))]
-    _flush_mfdata_disk_cache()
+    if _flush_mfdata_disk_cache():
+        notify_dashboard_cache_refresh()
     return table_rows, latest_month, missing_unique, len(aggregated_funds), len(all_funds)
 
 
@@ -916,7 +923,7 @@ def _marketsmith_schedule_network_fetch(day: str) -> None:
                 _MARKETSMITH_NETWORK_FETCH_IN_PROGRESS = False
         notify_dashboard_cache_refresh()
 
-    threading.Thread(target=_job, daemon=True).start()
+    start_background_refresh_job("marketsmith-daily", _job)
 
 
 def get_marketsmith_market_condition(*, force_sync_fetch: bool = False) -> dict[str, Any]:

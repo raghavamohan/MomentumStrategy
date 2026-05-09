@@ -127,6 +127,29 @@
       color: var(--negative);
       font-size: 12px;
     }
+    .cache-refresh-indicator {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .cache-refresh-indicator.is-visible {
+      display: inline-flex;
+    }
+    .cache-refresh-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: #60a5fa;
+      animation: cache-pulse 1.2s ease-in-out infinite;
+    }
+    @keyframes cache-pulse {
+      0% { opacity: 0.35; transform: scale(0.9); }
+      50% { opacity: 1; transform: scale(1.05); }
+      100% { opacity: 0.35; transform: scale(0.9); }
+    }
   </style>
 
   <div class="topbar dashboard-topbar">
@@ -137,6 +160,10 @@
       </div>
       <div class="right">
         <span class="last-updated-indicator" id="last-updated-indicator">Snapshot refreshed: --:--:--</span>
+        <span class="cache-refresh-indicator" id="cache-refresh-indicator">
+          <span class="cache-refresh-dot" aria-hidden="true"></span>
+          <span id="cache-refresh-indicator-text">Refreshing daily caches…</span>
+        </span>
         <a class="button secondary" href="/logout">Logout</a>
       </div>
     </div>
@@ -651,7 +678,7 @@
               </table>
             </div>
           {% else %}
-            <div class="card empty">Watch List is empty. Add symbols in the next iteration.</div>
+            <div class="card empty">Watch List is empty or reference symbols are still loading.</div>
           {% endif %}
         </section>
       </div>
@@ -681,6 +708,8 @@
     let tableDensity = 'comfortable';
     const indexQuotesBar = document.getElementById('index-quotes-bar');
     const updatedIndicator = document.getElementById('last-updated-indicator');
+    const cacheRefreshIndicator = document.getElementById('cache-refresh-indicator');
+    const cacheRefreshIndicatorText = document.getElementById('cache-refresh-indicator-text');
 
     function readBootstrap() {
       const el = document.getElementById('dashboard-bootstrap');
@@ -695,6 +724,33 @@
     }
 
     let bootstrap = readBootstrap();
+
+    function updateGlobalCacheRefreshIndicator() {
+      if (!cacheRefreshIndicator) {
+        return;
+      }
+      const reference = bootstrap.referenceCache || {};
+      const entries = Object.keys(reference).map(function (key) {
+        return reference[key] || {};
+      });
+      const refRefreshing = entries.some(function (meta) {
+        const source = String(meta.source || '');
+        return Boolean(meta.refresh_in_progress) || source.indexOf('bg_refresh') >= 0 || source.indexOf('cold_start') >= 0;
+      });
+      const mfLoading = Boolean(mfHoldingsLoading) || Boolean(mfUnderlyingsLoading);
+      const staleMf = Boolean(mfHoldingsCachedPayload && mfHoldingsCachedPayload.loading);
+      const visible = refRefreshing || mfLoading || staleMf;
+      cacheRefreshIndicator.classList.toggle('is-visible', visible);
+      if (cacheRefreshIndicatorText) {
+        if (mfLoading || staleMf) {
+          cacheRefreshIndicatorText.textContent = 'Refreshing daily caches in background…';
+        } else if (refRefreshing) {
+          cacheRefreshIndicatorText.textContent = 'Rebuilding reference caches…';
+        } else {
+          cacheRefreshIndicatorText.textContent = 'Refreshing daily caches…';
+        }
+      }
+    }
 
     function readTableDensityPreference() {
       try {
@@ -1915,7 +1971,12 @@
 
       setPlainStat('stat-portfolio-invested', investedTotal);
       setPlainStat('stat-portfolio-current', totalCurrent);
-      if (!mfHoldingsLoaded) {
+      const mfTotalsUsableWhileRefreshing = Boolean(
+        mfHoldingsCachedPayload
+        && mfHoldingsCachedPayload.loading
+        && mfHoldingsCachedPayload.stale
+      );
+      if (!mfHoldingsLoaded && !mfTotalsUsableWhileRefreshing) {
         setOverallPnlPending(true);
       } else {
         setOverallPnlPending(false);
@@ -2363,6 +2424,9 @@
 
     function currentDayToken() {
       const now = new Date();
+      if (now.getHours() < 9) {
+        now.setDate(now.getDate() - 1);
+      }
       const yyyy = now.getFullYear();
       const mm = String(now.getMonth() + 1).padStart(2, '0');
       const dd = String(now.getDate()).padStart(2, '0');
@@ -2382,6 +2446,7 @@
       mfUnderlyingsLoading = false;
       mfPrefetchScheduled = false;
       mfUnderlyingOtherSectors = new Set();
+      updateGlobalCacheRefreshIndicator();
     }
 
     function setMfTabCount(countText) {
@@ -2389,6 +2454,22 @@
       if (count) {
         count.textContent = countText;
       }
+    }
+
+    function syncMfTabCountFromCachedPayload() {
+      if (mfHoldingsCachedPayload) {
+        const cachedCount = Number(mfHoldingsCachedPayload.count);
+        if (Number.isFinite(cachedCount) && cachedCount >= 0) {
+          setMfTabCount(String(cachedCount));
+          return;
+        }
+        const cachedRows = Array.isArray(mfHoldingsCachedPayload.rows)
+          ? mfHoldingsCachedPayload.rows
+          : [];
+        setMfTabCount(String(cachedRows.length));
+        return;
+      }
+      setMfTabCount('...');
     }
 
     function renderMfHoldings(payload) {
@@ -2494,16 +2575,30 @@
       // Snapshot refresh replaces tab DOM, so cached MF data must repaint
       // before honoring "loaded" flags.
       if (mfHoldingsCachedPayload) {
-        mfHoldingsLoaded = true;
-        renderMfHoldings(mfHoldingsCachedPayload);
-        loadMfUnderlyingBreakdown();
-        return;
+        if (mfHoldingsCachedPayload.loading) {
+          const hasRows = Array.isArray(mfHoldingsCachedPayload.rows) && mfHoldingsCachedPayload.rows.length > 0;
+          if (hasRows) {
+            renderMfHoldings(mfHoldingsCachedPayload);
+            loadMfUnderlyingBreakdown();
+          } else {
+            host.innerHTML = '<div class="card empty">Building mutual fund cache in background…</div>';
+            setMfTabCount('...');
+          }
+          updateGlobalCacheRefreshIndicator();
+        } else {
+          mfHoldingsLoaded = true;
+          renderMfHoldings(mfHoldingsCachedPayload);
+          loadMfUnderlyingBreakdown();
+          updateGlobalCacheRefreshIndicator();
+          return;
+        }
       }
       if (mfHoldingsLoaded) {
         loadMfUnderlyingBreakdown();
         return;
       }
       mfHoldingsLoading = true;
+      updateGlobalCacheRefreshIndicator();
       host.innerHTML = '<div class="card empty">Loading mutual fund holdings...</div>';
       try {
         const response = await fetch('/dashboard/mf-holdings', { cache: 'no-store' });
@@ -2515,6 +2610,19 @@
         }
         const payload = await response.json();
         mfHoldingsCachedPayload = payload;
+        if (payload.loading) {
+          mfHoldingsLoaded = false;
+          const hasRows = Array.isArray(payload.rows) && payload.rows.length > 0;
+          if (hasRows) {
+            renderMfHoldings(payload);
+            loadMfUnderlyingBreakdown();
+          } else {
+            host.innerHTML = '<div class="card empty">Building mutual fund cache in background…</div>';
+            setMfTabCount('...');
+          }
+          updateGlobalCacheRefreshIndicator();
+          return;
+        }
         mfHoldingsLoaded = true;
         renderMfHoldings(payload);
         loadMfUnderlyingBreakdown();
@@ -2524,6 +2632,7 @@
         recalcSummaries();
       } finally {
         mfHoldingsLoading = false;
+        updateGlobalCacheRefreshIndicator();
       }
     }
 
@@ -2643,15 +2752,25 @@
       const cachedPayload = mfUnderlyingsCachedPayloadByTone[tone];
       if (cachedPayload) {
         const payload = cachedPayload;
-        if (payload.error) {
-          host.innerHTML = '<div class="alert warning">' + escapeHtml(payload.error) + '</div>';
+        if (payload.loading) {
+          if (Array.isArray(payload.rows) && payload.rows.length > 0) {
+            renderMfUnderlyingBreakdownPayload(host, payload);
+          } else {
+            host.innerHTML = '<div class="card empty">Building MF underlying cache in background…</div>';
+          }
+          updateGlobalCacheRefreshIndicator();
+        } else {
+          if (payload.error) {
+            host.innerHTML = '<div class="alert warning">' + escapeHtml(payload.error) + '</div>';
+            return;
+          }
+          renderMfUnderlyingBreakdownPayload(host, payload);
+          syncCsvActionState();
           return;
         }
-        renderMfUnderlyingBreakdownPayload(host, payload);
-        syncCsvActionState();
-        return;
       }
       mfUnderlyingsLoading = true;
+      updateGlobalCacheRefreshIndicator();
       try {
         const response = await fetch('/dashboard/mf-underlyings?tone=' + encodeURIComponent(tone), { cache: 'no-store' });
         if (!response.ok) {
@@ -2660,6 +2779,15 @@
         }
         const payload = await response.json();
         mfUnderlyingsCachedPayloadByTone[tone] = payload;
+        if (payload.loading) {
+          if (Array.isArray(payload.rows) && payload.rows.length > 0) {
+            renderMfUnderlyingBreakdownPayload(host, payload);
+          } else {
+            host.innerHTML = '<div class="card empty">Building MF underlying cache in background…</div>';
+          }
+          updateGlobalCacheRefreshIndicator();
+          return;
+        }
         if (payload.error) {
           host.innerHTML = '<div class="alert warning">' + escapeHtml(payload.error) + '</div>';
           return;
@@ -2673,6 +2801,7 @@
         host.innerHTML = '<div class="card empty">Unable to load MF underlying breakdown right now.</div>';
       } finally {
         mfUnderlyingsLoading = false;
+        updateGlobalCacheRefreshIndicator();
         const latestTone = currentMfUnderlyingTone();
         if (latestTone !== tone && !mfUnderlyingsCachedPayloadByTone[latestTone]) {
           loadMfUnderlyingBreakdown();
@@ -2733,6 +2862,7 @@
 
         currentRoot.innerHTML = nextRoot.innerHTML;
         bootstrap = readBootstrap();
+        updateGlobalCacheRefreshIndicator();
         syncBootstrapMfTotalsFromCachedPayload();
         renderIndexQuotes();
         bindSections();
@@ -2742,24 +2872,14 @@
         applyInitialTableSorts();
         initEquityHoldingsControls();
         ensureMfClientCacheDay();
-        mfHoldingsLoaded = !!mfHoldingsCachedPayload;
+        mfHoldingsLoaded = !!(mfHoldingsCachedPayload && !mfHoldingsCachedPayload.loading);
         mfHoldingsLoading = false;
         mfUnderlyingsLoading = false;
         mfPrefetchScheduled = false;
-        if (mfHoldingsCachedPayload) {
-          const cachedCount = Number(mfHoldingsCachedPayload.count);
-          if (Number.isFinite(cachedCount) && cachedCount >= 0) {
-            setMfTabCount(String(cachedCount));
-          } else {
-            const cachedRows = Array.isArray(mfHoldingsCachedPayload.rows) ? mfHoldingsCachedPayload.rows : [];
-            setMfTabCount(String(cachedRows.length));
-          }
-        } else {
-          setMfTabCount('...');
-        }
+        syncMfTabCountFromCachedPayload();
         if ((selectedTab || requestedTab) === 'mf') {
           loadMfHoldings();
-        } else if ((selectedSection || requestedSection) === 'portfolio' && !mfHoldingsCachedPayload) {
+        } else if (!mfHoldingsLoaded) {
           scheduleMfBackgroundPrefetch();
         }
         stampUpdatedNow();
@@ -2788,6 +2908,7 @@
     selectedTab = getActiveTab();
     tableDensity = readTableDensityPreference();
     ensureMfClientCacheDay();
+    updateGlobalCacheRefreshIndicator();
     syncBootstrapMfTotalsFromCachedPayload();
     applyInitialTableSorts();
     initEquityHoldingsControls();
@@ -2796,18 +2917,8 @@
     if (selectedTab === 'mf') {
       loadMfHoldings();
     } else {
-      if (mfHoldingsCachedPayload) {
-        const cachedCount = Number(mfHoldingsCachedPayload.count);
-        if (Number.isFinite(cachedCount) && cachedCount >= 0) {
-          setMfTabCount(String(cachedCount));
-        } else {
-          const cachedRows = Array.isArray(mfHoldingsCachedPayload.rows) ? mfHoldingsCachedPayload.rows : [];
-          setMfTabCount(String(cachedRows.length));
-        }
-      } else {
-        setMfTabCount('...');
-      }
-      if (selectedSection === 'portfolio' && !mfHoldingsCachedPayload) {
+      syncMfTabCountFromCachedPayload();
+      if (!mfHoldingsLoaded) {
         scheduleMfBackgroundPrefetch();
       }
     }
