@@ -176,11 +176,6 @@
       outline-offset: 2px;
       border-radius: 4px;
     }
-    #dashboard-root tr.dashboard-focus-row {
-      outline: 2px solid rgba(79, 140, 255, 0.95);
-      outline-offset: 2px;
-      transition: outline-color 1.2s ease-out;
-    }
   </style>
 
   <div class="topbar dashboard-topbar">
@@ -2511,10 +2506,6 @@
       window.requestAnimationFrame(function () {
         window.requestAnimationFrame(function () {
           row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          row.classList.add('dashboard-focus-row');
-          window.setTimeout(function () {
-            row.classList.remove('dashboard-focus-row');
-          }, 2200);
           stripFocusTokenFromUrl();
         });
       });
