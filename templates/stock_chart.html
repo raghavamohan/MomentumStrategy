@@ -75,10 +75,17 @@
     .stock-chart-wrap {
       position: relative;
       height: min(480px, 58vh);
+      min-height: 320px;
       margin-top: var(--space-2);
     }
     .stock-chart-wrap canvas {
       max-height: 100%;
+    }
+    .stock-chart-pan-hint {
+      margin: var(--space-2) 0 0;
+      font-size: 13px;
+      color: var(--muted);
+      font-weight: 500;
     }
     .stock-chart-loading {
       margin: var(--space-3) 0;
@@ -124,7 +131,7 @@
       </div>
     </div>
     <p class="meta-line">
-      Approximately <strong>one year</strong> of <strong>daily</strong> candles (OHLC) and volume, via Kite Connect historical API.
+      Up to <strong>ten years</strong> of <strong>daily</strong> candles (OHLC) and volume when available, via Kite Connect historical API.
       Green candlesticks indicate close above open; red indicates close below open.
     </p>
 
@@ -138,6 +145,9 @@
       <div id="stock-chart-loading" class="stock-chart-loading" aria-live="polite">Loading chart…</div>
       <div id="stock-chart-error" class="stock-chart-error" hidden></div>
       <div id="stock-chart-empty" class="stock-chart-empty" hidden>No candle data in this range.</div>
+      <p id="stock-chart-pan-hint" class="stock-chart-pan-hint" hidden>
+        Drag or swipe on the chart to scroll through time. Use the mouse wheel (or pinch) to zoom horizontally. Price and volume axes match the visible window.
+      </p>
       <div id="stock-chart-wrap" class="stock-chart-wrap" hidden>
         <canvas id="stock-chart-canvas" aria-label="Candlestick and volume chart"></canvas>
       </div>
@@ -151,7 +161,9 @@
 <script src="/static/js/chart.umd.min.js"></script>
 <script src="/static/js/luxon.min.js"></script>
 <script src="/static/js/chartjs-adapter-luxon.umd.min.js"></script>
+<script src="/static/js/hammer.min.js"></script>
 <script src="/static/js/chartjs-chart-financial.min.js"></script>
+<script src="/static/js/chartjs-plugin-zoom.min.js"></script>
 <script>
   (function () {
     const DEFAULT_HELP_URLS = {{ kite_help_urls | tojson }};
@@ -212,11 +224,15 @@
       const load = document.getElementById('stock-chart-loading');
       const wrap = document.getElementById('stock-chart-wrap');
       const empty = document.getElementById('stock-chart-empty');
+      const panHint = document.getElementById('stock-chart-pan-hint');
       if (load) {
         load.hidden = true;
       }
       if (wrap) {
         wrap.hidden = true;
+      }
+      if (panHint) {
+        panHint.hidden = true;
       }
       if (empty) {
         empty.hidden = true;
@@ -254,15 +270,23 @@
     function run() {
       function showEmptyCandlesMessage() {
         const el = document.getElementById('stock-chart-empty');
+        const panHint = document.getElementById('stock-chart-pan-hint');
         if (el) {
           el.hidden = false;
+        }
+        if (panHint) {
+          panHint.hidden = true;
         }
       }
 
       const boot = readBootstrap();
       const token = Number(boot.instrumentToken || 0);
       const exchange = String(boot.exchange || 'NSE').trim();
-      const days = Math.max(365, Math.min(Number(boot.days) || 365, 3650));
+      const MAX_STOCK_HISTORY_DAYS = 3650;
+      const days = Math.min(
+        Math.max(Number(boot.days) || MAX_STOCK_HISTORY_DAYS, 1),
+        MAX_STOCK_HISTORY_DAYS
+      );
 
       if (!token) {
         showError('Missing instrument.', DEFAULT_HELP_URLS);
@@ -344,13 +368,30 @@
             return { x: utcDayMs(c.date), y: Number(c.volume) };
           });
 
+          if (typeof ChartZoom !== 'undefined') {
+            Chart.register(ChartZoom);
+          }
+
+          const rangeFirstMs = candleTimesUtc[0];
+          const rangeLastMs = candleTimesUtc[candleTimesUtc.length - 1];
+          const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
+          const initialXMax = rangeLastMs;
+          const initialXMin =
+            rangeLastMs - rangeFirstMs <= ONE_YEAR_MS
+              ? rangeFirstMs
+              : Math.max(rangeFirstMs, rangeLastMs - ONE_YEAR_MS);
+
           const wrap = document.getElementById('stock-chart-wrap');
           const canvas = document.getElementById('stock-chart-canvas');
+          const panHintEl = document.getElementById('stock-chart-pan-hint');
           if (!wrap || !canvas || typeof Chart === 'undefined') {
             showError('Chart could not be initialized.', DEFAULT_HELP_URLS);
             return;
           }
           wrap.hidden = false;
+          if (panHintEl) {
+            panHintEl.hidden = false;
+          }
 
           const gridMuted = 'rgba(148, 163, 184, 0.22)';
           /* Financial plugin: "up" = bearish, "down" = bullish (close vs open). */
@@ -364,6 +405,119 @@
           const volumeUi = { on: !volumeEl || volumeEl.checked };
           let y1MeasuredLeftPx = 0;
           const stockChartRef = { chart: null };
+
+          function syncYAxesToVisibleWindow(chart) {
+            if (!chart || chart.$syncingYAxes) {
+              return;
+            }
+            const xScale = chart.scales.x;
+            const yScale = chart.scales.y;
+            const y1Scale = chart.scales.y1;
+            if (!xScale || !yScale) {
+              return;
+            }
+
+            function toMs(v) {
+              if (v == null) {
+                return NaN;
+              }
+              if (typeof v === 'number') {
+                return v;
+              }
+              if (typeof v.valueOf === 'function') {
+                const n = v.valueOf();
+                return typeof n === 'number' ? n : NaN;
+              }
+              return NaN;
+            }
+
+            const tMin = toMs(xScale.min);
+            const tMax = toMs(xScale.max);
+            if (!isFinite(tMin) || !isFinite(tMax)) {
+              return;
+            }
+
+            let hi = -Infinity;
+            let lo = Infinity;
+            let vmax = 0;
+            for (let i = 0; i < candlePoints.length; i++) {
+              const p = candlePoints[i];
+              const vp = volPoints[i];
+              if (p.x >= tMin && p.x <= tMax) {
+                lo = Math.min(lo, p.l, p.o, p.c);
+                hi = Math.max(hi, p.h, p.o, p.c);
+                if (vp && volumeUi.on) {
+                  vmax = Math.max(vmax, vp.y);
+                }
+              }
+            }
+            if (!isFinite(lo) || !isFinite(hi)) {
+              return;
+            }
+
+            const span = hi - lo;
+            const pad = span > 0 ? span * 0.06 : Math.abs(hi) * 0.02 || 1;
+            const newYMin = lo - pad;
+            const newYMax = hi + pad;
+
+            let changed = false;
+            const eps = Math.max(pad * 0.01, 1e-6);
+            const curMin = yScale.min;
+            const curMax = yScale.max;
+            if (
+              !isFinite(curMin) ||
+              !isFinite(curMax) ||
+              Math.abs(curMin - newYMin) > eps ||
+              Math.abs(curMax - newYMax) > eps
+            ) {
+              chart.options.scales.y.min = newYMin;
+              chart.options.scales.y.max = newYMax;
+              changed = true;
+            }
+
+            if (volumeUi.on && y1Scale && y1Scale.display) {
+              const newY1Max = vmax > 0 ? vmax * 1.08 : 1;
+              const cur1 = y1Scale.max;
+              if (!isFinite(cur1) || Math.abs(cur1 - newY1Max) > vmax * 0.02 + 0.5) {
+                chart.options.scales.y1.max = newY1Max;
+                chart.options.scales.y1.min = 0;
+                changed = true;
+              }
+            }
+
+            if (changed) {
+              chart.$syncingYAxes = true;
+              try {
+                chart.update('none');
+              } finally {
+                chart.$syncingYAxes = false;
+              }
+            }
+          }
+
+          var zoomPluginOpts =
+            typeof ChartZoom !== 'undefined'
+              ? {
+                  limits: {
+                    x: { min: rangeFirstMs, max: rangeLastMs },
+                  },
+                  pan: {
+                    enabled: true,
+                    mode: 'x',
+                    onPanComplete: function (ctx) {
+                      syncYAxesToVisibleWindow(ctx.chart);
+                    },
+                  },
+                  zoom: {
+                    wheel: { enabled: true },
+                    pinch: { enabled: true },
+                    mode: 'x',
+                    onZoomComplete: function (ctx) {
+                      syncYAxesToVisibleWindow(ctx.chart);
+                    },
+                  },
+                }
+              : null;
 
           function createStockCrosshairPlugin(getVolumeOn, candleTimesMs) {
             const lineColor = 'rgba(148, 163, 184, 0.92)';
@@ -572,6 +726,38 @@
 
           function buildChart() {
             try {
+              var pluginOpts = {
+                legend: {
+                  display: false,
+                },
+                tooltip: {
+                  filter: function (item) {
+                    if (item.datasetIndex === 0 && !volumeUi.on) {
+                      return false;
+                    }
+                    return true;
+                  },
+                  callbacks: {
+                    label: function (ctx) {
+                      const lbl = ctx.dataset && ctx.dataset.label;
+                      if (lbl === 'Volume') {
+                        const vy = ctx.parsed && ctx.parsed.y;
+                        return 'Volume: ' + Number(vy).toLocaleString('en-IN');
+                      }
+                      const raw = ctx.raw || {};
+                      return [
+                        'O: ₹' + Number(raw.o).toFixed(2),
+                        'H: ₹' + Number(raw.h).toFixed(2),
+                        'L: ₹' + Number(raw.l).toFixed(2),
+                        'C: ₹' + Number(raw.c).toFixed(2),
+                      ];
+                    },
+                  },
+                },
+              };
+              if (zoomPluginOpts) {
+                pluginOpts.zoom = zoomPluginOpts;
+              }
               return new Chart(canvas.getContext('2d'), {
                 plugins: [
                   createStockCrosshairPlugin(function () {
@@ -612,35 +798,7 @@
                   responsive: true,
                   maintainAspectRatio: false,
                   interaction: { mode: 'index', intersect: false },
-                  plugins: {
-                    legend: {
-                      display: false,
-                    },
-                    tooltip: {
-                      filter: function (item) {
-                        if (item.datasetIndex === 0 && !volumeUi.on) {
-                          return false;
-                        }
-                        return true;
-                      },
-                      callbacks: {
-                        label: function (ctx) {
-                          const lbl = ctx.dataset && ctx.dataset.label;
-                          if (lbl === 'Volume') {
-                            const vy = ctx.parsed && ctx.parsed.y;
-                            return 'Volume: ' + Number(vy).toLocaleString('en-IN');
-                          }
-                          const raw = ctx.raw || {};
-                          return [
-                            'O: ₹' + Number(raw.o).toFixed(2),
-                            'H: ₹' + Number(raw.h).toFixed(2),
-                            'L: ₹' + Number(raw.l).toFixed(2),
-                            'C: ₹' + Number(raw.c).toFixed(2),
-                          ];
-                        },
-                      },
-                    },
-                  },
+                  plugins: pluginOpts,
                   elements: {
                     candlestick: {
                       backgroundColors: {
@@ -658,6 +816,8 @@
                   scales: {
                     x: {
                       type: 'time',
+                      min: initialXMin,
+                      max: initialXMax,
                       time: {
                         unit: 'month',
                         displayFormats: { month: 'MMM yyyy' },
@@ -672,6 +832,7 @@
                     },
                     y: {
                       position: 'right',
+                      beginAtZero: false,
                       ticks: {
                         color: '#94a3b8',
                         callback: function (val) {
@@ -726,6 +887,7 @@
             stockChartRef.chart = buildChart();
             if (stockChartRef.chart) {
               stockChartRef.chart.resize();
+              syncYAxesToVisibleWindow(stockChartRef.chart);
               captureVolumeAxisWidth(stockChartRef.chart);
             }
           }
@@ -744,6 +906,7 @@
               stockChartRef.chart = buildChart();
               if (stockChartRef.chart) {
                 stockChartRef.chart.resize();
+                syncYAxesToVisibleWindow(stockChartRef.chart);
                 captureVolumeAxisWidth(stockChartRef.chart);
               }
               document.addEventListener('change', onVolumeCheckboxChange);

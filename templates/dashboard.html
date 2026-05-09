@@ -453,7 +453,7 @@
                   <a
                     class="stock-chart-link"
                     href="/dashboard/stock-chart?instrument_token={{ h.instrument_token }}&exchange={{ h.exchange|urlquote }}&label={{ h.symbol_label|urlquote }}&ref=equity_holding"
-                    title="Daily OHLC &amp; volume (~1 year)"
+                    title="Daily OHLC &amp; volume (full history, pan/zoom)"
                   >{{ h.symbol_label }}</a>
                 </td>
                 <td>{{ h.sector or "—" }}</td>
@@ -703,7 +703,7 @@
                         <a
                           class="stock-chart-link"
                           href="/dashboard/stock-chart?instrument_token={{ item.instrument_token }}&exchange=NSE&label={{ item.label|urlquote }}&ref=watchlist"
-                          title="Daily OHLC &amp; volume (~1 year)"
+                          title="Daily OHLC &amp; volume (full history, pan/zoom)"
                         >{{ item.label }}</a>
                       </td>
                       <td>{{ item.sector or "—" }}</td>

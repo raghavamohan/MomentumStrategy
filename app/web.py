@@ -590,23 +590,38 @@ def _historical_candles_for_stock(
     instrument_token: int,
     days: int,
 ) -> list[dict[str, Any]]:
-    """Daily candles via ``KiteConnect.historical_data`` (OHLCV only)."""
+    """Daily candles via ``KiteConnect.historical_data`` (OHLCV only).
+
+    Kite effectively caps how much history each single ``historical_data`` call
+    returns (often about one year for ``day`` bars). Longer ranges are loaded by
+    walking backwards in chunks and merging candles by date.
+    """
+    if days <= 0:
+        return []
+
     end = datetime.now()
-    start = end - timedelta(days=days)
-    rows = kite.historical_data(
-        instrument_token,
-        start,
-        end,
-        "day",
-        continuous=False,
-        oi=False,
-    )
-    candles: list[dict[str, Any]] = []
-    for row in rows or []:
-        dt = row["date"]
-        date_str = dt.strftime("%Y-%m-%d") if hasattr(dt, "strftime") else str(dt)[:10]
-        candles.append(
-            {
+    overall_start = end - timedelta(days=days)
+    chunk_days = 365
+    merged_by_date: dict[str, dict[str, Any]] = {}
+
+    cursor_end = end
+    max_iters = (days // chunk_days) + 20
+    iters = 0
+    while cursor_end > overall_start and iters < max_iters:
+        iters += 1
+        cursor_start = max(overall_start, cursor_end - timedelta(days=chunk_days))
+        rows = kite.historical_data(
+            instrument_token,
+            cursor_start,
+            cursor_end,
+            "day",
+            continuous=False,
+            oi=False,
+        )
+        for row in rows or []:
+            dt = row["date"]
+            date_str = dt.strftime("%Y-%m-%d") if hasattr(dt, "strftime") else str(dt)[:10]
+            merged_by_date[date_str] = {
                 "date": date_str,
                 "open": float(row["open"]),
                 "high": float(row["high"]),
@@ -614,8 +629,9 @@ def _historical_candles_for_stock(
                 "close": float(row["close"]),
                 "volume": int(row["volume"]),
             }
-        )
-    return candles
+        cursor_end = cursor_start
+
+    return sorted(merged_by_date.values(), key=lambda r: r["date"])
 
 
 def _today_cache_token() -> str:
@@ -1610,13 +1626,13 @@ async def dashboard_stock_chart(
     instrument_token: int = Query(..., ge=1),
     exchange: str = Query("NSE"),
     label: str = Query(""),
-    days: int = Query(365, ge=1, le=3650),
+    days: int = Query(3650, ge=1, le=3650),
     ref: str = Query(""),
 ):
     """Full-page candlestick + volume chart for one cash equity instrument.
 
-    Historical range is at least one year (365 daily candles) unless a larger
-    ``days`` is requested.
+    Historical range defaults to the maximum supported window (10 years of
+    daily candles); clients may request a smaller ``days`` down to one year.
 
     Optional ``ref`` controls the dashboard return target: ``watchlist``,
     ``equity_holding`` / ``holdings`` (embedded in bootstrap JSON as
@@ -1665,7 +1681,7 @@ async def dashboard_stock_history(
     request: Request,
     instrument_token: int,
     exchange: str = "NSE",
-    days: int = 365,
+    days: int = 3650,
 ) -> JSONResponse:
     """Return daily historical candles for one equity instrument (OHLCV)."""
     if not _restore_session_if_token_valid(request):
