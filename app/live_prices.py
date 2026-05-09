@@ -28,6 +28,7 @@ if not dashboard_ws_debug_enabled():
     logging.getLogger("kiteconnect.ticker").setLevel(logging.CRITICAL)
 
 TickListener = Callable[[dict[int, float]], None]
+CacheRefreshListener = Callable[[], None]
 
 
 def _positive_instrument_tokens(tokens: set[int]) -> set[int]:
@@ -67,6 +68,7 @@ class LivePriceStream:
         self._connected = False
         self._tick_event = threading.Event()
         self._listeners: list[TickListener] = []
+        self._cache_refresh_listeners: list[CacheRefreshListener] = []
 
     def _halt_ticker_on_auth_failure(self, ticker: KiteTicker, detail: str = "") -> None:
         """Stop KiteTicker reconnect loop and drop client so a new login can reconnect."""
@@ -236,5 +238,32 @@ class LivePriceStream:
             except Exception:
                 log_dashboard_ws_debug_exception(logger, "Tick listener callback failed")
 
+    def add_cache_refresh_listener(self, callback: CacheRefreshListener) -> None:
+        """Register a callback invoked when on-disk / reference caches finish refreshing."""
+        with self._lock:
+            self._cache_refresh_listeners.append(callback)
+
+    def remove_cache_refresh_listener(self, callback: CacheRefreshListener) -> None:
+        with self._lock:
+            try:
+                self._cache_refresh_listeners.remove(callback)
+            except ValueError:
+                pass
+
+    def notify_cache_refresh(self) -> None:
+        """Signal listeners (e.g. dashboard WebSocket) to reload cached-derived HTML."""
+        with self._lock:
+            listeners = tuple(self._cache_refresh_listeners)
+        for fn in listeners:
+            try:
+                fn()
+            except Exception:
+                log_dashboard_ws_debug_exception(logger, "Cache refresh listener callback failed")
+
 
 live_price_stream = LivePriceStream()
+
+
+def notify_dashboard_cache_refresh() -> None:
+    """Tell connected dashboards to refetch HTML after background cache writes."""
+    live_price_stream.notify_cache_refresh()

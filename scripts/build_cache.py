@@ -296,7 +296,7 @@ def warm_marketsmith_cache() -> None:
     print()
     print("Warming MarketSmith market-regime section in .cache/model_cache.json...")
     try:
-        data = get_marketsmith_market_condition()
+        data = get_marketsmith_market_condition(force_sync_fetch=True)
     except Exception as exc:
         print(f"MarketSmith warmup FAILED: {exc}")
         return

@@ -20,6 +20,7 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 import logging
 from dotenv import load_dotenv
+from app.live_prices import notify_dashboard_cache_refresh
 from app.model_cache_store import load_model_cache, read_section, update_section
 
 
@@ -347,7 +348,9 @@ def _maybe_start_monthly_yfinance_refresh() -> None:
                 try:
                     info = yf.Ticker(yf_symbol).info or {}
                     ind = _normalise_name(info.get("industry") or info.get("sector"))
-                    sec = _normalise_name(info.get("sector"))
+                    sec = _normalise_name(info.get("sector") or "")
+                    if not sec:
+                        sec = ind
                     with _YFINANCE_CACHE_LOCK:
                         _CACHED_YFINANCE_KEY_TO_INDUSTRY[(exch, sym)] = ind
                         _CACHED_YFINANCE_KEY_TO_SECTOR[(exch, sym)] = sec
@@ -361,6 +364,7 @@ def _maybe_start_monthly_yfinance_refresh() -> None:
             if updated:
                 logger.info("yfinance cache refreshed for %d symbols", updated)
             _persist_yfinance_cache()
+            notify_dashboard_cache_refresh()
         finally:
             with _YFINANCE_CACHE_LOCK:
                 _YFINANCE_CACHE_REFRESH_IN_PROGRESS = False
@@ -401,6 +405,7 @@ def _maybe_start_single_symbol_yfinance_refresh(exchange: str, symbol: str) -> N
                 if not _YFINANCE_CACHE_LAST_REFRESH_EPOCH:
                     _YFINANCE_CACHE_LAST_REFRESH_EPOCH = time.time()
             _persist_yfinance_cache()
+            notify_dashboard_cache_refresh()
         except Exception as exc:
             logger.warning(
                 "background yfinance refresh failed for %s:%s: %s",
@@ -634,6 +639,8 @@ def _maybe_start_cash_equity_refresh_unlocked(kite) -> None:
                 if not ok:
                     _set_reference_cache_source_unlocked("cash_equity", "network_bg_refresh_failed")
                 _CASH_EQUITY_REFRESH_IN_PROGRESS = False
+            if ok:
+                notify_dashboard_cache_refresh()
 
     threading.Thread(target=_job, daemon=True).start()
 
@@ -825,6 +832,8 @@ def _maybe_start_nse_merged_refresh_unlocked() -> None:
                 if not ok:
                     _set_reference_cache_source_unlocked("nse_merged_industry", "network_bg_refresh_failed")
                 _NSE_MERGED_REFRESH_IN_PROGRESS = False
+            if ok:
+                notify_dashboard_cache_refresh()
 
     threading.Thread(target=_job, daemon=True).start()
 
@@ -982,6 +991,8 @@ def _maybe_start_nifty50_refresh_unlocked() -> None:
                 if not ok:
                     _set_reference_cache_source_unlocked("nifty50_symbols", "network_bg_refresh_failed")
                 _NIFTY50_REFRESH_IN_PROGRESS = False
+            if ok:
+                notify_dashboard_cache_refresh()
 
     threading.Thread(target=_job, daemon=True).start()
 

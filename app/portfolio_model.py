@@ -22,6 +22,7 @@ from urllib.parse import urlencode
 from urllib.request import Request as URLRequest, urlopen
 
 from app.instruments import resolve_equity_sector, symbol_with_company_name
+from app.live_prices import notify_dashboard_cache_refresh
 from app.model_cache_store import current_effective_day_ist, read_section, update_section
 
 logger = logging.getLogger(__name__)
@@ -643,6 +644,9 @@ _MARKET_CONDITION_LOCK = threading.Lock()
 _MARKET_CONDITION_MEMORY_DAY: str = ""
 _MARKET_CONDITION_MEMORY: dict[str, Any] | None = None
 
+_MARKETSMITH_FETCH_LOCK = threading.Lock()
+_MARKETSMITH_NETWORK_FETCH_IN_PROGRESS = False
+
 _MARKETSMITH_ISO_DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # ISO date begin, optional time (space/T + rest)
 _MARKETSMITH_ISO_DT_START_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:[\sT].*)?$")
@@ -875,14 +879,55 @@ def _marketsmith_write_disk(day: str, model: dict[str, Any]) -> None:
         logger.warning("MarketSmith disk cache write failed: %s", exc)
 
 
-def get_marketsmith_market_condition() -> dict[str, Any]:
+def _marketsmith_read_disk_any_model() -> tuple[str, dict[str, Any] | None]:
+    """Latest snapshot from disk (any ``cached_day``), for provisional UI while refreshing."""
+    raw = read_section("marketsmith")
+    if not isinstance(raw, dict):
+        return ("", None)
+    meta = raw.get("meta")
+    d = str(meta.get("cached_day") or "").strip() if isinstance(meta, dict) else ""
+    inner = raw.get("model")
+    if isinstance(inner, dict):
+        return (d, inner)
+    return ("", None)
+
+
+def _marketsmith_schedule_network_fetch(day: str) -> None:
+    """HTTPS fetch + disk write on a daemon thread; does not block callers."""
+    global _MARKETSMITH_NETWORK_FETCH_IN_PROGRESS
+    with _MARKETSMITH_FETCH_LOCK:
+        if _MARKETSMITH_NETWORK_FETCH_IN_PROGRESS:
+            return
+        _MARKETSMITH_NETWORK_FETCH_IN_PROGRESS = True
+
+    def _job() -> None:
+        global _MARKET_CONDITION_MEMORY_DAY, _MARKET_CONDITION_MEMORY
+        global _MARKETSMITH_NETWORK_FETCH_IN_PROGRESS
+        try:
+            base = _marketsmith_fetch_from_network()
+            model = _marketsmith_attach_meta(base, day)
+            ready = _marketsmith_finalize_model(model)
+            with _MARKET_CONDITION_LOCK:
+                _MARKET_CONDITION_MEMORY_DAY = day
+                _MARKET_CONDITION_MEMORY = ready
+            _marketsmith_write_disk(day, ready)
+        finally:
+            with _MARKETSMITH_FETCH_LOCK:
+                _MARKETSMITH_NETWORK_FETCH_IN_PROGRESS = False
+        notify_dashboard_cache_refresh()
+
+    threading.Thread(target=_job, daemon=True).start()
+
+
+def get_marketsmith_market_condition(*, force_sync_fetch: bool = False) -> dict[str, Any]:
     """Return today's MarketSmith India regime snapshot (first history row).
 
     Cached **once per local calendar day** (same convention as MF holdings /
     MF underlyings in :mod:`app.web`): serves from process memory when warm,
     else from the ``marketsmith`` section inside ``.cache/model_cache.json``,
-    else one HTTPS fetch for the day. Optional env ``MARKETSMITH_MS_AUTH`` overrides the gateway
-    ``ms-auth`` query parameter.
+    else a background HTTPS fetch for the day (dashboard) or a blocking fetch
+    when ``force_sync_fetch`` is True (e.g. ``scripts/build_cache.py``).
+    Optional env ``MARKETSMITH_MS_AUTH`` overrides the gateway ``ms-auth`` query parameter.
     """
     global _MARKET_CONDITION_MEMORY_DAY, _MARKET_CONDITION_MEMORY
     day = _marketsmith_calendar_day_token()
@@ -900,16 +945,29 @@ def get_marketsmith_market_condition() -> dict[str, Any]:
             _MARKET_CONDITION_MEMORY = ready
         return dict(ready)
 
-    base = _marketsmith_fetch_from_network()
-    model = _marketsmith_attach_meta(base, day)
-    ready = _marketsmith_finalize_model(model)
+    if force_sync_fetch:
+        base = _marketsmith_fetch_from_network()
+        model = _marketsmith_attach_meta(base, day)
+        ready = _marketsmith_finalize_model(model)
+        with _MARKET_CONDITION_LOCK:
+            _MARKET_CONDITION_MEMORY_DAY = day
+            _MARKET_CONDITION_MEMORY = ready
+        _marketsmith_write_disk(day, ready)
+        return dict(ready)
 
-    with _MARKET_CONDITION_LOCK:
-        _MARKET_CONDITION_MEMORY_DAY = day
-        _MARKET_CONDITION_MEMORY = ready
+    prev_day, fallback = _marketsmith_read_disk_any_model()
+    _marketsmith_schedule_network_fetch(day)
 
-    _marketsmith_write_disk(day, ready)
-    return dict(ready)
+    if fallback is not None:
+        label = prev_day or day
+        filled = _marketsmith_attach_meta(fallback, label)
+        return dict(_marketsmith_finalize_model(filled))
+
+    loading = _marketsmith_attach_meta(
+        _marketsmith_error_payload("Refreshing market regime…"),
+        day,
+    )
+    return _marketsmith_finalize_model(loading)
 
 
 def marketsmith_market_condition_bootstrap(model: dict[str, Any]) -> dict[str, Any]:

@@ -836,7 +836,8 @@ async def live_prices_websocket(websocket: WebSocket) -> None:
     await websocket.accept()
 
     loop = asyncio.get_running_loop()
-    queue: asyncio.Queue[dict[int, float]] = asyncio.Queue(maxsize=512)
+    # Batches of {token: ltp} and occasional "cache" sentinel for post-refresh HTML reload.
+    queue: asyncio.Queue[object] = asyncio.Queue(maxsize=512)
 
     # Merge tick batches on the event-loop thread (ticker runs in another thread)
     # so we send fewer WebSocket frames under busy markets.
@@ -889,18 +890,39 @@ async def live_prices_websocket(websocket: WebSocket) -> None:
 
         loop.call_soon_threadsafe(merge_on_loop)
 
+    def notify_cache_refresh() -> None:
+        def _put() -> None:
+            try:
+                queue.put_nowait("cache")
+            except asyncio.QueueFull:
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    queue.put_nowait("cache")
+                except asyncio.QueueFull:
+                    pass
+
+        loop.call_soon_threadsafe(_put)
+
     live_price_stream.add_tick_listener(enqueue_updates)
+    live_price_stream.add_cache_refresh_listener(notify_cache_refresh)
     try:
         while True:
             try:
-                updates = await queue.get()
+                item = await queue.get()
             except asyncio.CancelledError:
                 # Server shutdown (Ctrl+C) cancels waiters; exit without logging as error.
                 break
             try:
-                await websocket.send_json(
-                    {"ltp": {str(tok): price for tok, price in updates.items()}}
-                )
+                if item == "cache":
+                    await websocket.send_json({"cacheRefresh": True})
+                elif isinstance(item, dict):
+                    updates = item
+                    await websocket.send_json(
+                        {"ltp": {str(tok): price for tok, price in updates.items()}}
+                    )
             except WebSocketDisconnect:
                 raise
             except asyncio.CancelledError:
@@ -914,6 +936,7 @@ async def live_prices_websocket(websocket: WebSocket) -> None:
         pass
     finally:
         live_price_stream.remove_tick_listener(enqueue_updates)
+        live_price_stream.remove_cache_refresh_listener(notify_cache_refresh)
         try:
             # 1001 = "going away" — helps ASGI/uvicorn finish the connection on shutdown.
             await websocket.close(code=1001)

@@ -669,6 +669,7 @@
     let toastTimer = null;
     let livePriceKpiTimer = null;
     let isRefreshing = false;
+    let cacheRefreshDebounceTimer = null;
     let selectedTab = 'equity';
     let selectedSection = 'portfolio';
     let selectedHoldingTone = 'all';
@@ -2255,6 +2256,16 @@
       ws.onmessage = function (ev) {
         try {
           const data = JSON.parse(ev.data);
+          if (data && data.cacheRefresh) {
+            if (cacheRefreshDebounceTimer !== null) {
+              window.clearTimeout(cacheRefreshDebounceTimer);
+            }
+            cacheRefreshDebounceTimer = window.setTimeout(function () {
+              cacheRefreshDebounceTimer = null;
+              refreshDashboardSnapshot();
+            }, 350);
+            return;
+          }
           if (data && data.ltp) {
             applyLtpMap(data.ltp);
           }
