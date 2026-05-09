@@ -157,6 +157,30 @@
       50% { opacity: 1; transform: scale(1.05); }
       100% { opacity: 0.35; transform: scale(0.9); }
     }
+
+    .stock-chart-link {
+      display: inline;
+      max-width: 100%;
+      font-weight: 500;
+      color: var(--accent);
+      text-decoration: underline;
+      text-decoration-color: transparent;
+      text-underline-offset: 2px;
+    }
+    .stock-chart-link:hover {
+      color: var(--accent-hover);
+      text-decoration-color: var(--accent-hover);
+    }
+    .stock-chart-link:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+      border-radius: 4px;
+    }
+    #dashboard-root tr.dashboard-focus-row {
+      outline: 2px solid rgba(79, 140, 255, 0.95);
+      outline-offset: 2px;
+      transition: outline-color 1.2s ease-out;
+    }
   </style>
 
   <div class="topbar dashboard-topbar">
@@ -430,7 +454,13 @@
                 data-close="{{ h.close_price }}"
                 data-sector="{{ h.sector or 'Uncategorized' }}"
               >
-                <td class="symbol">{{ h.symbol_label }}</td>
+                <td class="symbol">
+                  <a
+                    class="stock-chart-link"
+                    href="/dashboard/stock-chart?instrument_token={{ h.instrument_token }}&exchange={{ h.exchange|urlquote }}&label={{ h.symbol_label|urlquote }}"
+                    title="Daily OHLC &amp; volume (~1 year)"
+                  >{{ h.symbol_label }}</a>
+                </td>
                 <td>{{ h.sector or "—" }}</td>
                 <td class="num">{{ h.quantity }}</td>
                 <td class="num">{{ h.average_price|inr }}</td>
@@ -674,7 +704,13 @@
                       data-token="{{ item.instrument_token }}"
                       data-prev="{{ item.prev_close }}"
                     >
-                      <td class="symbol">{{ item.label }}</td>
+                      <td class="symbol">
+                        <a
+                          class="stock-chart-link"
+                          href="/dashboard/stock-chart?instrument_token={{ item.instrument_token }}&exchange=NSE&label={{ item.label|urlquote }}"
+                          title="Daily OHLC &amp; volume (~1 year)"
+                        >{{ item.label }}</a>
+                      </td>
                       <td>{{ item.sector or "—" }}</td>
                       <td class="num js-watch-ltp">{{ item.last_price|inr }}</td>
                       <td class="num js-watch-change {{ item.change|sign_class }}">{{ item.change|inr }}</td>
@@ -2412,6 +2448,78 @@
       });
     }
 
+    function stripFocusTokenFromUrl() {
+      try {
+        const url = new URL(window.location.href);
+        if (!url.searchParams.has('focus_token')) {
+          return;
+        }
+        url.searchParams.delete('focus_token');
+        history.replaceState(null, '', url.pathname + url.search + url.hash);
+      } catch (_e) {
+      }
+    }
+
+    /**
+     * Returning from the stock chart with ?focus_token= opens the right section/tab and scrolls to the row.
+     */
+    function applyDashboardRowFocusFromQuery() {
+      const params = new URLSearchParams(window.location.search);
+      const raw = params.get('focus_token');
+      if (!raw) {
+        return;
+      }
+      const token = String(raw).trim();
+      if (!/^\d+$/.test(token)) {
+        stripFocusTokenFromUrl();
+        return;
+      }
+      const root = document.getElementById('dashboard-root');
+      if (!root) {
+        stripFocusTokenFromUrl();
+        return;
+      }
+      const row = root.querySelector('tr[data-token="' + token + '"]');
+      if (!row) {
+        stripFocusTokenFromUrl();
+        return;
+      }
+
+      if (row.classList.contains('live-holding')) {
+        selectedHoldingTone = 'all';
+        selectedHoldingSector = 'all';
+        syncHoldingFilterButtonsUi();
+        applyHoldingFilters();
+      }
+
+      const sectionPanel = row.closest('.section-panel');
+      if (!sectionPanel || !sectionPanel.dataset.sectionPanel) {
+        stripFocusTokenFromUrl();
+        return;
+      }
+      const sectionKey = sectionPanel.dataset.sectionPanel;
+      if (sectionKey === 'watchlist') {
+        activateSection('watchlist');
+      } else if (sectionKey === 'portfolio') {
+        activateSection('portfolio');
+        const panel = row.closest('.panel');
+        if (panel && panel.dataset.panel) {
+          activateTab(panel.dataset.panel);
+        }
+      }
+
+      window.requestAnimationFrame(function () {
+        window.requestAnimationFrame(function () {
+          row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          row.classList.add('dashboard-focus-row');
+          window.setTimeout(function () {
+            row.classList.remove('dashboard-focus-row');
+          }, 2200);
+          stripFocusTokenFromUrl();
+        });
+      });
+    }
+
     let mfHoldingsLoaded = false;
     let mfHoldingsLoading = false;
     let mfUnderlyingsLoading = false;
@@ -2923,6 +3031,7 @@
     syncBootstrapMfTotalsFromCachedPayload();
     applyInitialTableSorts();
     initEquityHoldingsControls();
+    applyDashboardRowFocusFromQuery();
     stampUpdatedNow();
     renderIndexQuotes();
     if (selectedTab === 'mf') {

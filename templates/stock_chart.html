@@ -1,0 +1,533 @@
+{#
+  Full-page stock chart: daily candlesticks + volume from GET /dashboard/stock-history.
+  Scripts load from /static/js (bundled Chart.js, Luxon adapter, chartjs-chart-financial).
+#}
+{% extends "base.html" %}
+
+{% block title %}{{ stock_title }} · Chart · {{ dashboard_name }}{% endblock %}
+
+{% block content %}
+  <style>
+    .stock-chart-page {
+      max-width: 1120px;
+      margin: 0 auto;
+    }
+    .stock-chart-page .page-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: var(--space-4);
+    }
+    .stock-chart-page .page-toolbar h1 {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      flex: 1 1 200px;
+      min-width: 0;
+    }
+    .stock-chart-page .page-toolbar-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+    .stock-chart-controls {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin: 0 0 var(--space-4);
+      padding-bottom: var(--space-3);
+      border-bottom: 1px solid var(--border);
+    }
+    .stock-chart-page .volume-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text);
+      cursor: pointer;
+      user-select: none;
+      flex-shrink: 0;
+    }
+    .stock-chart-page .volume-toggle input {
+      width: 18px;
+      height: 18px;
+      accent-color: var(--accent);
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .stock-chart-page .meta-line {
+      margin: 0 0 var(--space-4);
+      font-size: 13px;
+      color: var(--muted);
+      font-weight: 500;
+      line-height: 1.5;
+    }
+    .stock-chart-panel {
+      padding: var(--space-4);
+    }
+    .stock-chart-wrap {
+      position: relative;
+      height: min(480px, 58vh);
+      margin-top: var(--space-2);
+    }
+    .stock-chart-wrap canvas {
+      max-height: 100%;
+    }
+    .stock-chart-loading {
+      margin: var(--space-3) 0;
+      font-size: 14px;
+      color: var(--muted);
+    }
+    .stock-chart-error {
+      margin: var(--space-3) 0;
+      padding: var(--space-3);
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--negative);
+      font-size: 14px;
+    }
+    .stock-chart-error .help-links-label {
+      margin: 12px 0 6px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .stock-chart-error .help-links {
+      margin: 0;
+      padding-left: 1.2em;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .stock-chart-error .help-links a {
+      word-break: break-all;
+    }
+    .stock-chart-empty {
+      margin: var(--space-3) 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+  </style>
+
+  <div class="stock-chart-page">
+    <div class="page-toolbar">
+      <h1 id="stock-chart-heading">{{ stock_title }}</h1>
+      <div class="page-toolbar-actions">
+        <a id="stock-chart-back-dashboard" class="button secondary" href="/dashboard">← Dashboard</a>
+        <a class="button secondary" href="/logout">Logout</a>
+      </div>
+    </div>
+    <p class="meta-line">
+      Approximately <strong>one year</strong> of <strong>daily</strong> candles (OHLC) and volume, via Kite Connect historical API.
+      Green candlesticks indicate close above open; red indicates close below open.
+    </p>
+
+    <div class="card stock-chart-panel">
+      <div class="stock-chart-controls">
+        <label class="volume-toggle" for="stock-chart-show-volume">
+          <input type="checkbox" id="stock-chart-show-volume" checked autocomplete="off" />
+          Show volume
+        </label>
+      </div>
+      <div id="stock-chart-loading" class="stock-chart-loading" aria-live="polite">Loading chart…</div>
+      <div id="stock-chart-error" class="stock-chart-error" hidden></div>
+      <div id="stock-chart-empty" class="stock-chart-empty" hidden>No candle data in this range.</div>
+      <div id="stock-chart-wrap" class="stock-chart-wrap" hidden>
+        <canvas id="stock-chart-canvas" aria-label="Candlestick and volume chart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <textarea id="stock-chart-bootstrap" hidden readonly>{{ stock_chart_bootstrap_json }}</textarea>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/chart.umd.min.js"></script>
+<script src="/static/js/luxon.min.js"></script>
+<script src="/static/js/chartjs-adapter-luxon.umd.min.js"></script>
+<script src="/static/js/chartjs-chart-financial.min.js"></script>
+<script>
+  (function () {
+    const DEFAULT_HELP_URLS = {{ kite_help_urls | tojson }};
+
+    function readBootstrap() {
+      const el = document.getElementById('stock-chart-bootstrap');
+      if (!el || !el.value) {
+        return {};
+      }
+      try {
+        return JSON.parse(el.value);
+      } catch (_e) {
+        return {};
+      }
+    }
+
+    function syncDashboardBackLink() {
+      const el = document.getElementById('stock-chart-back-dashboard');
+      if (!el) {
+        return;
+      }
+      const boot = readBootstrap();
+      const token = Number(boot.instrumentToken || 0);
+      if (token > 0) {
+        el.setAttribute('href', '/dashboard?focus_token=' + encodeURIComponent(String(token)));
+      }
+    }
+
+    syncDashboardBackLink();
+
+    function formatVolumeTick(val) {
+      const v = Number(val);
+      if (v >= 1e7) {
+        return (v / 1e7).toFixed(1).replace(/\.0$/, '') + ' Cr';
+      }
+      if (v >= 1e5) {
+        return (v / 1e5).toFixed(1).replace(/\.0$/, '') + ' L';
+      }
+      if (v >= 1e3) {
+        return (v / 1e3).toFixed(1).replace(/\.0$/, '') + ' K';
+      }
+      return String(Math.round(v));
+    }
+
+    function showError(message, helpUrls) {
+      const box = document.getElementById('stock-chart-error');
+      const load = document.getElementById('stock-chart-loading');
+      const wrap = document.getElementById('stock-chart-wrap');
+      const empty = document.getElementById('stock-chart-empty');
+      if (load) {
+        load.hidden = true;
+      }
+      if (wrap) {
+        wrap.hidden = true;
+      }
+      if (empty) {
+        empty.hidden = true;
+      }
+      if (!box) {
+        return;
+      }
+      const urls = Array.isArray(helpUrls) && helpUrls.length ? helpUrls : DEFAULT_HELP_URLS;
+      function escAttr(s) {
+        return String(s)
+          .replace(/&/g, '&amp;')
+          .replace(/"/g, '&quot;')
+          .replace(/</g, '&lt;');
+      }
+      let linksHtml = '<ul class="help-links">';
+      urls.forEach(function (u) {
+        const uStr = String(u);
+        linksHtml +=
+          '<li><a href="' +
+          escAttr(uStr) +
+          '" target="_blank" rel="noopener">' +
+          escAttr(uStr) +
+          '</a></li>';
+      });
+      linksHtml += '</ul>';
+      box.innerHTML =
+        '<div class="msg">' +
+        String(message || 'Something went wrong.').replace(/</g, '&lt;') +
+        '</div>' +
+        '<div class="help-links-label">Kite documentation &amp; developer console:</div>' +
+        linksHtml;
+      box.hidden = false;
+    }
+
+    function run() {
+      function showEmptyCandlesMessage() {
+        const el = document.getElementById('stock-chart-empty');
+        if (el) {
+          el.hidden = false;
+        }
+      }
+
+      const boot = readBootstrap();
+      const token = Number(boot.instrumentToken || 0);
+      const exchange = String(boot.exchange || 'NSE').trim();
+      const days = Math.max(365, Math.min(Number(boot.days) || 365, 3650));
+
+      if (!token) {
+        showError('Missing instrument.', DEFAULT_HELP_URLS);
+        return;
+      }
+
+      const params = new URLSearchParams({
+        instrument_token: String(token),
+        exchange: exchange,
+        days: String(days),
+      });
+
+      fetch('/dashboard/stock-history?' + params.toString(), {
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json' },
+      })
+        .then(function (res) {
+          return res.json().then(function (body) {
+            return { ok: res.ok, status: res.status, body: body };
+          });
+        })
+        .then(function (result) {
+          const load = document.getElementById('stock-chart-loading');
+          if (load) {
+            load.hidden = true;
+          }
+
+          if (!result.ok) {
+            const msg = (result.body && result.body.error) || 'Request failed';
+            const urls = result.body && result.body.kite_help_urls;
+            showError(msg, urls);
+            return;
+          }
+
+          const candles = (result.body && result.body.candles) || [];
+          if (!candles.length) {
+            showEmptyCandlesMessage();
+            return;
+          }
+
+          function utcDayMs(dateStr) {
+            const p = String(dateStr || '')
+              .trim()
+              .split('-');
+            if (p.length !== 3) {
+              return NaN;
+            }
+            const y = parseInt(p[0], 10);
+            const m = parseInt(p[1], 10);
+            const d = parseInt(p[2], 10);
+            return Date.UTC(y, m - 1, d);
+          }
+
+          const candlesOk = candles.filter(function (c) {
+            return !isNaN(utcDayMs(c.date));
+          });
+          if (!candlesOk.length) {
+            showEmptyCandlesMessage();
+            return;
+          }
+
+          const candlePoints = candlesOk.map(function (c) {
+            return {
+              x: utcDayMs(c.date),
+              o: Number(c.open),
+              h: Number(c.high),
+              l: Number(c.low),
+              c: Number(c.close),
+            };
+          });
+          const volPoints = candlesOk.map(function (c) {
+            return { x: utcDayMs(c.date), y: Number(c.volume) };
+          });
+
+          const wrap = document.getElementById('stock-chart-wrap');
+          const canvas = document.getElementById('stock-chart-canvas');
+          if (!wrap || !canvas || typeof Chart === 'undefined') {
+            showError('Chart could not be initialized.', DEFAULT_HELP_URLS);
+            return;
+          }
+          wrap.hidden = false;
+
+          const gridMuted = 'rgba(148, 163, 184, 0.22)';
+          /* Financial plugin: "up" = bearish, "down" = bullish (close vs open). */
+          const bearish = 'rgba(239, 68, 68, 0.55)';
+          const bullish = 'rgba(34, 197, 94, 0.55)';
+          /* Volume bars stay in the dataset (transparent when off) so x-axis grouping is stable; checkbox rebuilds the chart because Chart.js v4 option proxies often ignore live edits. */
+          const VOL_BG_ON = 'rgba(148, 163, 184, 0.32)';
+          const VOL_BG_OFF = 'rgba(0, 0, 0, 0)';
+          const Y1_LEFT_FALLBACK_PX = 52;
+          const volumeEl = document.getElementById('stock-chart-show-volume');
+          const volumeUi = { on: !volumeEl || volumeEl.checked };
+          let y1MeasuredLeftPx = 0;
+          const stockChartRef = { chart: null };
+
+          function buildChart() {
+            try {
+              return new Chart(canvas.getContext('2d'), {
+                data: {
+                  datasets: [
+                    {
+                      type: 'bar',
+                      label: 'Volume',
+                      data: volPoints,
+                      yAxisID: 'y1',
+                      parsing: { xAxisKey: 'x', yAxisKey: 'y' },
+                      backgroundColor: volumeUi.on ? VOL_BG_ON : VOL_BG_OFF,
+                      borderWidth: 0,
+                      order: 1,
+                    },
+                    {
+                      type: 'candlestick',
+                      label: 'OHLC',
+                      data: candlePoints,
+                      yAxisID: 'y',
+                      parsing: false,
+                      order: 2,
+                    },
+                  ],
+                },
+                options: {
+                  layout: {
+                    padding: {
+                      top: 0,
+                      right: 0,
+                      bottom: 0,
+                      left: volumeUi.on ? 0 : y1MeasuredLeftPx || Y1_LEFT_FALLBACK_PX,
+                    },
+                  },
+                  responsive: true,
+                  maintainAspectRatio: false,
+                  interaction: { mode: 'index', intersect: false },
+                  plugins: {
+                    legend: {
+                      display: false,
+                    },
+                    tooltip: {
+                      filter: function (item) {
+                        if (item.datasetIndex === 0 && !volumeUi.on) {
+                          return false;
+                        }
+                        return true;
+                      },
+                      callbacks: {
+                        label: function (ctx) {
+                          const lbl = ctx.dataset && ctx.dataset.label;
+                          if (lbl === 'Volume') {
+                            const vy = ctx.parsed && ctx.parsed.y;
+                            return 'Volume: ' + Number(vy).toLocaleString('en-IN');
+                          }
+                          const raw = ctx.raw || {};
+                          return [
+                            'O: ₹' + Number(raw.o).toFixed(2),
+                            'H: ₹' + Number(raw.h).toFixed(2),
+                            'L: ₹' + Number(raw.l).toFixed(2),
+                            'C: ₹' + Number(raw.c).toFixed(2),
+                          ];
+                        },
+                      },
+                    },
+                  },
+                  elements: {
+                    candlestick: {
+                      backgroundColors: {
+                        up: bearish,
+                        down: bullish,
+                        unchanged: 'rgba(148, 163, 184, 0.45)',
+                      },
+                      borderColors: {
+                        up: '#ef4444',
+                        down: '#22c55e',
+                        unchanged: '#94a3b8',
+                      },
+                    },
+                  },
+                  scales: {
+                    x: {
+                      type: 'time',
+                      time: {
+                        unit: 'month',
+                        displayFormats: { month: 'MMM yyyy' },
+                      },
+                      ticks: {
+                        color: '#94a3b8',
+                        maxRotation: 0,
+                        autoSkip: true,
+                        maxTicksLimit: 14,
+                      },
+                      grid: { color: gridMuted },
+                    },
+                    y: {
+                      position: 'right',
+                      ticks: {
+                        color: '#94a3b8',
+                        callback: function (val) {
+                          return '₹' + val;
+                        },
+                      },
+                      grid: { color: gridMuted },
+                    },
+                    y1: {
+                      position: 'left',
+                      beginAtZero: true,
+                      display: volumeUi.on,
+                      grid: { drawOnChartArea: false },
+                      ticks: {
+                        color: '#94a3b8',
+                        callback: function (val) {
+                          return formatVolumeTick(val);
+                        },
+                      },
+                    },
+                  },
+                },
+              });
+            } catch (err) {
+              showError(
+                err && err.message ? String(err.message) : 'Chart rendering failed.',
+                DEFAULT_HELP_URLS
+              );
+              return null;
+            }
+          }
+
+          function captureVolumeAxisWidth(chart) {
+            window.requestAnimationFrame(function () {
+              if (!chart) {
+                return;
+              }
+              const y1 = chart.scales && chart.scales.y1;
+              if (volumeUi.on && y1 && typeof y1.width === 'number' && y1.width > 0) {
+                y1MeasuredLeftPx = Math.ceil(y1.width);
+              }
+            });
+          }
+
+          function rebuildChartFromVolumeCheckbox() {
+            const cb = document.getElementById('stock-chart-show-volume');
+            volumeUi.on = !cb || cb.checked;
+            if (stockChartRef.chart) {
+              stockChartRef.chart.destroy();
+              stockChartRef.chart = null;
+            }
+            stockChartRef.chart = buildChart();
+            if (stockChartRef.chart) {
+              stockChartRef.chart.resize();
+              captureVolumeAxisWidth(stockChartRef.chart);
+            }
+          }
+
+          function onVolumeCheckboxChange(ev) {
+            const el = ev.target;
+            if (!el || el.id !== 'stock-chart-show-volume') {
+              return;
+            }
+            rebuildChartFromVolumeCheckbox();
+          }
+
+          /* Double rAF: canvas layout after stock-chart-wrap is un-hidden. */
+          window.requestAnimationFrame(function () {
+            window.requestAnimationFrame(function () {
+              stockChartRef.chart = buildChart();
+              if (stockChartRef.chart) {
+                stockChartRef.chart.resize();
+                captureVolumeAxisWidth(stockChartRef.chart);
+              }
+              document.addEventListener('change', onVolumeCheckboxChange);
+            });
+          });
+        })
+        .catch(function () {
+          showError('Network error while loading historical data.', DEFAULT_HELP_URLS);
+        });
+    }
+
+    run();
+  })();
+</script>
+{% endblock %}

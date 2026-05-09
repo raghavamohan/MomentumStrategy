@@ -69,6 +69,14 @@ Routes
     If the cached token has expired (``TokenException``), the session is
     cleared and the user is bounced back to ``/`` to log in again.
 
+``GET /dashboard/stock-history``
+    Authenticated JSON. Daily OHLCV candles from
+    ``KiteConnect.historical_data`` for the stock chart page.
+
+``GET /dashboard/stock-chart``
+    Authenticated HTML page with candlestick + volume chart (static Chart.js
+    under ``/static/``). Opened from Equity Holdings / Watch List links.
+
 ``GET /logout``
     Clears the session cookie, deletes the on-disk Kite access token
     (``.access_token.json``), and returns to ``/`` so the user must log in
@@ -94,21 +102,27 @@ import os
 import re
 from collections.abc import MutableMapping
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 import secrets
+
+from markupsafe import Markup
 import threading
 import time
 import warnings
 import webbrowser
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from dotenv import load_dotenv
 import keyring
 from kiteconnect import KiteConnect
-from kiteconnect.exceptions import PermissionException, TokenException
+from kiteconnect.exceptions import KiteException, PermissionException, TokenException
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.staticfiles import StaticFiles
 
 from app.auth import (
     PROJECT_ROOT,
@@ -156,6 +170,7 @@ _DASHBOARD_TIMING_LOGGER = logging.getLogger("app.dashboard.timing")
 
 
 TEMPLATES_DIR = PROJECT_ROOT / "templates"
+STATIC_DIR: Path = PROJECT_ROOT / "static"
 SESSION_SECRET_FILE = PROJECT_ROOT / ".session_secret"
 SESSION_SECRET_KEYRING_SERVICE = "MomentumStrategy"
 SESSION_SECRET_KEYRING_ACCOUNT = "dashboard-session-secret"
@@ -341,6 +356,32 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 # Jinja2 filters
 # ---------------------------------------------------------------------------
 
+_KITE_STOCK_HISTORY_HELP_URLS: tuple[str, ...] = (
+    "https://kite.trade/docs/connect/v3/market-quotes/#historical-data-candles",
+    "https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.historical_data",
+    "https://developers.kite.trade/",
+)
+
+
+def _stock_history_json_error(message: str, *, status_code: int = 400) -> JSONResponse:
+    return JSONResponse(
+        {
+            "error": message,
+            "kite_help_urls": list(_KITE_STOCK_HISTORY_HELP_URLS),
+        },
+        status_code=status_code,
+    )
+
+
+def _url_quote_filter(value: object) -> str:
+    """Percent-encode values used in query strings for chart links."""
+    return quote(str(value if value is not None else ""), safe="")
+
+
+def _tojson_filter(value: object) -> Markup:
+    """Embed JSON in HTML/JS (escaped)."""
+    return Markup(json.dumps(value))
+
 
 def _format_inr(value: float | int | None) -> str:
     """Format a number with comma separators and 2 decimals (no currency sign)."""
@@ -379,6 +420,8 @@ templates.env.filters["inr"] = _format_inr
 templates.env.filters["units"] = _format_units
 templates.env.filters["pct"] = _format_pct
 templates.env.filters["sign_class"] = _sign_class
+templates.env.filters["urlquote"] = _url_quote_filter
+templates.env.filters["tojson"] = _tojson_filter
 
 
 # ---------------------------------------------------------------------------
@@ -419,6 +462,9 @@ app.add_middleware(
     same_site="lax",
     https_only=False,
 )
+
+if STATIC_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 # ---------------------------------------------------------------------------
@@ -537,6 +583,39 @@ def _dashboard_timing_mark(
 ) -> None:
     """Append elapsed milliseconds since ``start_time`` for one stage."""
     timings.append((stage, (time.perf_counter() - start_time) * 1000.0))
+
+
+def _historical_candles_for_stock(
+    kite: KiteConnect,
+    instrument_token: int,
+    days: int,
+) -> list[dict[str, Any]]:
+    """Daily candles via ``KiteConnect.historical_data`` (OHLCV only)."""
+    end = datetime.now()
+    start = end - timedelta(days=days)
+    rows = kite.historical_data(
+        instrument_token,
+        start,
+        end,
+        "day",
+        continuous=False,
+        oi=False,
+    )
+    candles: list[dict[str, Any]] = []
+    for row in rows or []:
+        dt = row["date"]
+        date_str = dt.strftime("%Y-%m-%d") if hasattr(dt, "strftime") else str(dt)[:10]
+        candles.append(
+            {
+                "date": date_str,
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+                "volume": int(row["volume"]),
+            }
+        )
+    return candles
 
 
 def _today_cache_token() -> str:
@@ -1519,6 +1598,113 @@ async def dashboard_mf_holdings(request: Request) -> JSONResponse:
         live_price_stream.close()
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     return JSONResponse(payload)
+
+
+@app.get(
+    "/dashboard/stock-chart",
+    response_class=HTMLResponse,
+    response_model=None,
+)
+async def dashboard_stock_chart(
+    request: Request,
+    instrument_token: int = Query(..., ge=1),
+    exchange: str = Query("NSE"),
+    label: str = Query(""),
+    days: int = Query(365, ge=1, le=3650),
+):
+    """Full-page candlestick + volume chart for one cash equity instrument.
+
+    Historical range is at least one year (365 daily candles) unless a larger
+    ``days`` is requested.
+    """
+    if not _restore_session_if_token_valid(request):
+        return RedirectResponse("/", status_code=303)
+
+    if _kite_for_request() is None:
+        request.session.clear()
+        return RedirectResponse("/", status_code=303)
+
+    ex = exchange.strip().upper()
+    if ex not in EQUITY_EXCHANGES:
+        return RedirectResponse("/dashboard", status_code=303)
+
+    days_clamped = max(365, min(int(days), 365 * 10))
+    display_label = (label or "").strip() or f"{ex} #{instrument_token}"
+    bootstrap = {
+        "instrumentToken": instrument_token,
+        "exchange": ex,
+        "label": display_label,
+        "days": days_clamped,
+    }
+
+    return templates.TemplateResponse(
+        request,
+        "stock_chart.html",
+        {
+            "request": request,
+            "dashboard_name": _DASHBOARD_DISPLAY_NAME,
+            "stock_title": display_label,
+            "stock_chart_bootstrap_json": json.dumps(bootstrap),
+            "kite_help_urls": list(_KITE_STOCK_HISTORY_HELP_URLS),
+        },
+    )
+
+
+@app.get("/dashboard/stock-history")
+async def dashboard_stock_history(
+    request: Request,
+    instrument_token: int,
+    exchange: str = "NSE",
+    days: int = 365,
+) -> JSONResponse:
+    """Return daily historical candles for one equity instrument (OHLCV)."""
+    if not _restore_session_if_token_valid(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    kite = _kite_for_request()
+    if kite is None:
+        request.session.clear()
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    if instrument_token <= 0:
+        return _stock_history_json_error("invalid instrument_token", status_code=400)
+
+    ex = exchange.strip().upper()
+    if ex not in EQUITY_EXCHANGES:
+        return _stock_history_json_error("invalid exchange", status_code=400)
+
+    days_clamped = max(365, min(int(days), 365 * 10))
+
+    try:
+        candles = await asyncio.to_thread(
+            _historical_candles_for_stock,
+            kite,
+            instrument_token,
+            days_clamped,
+        )
+    except TokenException:
+        request.session.clear()
+        live_price_stream.close()
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    except KiteException as exc:
+        logger.warning("stock-history Kite error: %s", exc)
+        return _stock_history_json_error(str(exc), status_code=400)
+    except Exception as exc:  # noqa: BLE001 - surface unexpected Kite/network issues
+        logger.exception("stock-history failed: %s", exc)
+        return _stock_history_json_error(
+            "Failed to load historical data.",
+            status_code=500,
+        )
+
+    return JSONResponse(
+        {
+            "instrument_token": instrument_token,
+            "exchange": ex,
+            "interval": "day",
+            "days": days_clamped,
+            "candles": candles,
+        }
+    )
 
 
 def main() -> None:
