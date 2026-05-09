@@ -146,7 +146,7 @@
       <div id="stock-chart-error" class="stock-chart-error" hidden></div>
       <div id="stock-chart-empty" class="stock-chart-empty" hidden>No candle data in this range.</div>
       <p id="stock-chart-pan-hint" class="stock-chart-pan-hint" hidden>
-        Drag or swipe on the chart to scroll through time. Use the mouse wheel (or pinch) to zoom horizontally. Price and volume axes match the visible window.
+        Drag or swipe horizontally to move through time (not vertically). Use the mouse wheel or pinch to zoom the time axis. Price and volume axes match the visible window.
       </p>
       <div id="stock-chart-wrap" class="stock-chart-wrap" hidden>
         <canvas id="stock-chart-canvas" aria-label="Candlestick and volume chart"></canvas>
@@ -374,12 +374,17 @@
 
           const rangeFirstMs = candleTimesUtc[0];
           const rangeLastMs = candleTimesUtc[candleTimesUtc.length - 1];
-          const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
-          const initialXMax = rangeLastMs;
+          const DAY_MS = 24 * 60 * 60 * 1000;
+          /* ~2 weeks past last bar so the latest candle is not glued to the right edge. */
+          const RIGHT_PAD_MS = 14 * DAY_MS;
+          const rangeXMax = rangeLastMs + RIGHT_PAD_MS;
+          const ONE_YEAR_MS = 365 * DAY_MS;
+          const dataSpanMs = rangeLastMs - rangeFirstMs;
+          const initialXMax = rangeXMax;
           const initialXMin =
-            rangeLastMs - rangeFirstMs <= ONE_YEAR_MS
+            dataSpanMs <= ONE_YEAR_MS
               ? rangeFirstMs
-              : Math.max(rangeFirstMs, rangeLastMs - ONE_YEAR_MS);
+              : Math.max(rangeFirstMs, initialXMax - ONE_YEAR_MS);
 
           const wrap = document.getElementById('stock-chart-wrap');
           const canvas = document.getElementById('stock-chart-canvas');
@@ -394,12 +399,17 @@
           }
 
           const gridMuted = 'rgba(148, 163, 184, 0.22)';
-          /* Financial plugin: "up" = bearish, "down" = bullish (close vs open). */
+          /*
+           * chartjs-chart-financial compares open/close as *pixel* Y values (not raw prices).
+           * Higher price → smaller Y, so bullish (close > open in ₹) yields close_pixel < open_pixel → uses `up`.
+           */
           const bearish = 'rgba(239, 68, 68, 0.55)';
           const bullish = 'rgba(34, 197, 94, 0.55)';
           /* Volume bars stay in the dataset (transparent when off) so x-axis grouping is stable; checkbox rebuilds the chart because Chart.js v4 option proxies often ignore live edits. */
           const VOL_BG_ON = 'rgba(148, 163, 184, 0.32)';
           const VOL_BG_OFF = 'rgba(0, 0, 0, 0)';
+          /* Tallest volume bar uses this fraction of chart height (linear scale 0..max). */
+          const VOL_BAR_MAX_HEIGHT_FRAC = 0.25;
           const Y1_LEFT_FALLBACK_PX = 52;
           const volumeEl = document.getElementById('stock-chart-show-volume');
           const volumeUi = { on: !volumeEl || volumeEl.checked };
@@ -437,15 +447,23 @@
               return;
             }
 
+            /* OHLC only on real bars (not in empty right padding). */
+            const dataRightMs = Math.min(tMax, rangeLastMs);
             let hi = -Infinity;
             let lo = Infinity;
             let vmax = 0;
+            let focusClose = NaN;
+            let bestX = -Infinity;
             for (let i = 0; i < candlePoints.length; i++) {
               const p = candlePoints[i];
               const vp = volPoints[i];
-              if (p.x >= tMin && p.x <= tMax) {
+              if (p.x >= tMin && p.x <= dataRightMs) {
                 lo = Math.min(lo, p.l, p.o, p.c);
                 hi = Math.max(hi, p.h, p.o, p.c);
+                if (p.x >= bestX) {
+                  bestX = p.x;
+                  focusClose = p.c;
+                }
                 if (vp && volumeUi.on) {
                   vmax = Math.max(vmax, vp.y);
                 }
@@ -455,13 +473,21 @@
               return;
             }
 
+            /* Center Y on the last visible bar's close; expand symmetrically to fit OHLC. */
             const span = hi - lo;
-            const pad = span > 0 ? span * 0.06 : Math.abs(hi) * 0.02 || 1;
-            const newYMin = lo - pad;
-            const newYMax = hi + pad;
+            const focus = isFinite(focusClose) ? focusClose : (lo + hi) / 2;
+            const needBelow = focus - lo;
+            const needAbove = hi - focus;
+            let half =
+              Math.max(needBelow, needAbove, span * 0.08, Math.abs(focus) * 0.015) * 1.06;
+            if (!(half > 0) || !isFinite(half)) {
+              half = Math.abs(hi) * 0.02 || 1;
+            }
+            const newYMin = focus - half;
+            const newYMax = focus + half;
 
             let changed = false;
-            const eps = Math.max(pad * 0.01, 1e-6);
+            const eps = Math.max(half * 0.002, span * 1e-6, 1e-6);
             const curMin = yScale.min;
             const curMax = yScale.max;
             if (
@@ -476,9 +502,12 @@
             }
 
             if (volumeUi.on && y1Scale && y1Scale.display) {
-              const newY1Max = vmax > 0 ? vmax * 1.08 : 1;
+              const newY1Max =
+                vmax > 0 ? vmax / VOL_BAR_MAX_HEIGHT_FRAC : 1;
               const cur1 = y1Scale.max;
-              if (!isFinite(cur1) || Math.abs(cur1 - newY1Max) > vmax * 0.02 + 0.5) {
+              const tol =
+                vmax > 0 ? Math.max(vmax * 0.02, 1) : 0.5;
+              if (!isFinite(cur1) || Math.abs(cur1 - newY1Max) > tol) {
                 chart.options.scales.y1.max = newY1Max;
                 chart.options.scales.y1.min = 0;
                 changed = true;
@@ -499,19 +528,27 @@
             typeof ChartZoom !== 'undefined'
               ? {
                   limits: {
-                    x: { min: rangeFirstMs, max: rangeLastMs },
+                    x: { min: rangeFirstMs, max: rangeXMax },
                   },
                   pan: {
                     enabled: true,
                     mode: 'x',
+                    threshold: 6,
                     onPanComplete: function (ctx) {
                       syncYAxesToVisibleWindow(ctx.chart);
                     },
                   },
                   zoom: {
-                    wheel: { enabled: true },
-                    pinch: { enabled: true },
                     mode: 'x',
+                    drag: {
+                      enabled: false,
+                    },
+                    wheel: {
+                      enabled: true,
+                    },
+                    pinch: {
+                      enabled: true,
+                    },
                     onZoomComplete: function (ctx) {
                       syncYAxesToVisibleWindow(ctx.chart);
                     },
@@ -519,47 +556,63 @@
                 }
               : null;
 
-          function createStockCrosshairPlugin(getVolumeOn, candleTimesMs) {
+          function createStockCrosshairPlugin(getVolumeOn, candlePoints, volPoints) {
             const lineColor = 'rgba(148, 163, 184, 0.92)';
             const pillBg = 'rgba(15, 23, 42, 0.92)';
             const labelFont = '600 11px system-ui, -apple-system, "Segoe UI", sans-serif';
 
-            function candleTimeAtPixel(ix, chart) {
-              const times = candleTimesMs;
-              const n = times.length;
-              if (!n || !chart || !chart.scales || !chart.scales.x) {
+            function rawTimeToMs(v) {
+              if (v == null) {
+                return NaN;
+              }
+              if (typeof v === 'number') {
+                return v;
+              }
+              if (typeof v.valueOf === 'function') {
+                const n = v.valueOf();
+                return typeof n === 'number' ? n : NaN;
+              }
+              return NaN;
+            }
+
+            /**
+             * Map cursor x to the daily bar under it: last bar with bar.x <= time-at-cursor.
+             * Nearest-pixel snapping skewed toward the next candle on time scales; this matches OHLC to the bar you are over.
+             */
+            function snapBarFromPixel(ix, chart) {
+              const xScale = chart.scales.x;
+              if (!xScale || !candlePoints.length) {
                 return null;
               }
-              const xScale = chart.scales.x;
-              let bestIdx = 0;
-              let bestDist = Infinity;
-              for (let i = 0; i < n; i++) {
-                const px = xScale.getPixelForValue(times[i]);
-                if (typeof px !== 'number' || isNaN(px)) {
-                  continue;
-                }
-                const d = Math.abs(ix - px);
-                if (d < bestDist) {
-                  bestDist = d;
+              const t = rawTimeToMs(xScale.getValueForPixel(ix));
+              if (!isFinite(t)) {
+                return null;
+              }
+              let bestIdx = -1;
+              let bestX = -Infinity;
+              for (let i = 0; i < candlePoints.length; i++) {
+                const bx = candlePoints[i].x;
+                if (bx <= t && bx > bestX) {
+                  bestX = bx;
                   bestIdx = i;
                 }
               }
-              if (!isFinite(bestDist)) {
-                return null;
-              }
-              let maxHit = 12;
-              if (n >= 2) {
-                const p0 = xScale.getPixelForValue(times[0]);
-                const p1 = xScale.getPixelForValue(times[n - 1]);
-                if (typeof p0 === 'number' && typeof p1 === 'number' && !isNaN(p0) && !isNaN(p1)) {
-                  const span = Math.abs(p1 - p0);
-                  maxHit = (span / (n - 1)) * 0.55;
+              if (bestIdx < 0) {
+                let mi = 0;
+                for (let j = 1; j < candlePoints.length; j++) {
+                  if (candlePoints[j].x < candlePoints[mi].x) {
+                    mi = j;
+                  }
                 }
+                return {
+                  snapMs: candlePoints[mi].x,
+                  hit: { bar: candlePoints[mi], vol: volPoints[mi] },
+                };
               }
-              if (bestDist > maxHit) {
-                return null;
-              }
-              return times[bestIdx];
+              return {
+                snapMs: candlePoints[bestIdx].x,
+                hit: { bar: candlePoints[bestIdx], vol: volPoints[bestIdx] },
+              };
             }
 
             return {
@@ -642,7 +695,9 @@
                 const ctx = chart.ctx;
                 const canvasEl = chart.canvas;
 
-                const snapMs = candleTimeAtPixel(ix, chart);
+                const snap = snapBarFromPixel(ix, chart);
+                const snapMs = snap ? snap.snapMs : null;
+                const hit = snap ? snap.hit : null;
                 const vx =
                   snapMs != null ? xScale.getPixelForValue(snapMs) : null;
 
@@ -660,35 +715,78 @@
                 ctx.stroke();
                 ctx.setLineDash([]);
 
-                const priceRaw = yScale.getValueForPixel(iy);
+                const pad = 6;
+                const lineSkip = 13;
+                ctx.font = labelFont;
+
+                if (hit && vx != null && typeof vx === 'number' && !isNaN(vx)) {
+                  const b = hit.bar;
+                  const lines = [
+                    'O  ₹' + Number(b.o).toFixed(2),
+                    'H  ₹' + Number(b.h).toFixed(2),
+                    'L  ₹' + Number(b.l).toFixed(2),
+                    'C  ₹' + Number(b.c).toFixed(2),
+                  ];
+                  if (getVolumeOn() && hit.vol && y1Scale && y1Scale.display) {
+                    lines.push('Vol ' + formatVolumeTick(hit.vol.y));
+                  }
+                  let maxW = 0;
+                  for (let li = 0; li < lines.length; li++) {
+                    maxW = Math.max(maxW, ctx.measureText(lines[li]).width);
+                  }
+                  const boxW = maxW + pad * 2;
+                  const boxH = lines.length * lineSkip + pad * 2 - 3;
+                  let bx = mx + 14;
+                  let by = my - boxH - 12;
+                  if (bx + boxW > ca.right - 4) {
+                    bx = mx - boxW - 14;
+                  }
+                  if (bx < ca.left + 4) {
+                    bx = ca.left + 4;
+                  }
+                  if (by < ca.top + 4) {
+                    by = my + 14;
+                  }
+                  if (by + boxH > ca.bottom - 4) {
+                    by = ca.bottom - boxH - 4;
+                  }
+                  ctx.fillStyle = pillBg;
+                  ctx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
+                  ctx.lineWidth = 1;
+                  ctx.fillRect(bx, by, boxW, boxH);
+                  ctx.strokeRect(bx, by, boxW, boxH);
+                  ctx.textAlign = 'left';
+                  ctx.textBaseline = 'top';
+                  ctx.fillStyle = '#e2e8f0';
+                  for (let li = 0; li < lines.length; li++) {
+                    ctx.fillText(lines[li], bx + pad, by + pad + li * lineSkip);
+                  }
+                }
+
+                const axisPad = 4;
                 let dateStr = '';
                 if (snapMs != null && !isNaN(Number(snapMs))) {
                   dateStr = luxon.DateTime.fromMillis(Number(snapMs), { zone: 'utc' }).toFormat(
                     'dd LLL yyyy'
                   );
                 }
+                const priceRaw = yScale.getValueForPixel(iy);
                 const priceStr =
-                  priceRaw != null && isFinite(Number(priceRaw)) ? '₹' + Number(priceRaw).toFixed(2) : '';
-
-                let volStr = '';
-                if (snapMs != null && getVolumeOn() && y1Scale && y1Scale.display) {
-                  const volRaw = y1Scale.getValueForPixel(iy);
-                  if (volRaw != null && isFinite(Number(volRaw))) {
-                    volStr = formatVolumeTick(volRaw);
-                  }
-                }
-
-                const pad = 4;
-                ctx.font = labelFont;
+                  priceRaw != null && isFinite(Number(priceRaw))
+                    ? '₹' + Number(priceRaw).toFixed(2)
+                    : '';
 
                 if (dateStr && vx != null && typeof vx === 'number' && !isNaN(vx)) {
                   const tw = ctx.measureText(dateStr).width;
-                  const tx = Math.min(Math.max(vx, ca.left + tw / 2 + pad), ca.right - tw / 2 - pad);
+                  const tx = Math.min(
+                    Math.max(vx, ca.left + tw / 2 + axisPad),
+                    ca.right - tw / 2 - axisPad
+                  );
                   const ty = ca.bottom + 5;
                   ctx.textAlign = 'center';
                   ctx.textBaseline = 'top';
                   ctx.fillStyle = pillBg;
-                  ctx.fillRect(tx - tw / 2 - pad, ty - 1, tw + pad * 2, 17);
+                  ctx.fillRect(tx - tw / 2 - axisPad, ty - 1, tw + axisPad * 2, 17);
                   ctx.fillStyle = '#e2e8f0';
                   ctx.fillText(dateStr, tx, ty);
                 }
@@ -699,20 +797,9 @@
                   const pw = ctx.measureText(priceStr).width;
                   const lx = ca.right + 6;
                   ctx.fillStyle = pillBg;
-                  ctx.fillRect(lx - 3, iy - 9, pw + pad * 2 + 3, 18);
+                  ctx.fillRect(lx - 3, iy - 9, pw + axisPad * 2 + 3, 18);
                   ctx.fillStyle = '#e2e8f0';
                   ctx.fillText(priceStr, lx, iy);
-                }
-
-                if (volStr) {
-                  ctx.textAlign = 'right';
-                  ctx.textBaseline = 'middle';
-                  const vw = ctx.measureText(volStr).width;
-                  const rx = ca.left - 6;
-                  ctx.fillStyle = pillBg;
-                  ctx.fillRect(rx - vw - pad * 2 + 1, iy - 9, vw + pad * 2 + 4, 18);
-                  ctx.fillStyle = '#cbd5e1';
-                  ctx.fillText(volStr, rx, iy);
                 }
 
                 ctx.restore();
@@ -731,28 +818,7 @@
                   display: false,
                 },
                 tooltip: {
-                  filter: function (item) {
-                    if (item.datasetIndex === 0 && !volumeUi.on) {
-                      return false;
-                    }
-                    return true;
-                  },
-                  callbacks: {
-                    label: function (ctx) {
-                      const lbl = ctx.dataset && ctx.dataset.label;
-                      if (lbl === 'Volume') {
-                        const vy = ctx.parsed && ctx.parsed.y;
-                        return 'Volume: ' + Number(vy).toLocaleString('en-IN');
-                      }
-                      const raw = ctx.raw || {};
-                      return [
-                        'O: ₹' + Number(raw.o).toFixed(2),
-                        'H: ₹' + Number(raw.h).toFixed(2),
-                        'L: ₹' + Number(raw.l).toFixed(2),
-                        'C: ₹' + Number(raw.c).toFixed(2),
-                      ];
-                    },
-                  },
+                  enabled: false,
                 },
               };
               if (zoomPluginOpts) {
@@ -760,9 +826,13 @@
               }
               return new Chart(canvas.getContext('2d'), {
                 plugins: [
-                  createStockCrosshairPlugin(function () {
-                    return volumeUi.on;
-                  }, candleTimesUtc),
+                  createStockCrosshairPlugin(
+                    function () {
+                      return volumeUi.on;
+                    },
+                    candlePoints,
+                    volPoints
+                  ),
                 ],
                 data: {
                   datasets: [
@@ -802,13 +872,13 @@
                   elements: {
                     candlestick: {
                       backgroundColors: {
-                        up: bearish,
-                        down: bullish,
+                        up: bullish,
+                        down: bearish,
                         unchanged: 'rgba(148, 163, 184, 0.45)',
                       },
                       borderColors: {
-                        up: '#ef4444',
-                        down: '#22c55e',
+                        up: '#22c55e',
+                        down: '#ef4444',
                         unchanged: '#94a3b8',
                       },
                     },
