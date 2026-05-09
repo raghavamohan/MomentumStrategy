@@ -2182,7 +2182,6 @@
     let mfHoldingsLoaded = false;
     let mfHoldingsLoading = false;
     let mfUnderlyingsLoading = false;
-    let mfUnderlyingsLoadedByTone = {};
     let mfPrefetchScheduled = false;
     let mfClientCacheDay = '';
     let mfHoldingsCachedPayload = null;
@@ -2205,7 +2204,6 @@
       mfHoldingsCachedPayload = null;
       mfUnderlyingsCachedPayloadByTone = {};
       mfHoldingsLoaded = false;
-      mfUnderlyingsLoadedByTone = {};
       mfHoldingsLoading = false;
       mfUnderlyingsLoading = false;
       mfPrefetchScheduled = false;
@@ -2475,9 +2473,6 @@
         syncCsvActionState();
         return;
       }
-      if (mfUnderlyingsLoadedByTone[tone]) {
-        return;
-      }
       mfUnderlyingsLoading = true;
       try {
         const response = await fetch('/dashboard/mf-underlyings?tone=' + encodeURIComponent(tone), { cache: 'no-store' });
@@ -2487,7 +2482,6 @@
         }
         const payload = await response.json();
         mfUnderlyingsCachedPayloadByTone[tone] = payload;
-        mfUnderlyingsLoadedByTone[tone] = true;
         if (payload.error) {
           host.innerHTML = '<div class="alert warning">' + escapeHtml(payload.error) + '</div>';
           return;
@@ -2559,10 +2553,6 @@
         ensureMfClientCacheDay();
         mfHoldingsLoaded = !!mfHoldingsCachedPayload;
         mfHoldingsLoading = false;
-        mfUnderlyingsLoadedByTone = {};
-        Object.keys(mfUnderlyingsCachedPayloadByTone).forEach(function (tone) {
-          mfUnderlyingsLoadedByTone[tone] = true;
-        });
         mfUnderlyingsLoading = false;
         mfPrefetchScheduled = false;
         if (mfHoldingsCachedPayload) {

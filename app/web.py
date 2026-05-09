@@ -633,11 +633,16 @@ def _normalize_mf_underlying_tone(tone: str) -> str:
 def _filter_mf_holdings_by_tone(
     rows: list[dict[str, Any]], tone: str
 ) -> list[dict[str, Any]]:
-    if tone == "gainers":
-        return [row for row in rows if float(row.get("pnl") or 0.0) > 0.0]
-    if tone == "losers":
-        return [row for row in rows if float(row.get("pnl") or 0.0) < 0.0]
-    return rows
+    if tone == "all":
+        return rows
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        pnl = float(row.get("pnl") or 0.0)
+        if tone == "gainers" and pnl > 0.0:
+            out.append(row)
+        elif tone == "losers" and pnl < 0.0:
+            out.append(row)
+    return out
 
 
 def _get_cached_mf_underlyings_payload(kite, *, tone: str = "all") -> dict[str, Any]:
@@ -661,6 +666,7 @@ def _get_cached_mf_underlyings_payload(kite, *, tone: str = "all") -> dict[str, 
             "notAggregatedFunds": [],
             "aggregatedFundCount": 0,
             "totalFundCount": 0,
+            "tone": tone_key,
             "error": str(holdings_payload.get("error") or ""),
         }
     else:
