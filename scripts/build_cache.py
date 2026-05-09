@@ -2,7 +2,7 @@
 
 This script can warm:
 1) yfinance industry/sector cache
-2) shared reference_data cache (NSE maps, Nifty list, cash-equity maps)
+2) shared reference/model cache sections (NSE maps, Nifty list, cash-equity maps)
 3) MarketSmith India market-regime daily cache
 
 Usage:
@@ -18,7 +18,6 @@ from __future__ import annotations
 import argparse
 import csv
 import io
-import json
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -46,6 +45,7 @@ from app.instruments import (  # noqa: E402
     get_nse_symbol_to_token_lookup,
     get_reference_cache_debug_snapshot,
 )
+from app.model_cache_store import load_model_cache, save_model_cache  # noqa: E402
 from app.portfolio_model import (  # noqa: E402
     get_marketsmith_market_condition,
 )
@@ -117,19 +117,22 @@ def model_cache_path(project_root: Path) -> Path:
     return cache_dir / "model_cache.json"
 
 
-def read_cache(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {"mapping": {}, "last_refresh_epoch": 0.0}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {"mapping": {}, "last_refresh_epoch": 0.0}
-
-
-def write_cache(path: Path, payload: dict[str, Any]) -> None:
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(path)
+def _persist_yfinance_section(
+    mapping: dict[str, dict[str, str]],
+    last_refresh_epoch: float,
+) -> None:
+    """Write only the ``yfinance`` section; keep other ``model_cache.json`` keys."""
+    root = load_model_cache()
+    if not isinstance(root, dict):
+        root = {}
+    root["yfinance"] = {
+        "mapping": mapping,
+        "last_refresh_epoch": float(last_refresh_epoch),
+    }
+    # Older build_cache.py wrote ``mapping`` / ``last_refresh_epoch`` at the root;
+    # remove so :func:`app.model_cache_store.read_section` sees a single shape.
+    root.pop("mapping", None)
+    save_model_cache(root)
 
 
 def yf_lookup(symbol: str, exchange: str = "NSE") -> tuple[str, dict[str, str]]:
@@ -137,7 +140,9 @@ def yf_lookup(symbol: str, exchange: str = "NSE") -> tuple[str, dict[str, str]]:
     yf_symbol = f"{symbol}{suffix}"
     info = yf.Ticker(yf_symbol).info or {}
     industry = _normalise_name(info.get("industry") or info.get("sector"))
-    sector = _normalise_name(info.get("sector"))
+    sector = _normalise_name(info.get("sector") or "")
+    if not sector:
+        sector = industry
     return yf_symbol, {"industry": industry, "sector": sector}
 
 
@@ -161,8 +166,13 @@ def _entry_needs_yfinance(
 
 def warm_yfinance_cache(args: argparse.Namespace, project_root: Path) -> Path:
     cache_file = model_cache_path(project_root)
-    payload = read_cache(cache_file)
-    mapping: dict[str, dict[str, str]] = payload.get("mapping") or {}
+    root = load_model_cache()
+    if not isinstance(root, dict):
+        root = {}
+    ysec = root.get("yfinance") if isinstance(root.get("yfinance"), dict) else {}
+    mapping: dict[str, dict[str, str]] = dict(ysec.get("mapping") or {})
+    if not mapping and isinstance(root.get("mapping"), dict):
+        mapping = dict(root["mapping"])
 
     universe = load_universe_symbols()
     if args.limit and args.limit > 0:
@@ -215,24 +225,20 @@ def warm_yfinance_cache(args: argparse.Namespace, project_root: Path) -> Path:
 
             now = time.time()
             if now - saved_at >= 5.0:
-                payload["mapping"] = mapping
-                payload["last_refresh_epoch"] = float(payload.get("last_refresh_epoch") or 0.0) or time.time()
-                write_cache(cache_file, payload)
+                _persist_yfinance_section(mapping, now)
                 saved_at = now
 
             if args.sleep_ms and args.sleep_ms > 0:
                 time.sleep(args.sleep_ms / 1000.0)
 
-    payload["mapping"] = mapping
-    payload["last_refresh_epoch"] = float(payload.get("last_refresh_epoch") or 0.0) or time.time()
-    write_cache(cache_file, payload)
+    _persist_yfinance_section(mapping, time.time())
     print(f"Yfinance warmup done. Added/attempted: {len(missing)}. Took {time.time() - started:.1f}s.")
     return cache_file
 
 
 def warm_reference_cache() -> None:
     print()
-    print("Warming shared reference cache (.cache/reference_data_cache.json)...")
+    print("Warming shared reference cache section in .cache/model_cache.json...")
     try:
         nse_symbol_to_industry = get_nse_symbol_to_industry()
         isin_to_industry = get_isin_to_industry()
@@ -288,7 +294,7 @@ def warm_reference_cache() -> None:
 
 def warm_marketsmith_cache() -> None:
     print()
-    print("Warming MarketSmith market-regime cache (.cache/marketsmith_market_condition.json)...")
+    print("Warming MarketSmith market-regime section in .cache/model_cache.json...")
     try:
         data = get_marketsmith_market_condition()
     except Exception as exc:
@@ -331,12 +337,12 @@ def main() -> int:
     parser.add_argument(
         "--skip-reference-cache",
         action="store_true",
-        help="Skip warming shared reference_data_cache.json entries.",
+        help="Skip warming shared reference entries in model_cache.json.",
     )
     parser.add_argument(
         "--reference-only",
         action="store_true",
-        help="Warm only reference_data_cache.json (skip yfinance cache warmup).",
+        help="Warm only reference/MarketSmith sections (skip yfinance cache warmup).",
     )
     args = parser.parse_args()
 

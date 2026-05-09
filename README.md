@@ -39,8 +39,8 @@ The app is organized in three layers:
 2. **Shared model layer**
    - `app/portfolio_model.py`
    - Builds normalized holdings/MF/positions entities and shared aggregates
-   - Owns MF-underlyings metadata caching (`.cache/mfdata_underlyings_cache.json`)
-   - Owns MarketSmith regime snapshot (one fetch per calendar day; `.cache/marketsmith_market_condition.json`)
+   - Owns MF-underlyings metadata cache section inside `.cache/model_cache.json`
+   - Owns MarketSmith regime snapshot section (one fetch per business day) in `.cache/model_cache.json`
 3. **Presentation layers**
    - CLI: `app/main.py` (ASCII tables)
    - Web: `app/web.py` + `templates/` (FastAPI + HTML tabs + WS updates)
@@ -214,10 +214,10 @@ python scripts/build_cache.py --workers 6
 
 This writes/updates:
 - `.cache/model_cache.json`
-- `.cache/reference_data_cache.json` (NSE industry maps, Nifty 50 list, and
-  cash-equity lookup maps when a valid Kite access token is available)
-- `.cache/mfdata_underlyings_cache.json` (mfdata search/family-holdings metadata
-  used by both CLI and dashboard model enrichment; rotated monthly)
+  - `yfinance` (industry/sector mapping)
+  - `reference_data` (NSE industry maps, Nifty 50 list, cash-equity lookups)
+  - `mfdata` (search/family-holdings metadata used by CLI/dashboard enrichment)
+  - `marketsmith` (daily market regime snapshot)
 
 Optional backfill for older cache rows that have industry but missing sector:
 
@@ -321,9 +321,6 @@ Section keys accepted by `--sections` / `--exclude-sections`:
 ├── .access_token.json    # cached daily access token (gitignored, auto-created)
 ├── .cache/               # local runtime caches (gitignored)
 │   ├── dashboard_timing.log
-│   ├── mfdata_underlyings_cache.json
-│   ├── marketsmith_market_condition.json
-│   ├── reference_data_cache.json
 │   └── model_cache.json
 ├── app/
 │   ├── __init__.py       # package docstring + entry point index
@@ -493,7 +490,7 @@ Method used in code:
 - Parse CSV using `csv.DictReader`
 - Merge selected files (for example Nifty 50/100/200/500 and mid/small-cap lists)
   into in-memory maps
-- Persist and reuse via `.cache/reference_data_cache.json` with TTL-based refresh
+- Persist and reuse via `.cache/model_cache.json` (`reference_data` section) with refresh policy
   (`REFERENCE_CACHE_TTL_SECONDS`)
 
 ### mfdata.in (MF underlying aggregation)
@@ -512,8 +509,8 @@ weights.
 - **Coverage behavior** — schemes/families without holdings coverage are
   skipped from aggregation and shown as "Not aggregated" in the dashboard.
 - **Local metadata cache** — mfdata search + family-holdings responses are
-  cached to `.cache/mfdata_underlyings_cache.json` (shared by CLI and dashboard,
-  rotated monthly). Live market quotes/ticks are not persisted there.
+  cached to `.cache/model_cache.json` (`mfdata` section, shared by CLI and dashboard).
+  Live market quotes/ticks are not persisted there.
 
 ### MarketSmith India (market regime / dashboard banner)
 
@@ -527,11 +524,10 @@ weights.
   code can read it as soon as `readBootstrap()` runs.
 
 **Caching (aligned with other “day keyed” flows):** like MF holdings and MF
-underlying payloads in `app/web.py`, the regime snapshot is keyed by **local
-calendar day** ``time.strftime("%Y-%m-%d")`` — not wall-clock TTL seconds. Warm
-responses are kept in memory for the process lifetime; `.cache/marketsmith_market_condition.json`
-stores the same payload so a **restart on the same day** does not refetch until
-midnight rollover. Errors from the gateway are cached for that day as well so
+underlying payloads in `app/web.py`, the regime snapshot is keyed by **business
+day (IST, rolling at 09:00)**. Warm responses are kept in memory for the process
+lifetime; `.cache/model_cache.json` (`marketsmith` section) stores the same payload
+so a **restart on the same day** does not refetch. Errors from the gateway are cached for that day as well so
 a broken response does not retry on every `/dashboard` refresh. Optional
 ``.env``: ``MARKETSMITH_MS_AUTH`` only (see [.env.example](.env.example)).
 

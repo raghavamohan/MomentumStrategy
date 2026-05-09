@@ -20,6 +20,7 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 import logging
 from dotenv import load_dotenv
+from app.model_cache_store import load_model_cache, read_section, update_section
 
 
 EQUITY_EXCHANGES = ("NSE", "BSE")
@@ -101,9 +102,6 @@ except ValueError:
     _REFERENCE_CACHE_TTL_SECONDS = _DEFAULT_REFERENCE_CACHE_TTL_SECONDS
 _CACHE_TTL_SECONDS = _REFERENCE_CACHE_TTL_SECONDS
 _NIFTY50_CACHE_TTL_SECONDS = _REFERENCE_CACHE_TTL_SECONDS
-_YFINANCE_CACHE_DIR = _PROJECT_ROOT / ".cache"
-_YFINANCE_CACHE_FILE = _YFINANCE_CACHE_DIR / "model_cache.json"
-_REFERENCE_CACHE_FILE = _YFINANCE_CACHE_DIR / "reference_data_cache.json"
 _YFINANCE_CACHE_REFRESH_DAYS = 30.0
 
 _YFINANCE_CACHE_LAST_REFRESH_EPOCH = 0.0
@@ -130,14 +128,9 @@ def _prepare_reference_disk_cache_unlocked() -> None:
     global _REFERENCE_DISK_CACHE_LOADED, _REFERENCE_DISK_CACHE
     if _REFERENCE_DISK_CACHE_LOADED:
         return
-    _YFINANCE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    if _REFERENCE_CACHE_FILE.exists():
-        try:
-            loaded = json.loads(_REFERENCE_CACHE_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            loaded = {}
-        if isinstance(loaded, dict):
-            _REFERENCE_DISK_CACHE = loaded
+    loaded = read_section("reference_data")
+    if isinstance(loaded, dict):
+        _REFERENCE_DISK_CACHE = loaded
     _REFERENCE_DISK_CACHE_LOADED = True
 
 
@@ -147,10 +140,7 @@ def _save_reference_disk_cache_unlocked() -> None:
     if not _REFERENCE_DISK_CACHE_DIRTY:
         return
     try:
-        _YFINANCE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = _REFERENCE_CACHE_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(_REFERENCE_DISK_CACHE, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(_REFERENCE_CACHE_FILE)
+        update_section("reference_data", lambda _: dict(_REFERENCE_DISK_CACHE))
         _REFERENCE_DISK_CACHE_DIRTY = False
     except Exception as exc:
         logger.warning("Failed to persist shared reference cache: %s", exc)
@@ -248,31 +238,38 @@ def _load_yfinance_cache_if_needed() -> None:
         if _YFINANCE_CACHE_LOADED:
             return
 
-        _YFINANCE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        if _YFINANCE_CACHE_FILE.exists():
-            try:
-                payload = json.loads(_YFINANCE_CACHE_FILE.read_text(encoding="utf-8"))
-                mapping = payload.get("mapping") or {}
-                for k, v in mapping.items():
-                    # key is stored as "EXCHANGE|SYMBOL"
-                    try:
-                        exch, sym = str(k).split("|", 1)
-                    except ValueError:
-                        continue
-                    key = _yfinance_cache_key(exch, sym)
-                    if isinstance(v, dict):
-                        ind = _normalise_name(v.get("industry"))
-                        sec = _normalise_name(v.get("sector"))
-                    else:
-                        ind = _normalise_name(v)
-                        sec = ""
-                    _CACHED_YFINANCE_KEY_TO_INDUSTRY[key] = ind
-                    _CACHED_YFINANCE_KEY_TO_SECTOR[key] = sec
-                globals()["_YFINANCE_CACHE_LAST_REFRESH_EPOCH"] = float(
-                    payload.get("last_refresh_epoch") or 0.0
-                )
-            except Exception as exc:
-                logger.warning("Failed to read yfinance cache file: %s", exc)
+        try:
+            payload = read_section("yfinance")
+            mapping = payload.get("mapping") if isinstance(payload, dict) else {}
+            epoch = float(payload.get("last_refresh_epoch") or 0.0)
+            if not mapping:
+                root = load_model_cache()
+                if isinstance(root, dict) and isinstance(root.get("mapping"), dict):
+                    mapping = root["mapping"]
+                    if not epoch:
+                        epoch = float(root.get("last_refresh_epoch") or 0.0)
+                    logger.debug(
+                        "Yfinance mappings loaded from legacy root-level mapping key "
+                        "(re-run scripts/build_cache.py to normalize model_cache.json)"
+                    )
+            for k, v in (mapping or {}).items():
+                # key is stored as "EXCHANGE|SYMBOL"
+                try:
+                    exch, sym = str(k).split("|", 1)
+                except ValueError:
+                    continue
+                key = _yfinance_cache_key(exch, sym)
+                if isinstance(v, dict):
+                    ind = _normalise_name(v.get("industry"))
+                    sec = _normalise_name(v.get("sector"))
+                else:
+                    ind = _normalise_name(v)
+                    sec = ""
+                _CACHED_YFINANCE_KEY_TO_INDUSTRY[key] = ind
+                _CACHED_YFINANCE_KEY_TO_SECTOR[key] = sec
+            globals()["_YFINANCE_CACHE_LAST_REFRESH_EPOCH"] = epoch
+        except Exception as exc:
+            logger.warning("Failed to read yfinance cache file: %s", exc)
 
         _YFINANCE_CACHE_LOADED = True
 
@@ -281,10 +278,6 @@ def _persist_yfinance_cache() -> None:
     """Persist cached yfinance mapping to disk (best-effort)."""
     with _YFINANCE_CACHE_LOCK:
         try:
-            import json
-
-            _YFINANCE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-            tmp = _YFINANCE_CACHE_FILE.with_suffix(".tmp")
             mapping: dict[str, dict[str, str]] = {}
             all_keys = set(_CACHED_YFINANCE_KEY_TO_INDUSTRY) | set(
                 _CACHED_YFINANCE_KEY_TO_SECTOR
@@ -301,8 +294,7 @@ def _persist_yfinance_cache() -> None:
                 "mapping": mapping,
                 "last_refresh_epoch": _YFINANCE_CACHE_LAST_REFRESH_EPOCH,
             }
-            tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-            tmp.replace(_YFINANCE_CACHE_FILE)
+            update_section("yfinance", lambda _: dict(payload))
         except Exception as exc:
             logger.warning("Failed to persist yfinance cache: %s", exc)
 
@@ -398,7 +390,9 @@ def _maybe_start_single_symbol_yfinance_refresh(exchange: str, symbol: str) -> N
                 yf_symbol = f"{yf_symbol}{suffix}"
             info = yf.Ticker(yf_symbol).info or {}
             y_ind = _normalise_name(info.get("industry") or info.get("sector"))
-            y_sec = _normalise_name(info.get("sector"))
+            y_sec = _normalise_name(info.get("sector") or "")
+            if not y_sec:
+                y_sec = y_ind
 
             global _YFINANCE_CACHE_LAST_REFRESH_EPOCH
             with _YFINANCE_CACHE_LOCK:
@@ -1068,8 +1062,9 @@ def resolve_equity_sector(
 ) -> str:
     """Resolve a display **sector** for NSE/BSE cash equities.
 
-    Order: yfinance ``sector`` (cache, then network if no cache row), Kite
-    ``sector`` column, then NSE index ``Industry`` as a coarse fallback label.
+    Order: yfinance ``sector`` (else cached ``industry`` for the same key(s)),
+    Kite ``sector`` column, then NSE CSV ``Industry`` mapped by symbol (also
+    used for BSE when the symbol matches), then reference ISIN→industry maps.
     """
     clean_symbol = _normalise_symbol(symbol)
     clean_exchange = str(exchange or "").strip().upper()
@@ -1092,21 +1087,52 @@ def resolve_equity_sector(
     sec = ""
     if clean_symbol:
         _maybe_start_monthly_yfinance_refresh()
-        y_key = _yfinance_cache_key(clean_exchange, clean_symbol)
+        # yfinance cache keys are exchange-scoped ("NSE|TITAN" vs "BSE|TITAN").
+        # Offline warmup (build_cache) defaults to NSE; use sibling exchange as
+        # fallback so BSE holdings still reuse the same fundamental sector label.
+        yfinance_keys = [_yfinance_cache_key(clean_exchange, clean_symbol)]
+        if clean_exchange == "NSE":
+            yfinance_keys.append(_yfinance_cache_key("BSE", clean_symbol))
+        elif clean_exchange == "BSE":
+            yfinance_keys.append(_yfinance_cache_key("NSE", clean_symbol))
 
         _load_yfinance_cache_if_needed()
         with _YFINANCE_CACHE_LOCK:
-            cached_sec = _CACHED_YFINANCE_KEY_TO_SECTOR.get(y_key)
-            yf_has_row = y_key in _CACHED_YFINANCE_KEY_TO_INDUSTRY
+            cached_sec = ""
+            cached_ind = ""
+            matched_key = None
+            matched_ind_key = None
+            for y_key in yfinance_keys:
+                cs = _CACHED_YFINANCE_KEY_TO_SECTOR.get(y_key)
+                if cs and not cached_sec:
+                    cached_sec = cs
+                    matched_key = y_key
+                ci = _CACHED_YFINANCE_KEY_TO_INDUSTRY.get(y_key) or ""
+                if ci and not cached_ind:
+                    cached_ind = ci
+                    matched_ind_key = y_key
+                if cached_sec:
+                    break
 
         if cached_sec:
             sec = cached_sec
             logger.debug(
-                "Sector for %s resolved via yfinance cache: %s",
+                "Sector for %s resolved via yfinance cache (%s|%s): %s",
                 f"{clean_exchange}:{clean_symbol}",
+                matched_key[0] if matched_key else "?",
+                matched_key[1] if matched_key else "?",
                 sec,
             )
-        elif not yf_has_row:
+        elif cached_ind:
+            sec = cached_ind
+            logger.debug(
+                "Sector for %s resolved via yfinance cache industry fallback (%s|%s): %s",
+                f"{clean_exchange}:{clean_symbol}",
+                matched_ind_key[0] if matched_ind_key else "?",
+                matched_ind_key[1] if matched_ind_key else "?",
+                sec,
+            )
+        else:
             # Do not block request path with yfinance network fetches.
             # Queue a best-effort background refresh and fall back to other sources.
             _maybe_start_single_symbol_yfinance_refresh(clean_exchange, clean_symbol)
@@ -1115,7 +1141,7 @@ def resolve_equity_sector(
         sec = _normalise_name(token_to_kite_sector.get(token))
     if not sec and clean_symbol:
         sec = _normalise_name(symbol_to_kite_sector.get((clean_exchange, clean_symbol)))
-    if not sec and clean_exchange == "NSE" and clean_symbol:
+    if not sec and clean_symbol:
         sec = _normalise_name(nse_symbol_to_industry.get(clean_symbol))
     if not sec:
         isin = ""
@@ -1123,6 +1149,11 @@ def resolve_equity_sector(
             isin = _normalise_isin(token_to_isin.get(token))
         if not isin and clean_symbol:
             isin = _normalise_isin(symbol_to_isin.get((clean_exchange, clean_symbol)))
+        if not isin and clean_symbol:
+            if clean_exchange == "BSE":
+                isin = _normalise_isin(symbol_to_isin.get(("NSE", clean_symbol)))
+            elif clean_exchange == "NSE":
+                isin = _normalise_isin(symbol_to_isin.get(("BSE", clean_symbol)))
         if isin:
             sec = _normalise_name(isin_to_industry.get(isin))
 

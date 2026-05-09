@@ -13,7 +13,6 @@ from difflib import SequenceMatcher
 import json
 import logging
 import os
-from pathlib import Path
 import re
 import threading
 import time
@@ -23,6 +22,7 @@ from urllib.parse import urlencode
 from urllib.request import Request as URLRequest, urlopen
 
 from app.instruments import resolve_equity_sector, symbol_with_company_name
+from app.model_cache_store import current_effective_day_ist, read_section, update_section
 
 logger = logging.getLogger(__name__)
 
@@ -31,13 +31,11 @@ FNO_EXCHANGES = {"NFO", "BFO", "CDS", "BCD", "MCX"}
 
 MFDATA_BASE_URL = "https://mfdata.in"
 MFDATA_HTTP_TIMEOUT_SECONDS = 20
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-MFDATA_CACHE_FILE = PROJECT_ROOT / ".cache" / "mfdata_underlyings_cache.json"
 _MFDATA_CACHE_LOCK = threading.Lock()
 _MFDATA_SEARCH_CACHE: dict[str, list[dict[str, Any]]] = {}
 _MFDATA_HOLDINGS_CACHE: dict[int, dict[str, Any] | None] = {}
 _MFDATA_DISK_CACHE_LOADED = False
-_MFDATA_DISK_CACHE: dict[str, Any] = {"meta": {"cache_month": ""}, "search": {}, "holdings": {}}
+_MFDATA_DISK_CACHE: dict[str, Any] = {"meta": {"cache_day": ""}, "search": {}, "holdings": {}}
 _MFDATA_DISK_CACHE_DIRTY = False
 
 
@@ -401,39 +399,31 @@ def _parse_pct(value: Any) -> float:
         return 0.0
 
 
-def _current_month_token() -> str:
-    return time.strftime("%Y-%m")
+def _current_cache_day_token() -> str:
+    return current_effective_day_ist(cutoff_hour=9)
 
 
 def _save_mfdata_disk_cache_locked() -> None:
-    MFDATA_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    MFDATA_CACHE_FILE.write_text(
-        json.dumps(_MFDATA_DISK_CACHE, ensure_ascii=True, separators=(",", ":")),
-        encoding="utf-8",
-    )
+    update_section("mfdata", lambda _: dict(_MFDATA_DISK_CACHE))
 
 
 def _prepare_mfdata_cache_locked() -> None:
     global _MFDATA_DISK_CACHE_LOADED, _MFDATA_DISK_CACHE, _MFDATA_DISK_CACHE_DIRTY
     if not _MFDATA_DISK_CACHE_LOADED:
-        if MFDATA_CACHE_FILE.exists():
-            try:
-                loaded = json.loads(MFDATA_CACHE_FILE.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                loaded = {}
-            if isinstance(loaded, dict):
-                _MFDATA_DISK_CACHE = {
-                    "meta": loaded.get("meta") if isinstance(loaded.get("meta"), dict) else {"cache_month": ""},
-                    "search": loaded.get("search") if isinstance(loaded.get("search"), dict) else {},
-                    "holdings": loaded.get("holdings") if isinstance(loaded.get("holdings"), dict) else {},
-                }
+        loaded = read_section("mfdata")
+        if isinstance(loaded, dict):
+            _MFDATA_DISK_CACHE = {
+                "meta": loaded.get("meta") if isinstance(loaded.get("meta"), dict) else {"cache_day": ""},
+                "search": loaded.get("search") if isinstance(loaded.get("search"), dict) else {},
+                "holdings": loaded.get("holdings") if isinstance(loaded.get("holdings"), dict) else {},
+            }
         _MFDATA_DISK_CACHE_LOADED = True
 
-    current_month = _current_month_token()
-    cached_month = str((_MFDATA_DISK_CACHE.get("meta") or {}).get("cache_month") or "")
-    if cached_month == current_month:
+    current_day = _current_cache_day_token()
+    cached_day = str((_MFDATA_DISK_CACHE.get("meta") or {}).get("cache_day") or "")
+    if cached_day == current_day:
         return
-    _MFDATA_DISK_CACHE["meta"] = {"cache_month": current_month}
+    _MFDATA_DISK_CACHE["meta"] = {"cache_day": current_day}
     _MFDATA_DISK_CACHE["search"] = {}
     _MFDATA_DISK_CACHE["holdings"] = {}
     _MFDATA_SEARCH_CACHE.clear()
@@ -442,7 +432,7 @@ def _prepare_mfdata_cache_locked() -> None:
     try:
         _save_mfdata_disk_cache_locked()
         _MFDATA_DISK_CACHE_DIRTY = False
-    except OSError:
+    except Exception:
         pass
 
 
@@ -455,7 +445,7 @@ def _flush_mfdata_disk_cache() -> None:
         try:
             _save_mfdata_disk_cache_locked()
             _MFDATA_DISK_CACHE_DIRTY = False
-        except OSError:
+        except Exception:
             pass
 
 
@@ -639,7 +629,6 @@ def build_mf_underlying_breakdown(
 # MarketSmith India — market regime (dashboard / model context)
 # ---------------------------------------------------------------------------
 
-MARKETSMITH_CACHE_FILE = PROJECT_ROOT / ".cache" / "marketsmith_market_condition.json"
 _MARKETSMITH_TOOL_URL = "https://marketsmithindia.com/mstool/marketconditionhistory.jsp"
 _MARKETSMITH_HISTORY_URL = (
     "https://marketsmithindia.com/gateway/simple-api/ms-india/"
@@ -676,8 +665,8 @@ _MARKETSMITH_MONTH_LABELS = (
 
 
 def _marketsmith_calendar_day_token() -> str:
-    """Local calendar day key; matches :func:`app.web._today_cache_token` semantics."""
-    return time.strftime("%Y-%m-%d")
+    """IST business day key, rolling over at 09:00."""
+    return current_effective_day_ist(cutoff_hour=9)
 
 
 def _marketsmith_ms_auth() -> str:
@@ -871,12 +860,7 @@ def _marketsmith_attach_meta(model: dict[str, Any], day: str) -> dict[str, Any]:
 
 
 def _marketsmith_read_disk_for_day(day: str) -> dict[str, Any] | None:
-    if not MARKETSMITH_CACHE_FILE.is_file():
-        return None
-    try:
-        raw = json.loads(MARKETSMITH_CACHE_FILE.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    raw = read_section("marketsmith")
     meta = raw.get("meta") if isinstance(raw, dict) else None
     if not isinstance(meta, dict) or meta.get("cached_day") != day:
         return None
@@ -886,17 +870,8 @@ def _marketsmith_read_disk_for_day(day: str) -> dict[str, Any] | None:
 
 def _marketsmith_write_disk(day: str, model: dict[str, Any]) -> None:
     try:
-        MARKETSMITH_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        MARKETSMITH_CACHE_FILE.write_text(
-            json.dumps(
-                {"meta": {"cached_day": day}, "model": model},
-                ensure_ascii=True,
-                separators=(",", ":"),
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-    except OSError as exc:
+        update_section("marketsmith", lambda _: {"meta": {"cached_day": day}, "model": model})
+    except Exception as exc:
         logger.warning("MarketSmith disk cache write failed: %s", exc)
 
 
@@ -905,8 +880,8 @@ def get_marketsmith_market_condition() -> dict[str, Any]:
 
     Cached **once per local calendar day** (same convention as MF holdings /
     MF underlyings in :mod:`app.web`): serves from process memory when warm,
-    else from ``.cache/marketsmith_market_condition.json``, else one HTTPS fetch
-    for the day. Optional env ``MARKETSMITH_MS_AUTH`` overrides the gateway
+    else from the ``marketsmith`` section inside ``.cache/model_cache.json``,
+    else one HTTPS fetch for the day. Optional env ``MARKETSMITH_MS_AUTH`` overrides the gateway
     ``ms-auth`` query parameter.
     """
     global _MARKET_CONDITION_MEMORY_DAY, _MARKET_CONDITION_MEMORY
