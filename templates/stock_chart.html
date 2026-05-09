@@ -333,6 +333,13 @@
               c: Number(c.close),
             };
           });
+          const candleTimesUtc = candlePoints
+            .map(function (c) {
+              return c.x;
+            })
+            .sort(function (a, b) {
+              return a - b;
+            });
           const volPoints = candlesOk.map(function (c) {
             return { x: utcDayMs(c.date), y: Number(c.volume) };
           });
@@ -358,9 +365,219 @@
           let y1MeasuredLeftPx = 0;
           const stockChartRef = { chart: null };
 
+          function createStockCrosshairPlugin(getVolumeOn, candleTimesMs) {
+            const lineColor = 'rgba(148, 163, 184, 0.92)';
+            const pillBg = 'rgba(15, 23, 42, 0.92)';
+            const labelFont = '600 11px system-ui, -apple-system, "Segoe UI", sans-serif';
+
+            function candleTimeAtPixel(ix, chart) {
+              const times = candleTimesMs;
+              const n = times.length;
+              if (!n || !chart || !chart.scales || !chart.scales.x) {
+                return null;
+              }
+              const xScale = chart.scales.x;
+              let bestIdx = 0;
+              let bestDist = Infinity;
+              for (let i = 0; i < n; i++) {
+                const px = xScale.getPixelForValue(times[i]);
+                if (typeof px !== 'number' || isNaN(px)) {
+                  continue;
+                }
+                const d = Math.abs(ix - px);
+                if (d < bestDist) {
+                  bestDist = d;
+                  bestIdx = i;
+                }
+              }
+              if (!isFinite(bestDist)) {
+                return null;
+              }
+              let maxHit = 12;
+              if (n >= 2) {
+                const p0 = xScale.getPixelForValue(times[0]);
+                const p1 = xScale.getPixelForValue(times[n - 1]);
+                if (typeof p0 === 'number' && typeof p1 === 'number' && !isNaN(p0) && !isNaN(p1)) {
+                  const span = Math.abs(p1 - p0);
+                  maxHit = (span / (n - 1)) * 0.55;
+                }
+              }
+              if (bestDist > maxHit) {
+                return null;
+              }
+              return times[bestIdx];
+            }
+
+            return {
+              id: 'stockCrosshair',
+              afterInit: function (chart) {
+                const canvasEl = chart.canvas;
+                const state = { active: false, x: 0, y: 0 };
+                chart.$crosshairState = state;
+                let moveRaf = null;
+
+                function pointer(evt) {
+                  return Chart.helpers.getRelativePosition(evt, chart);
+                }
+
+                function requestRedraw() {
+                  if (moveRaf === null) {
+                    moveRaf = window.requestAnimationFrame(function () {
+                      moveRaf = null;
+                      chart.draw();
+                    });
+                  }
+                }
+
+                function onMove(evt) {
+                  const p = pointer(evt);
+                  state.x = p.x;
+                  state.y = p.y;
+                  state.active = true;
+                  requestRedraw();
+                }
+
+                function onLeave() {
+                  state.active = false;
+                  canvasEl.style.cursor = '';
+                  if (moveRaf !== null) {
+                    window.cancelAnimationFrame(moveRaf);
+                    moveRaf = null;
+                  }
+                  chart.draw();
+                }
+
+                canvasEl.addEventListener('mousemove', onMove);
+                canvasEl.addEventListener('mouseleave', onLeave);
+                chart.$crosshairCleanup = function () {
+                  canvasEl.removeEventListener('mousemove', onMove);
+                  canvasEl.removeEventListener('mouseleave', onLeave);
+                  if (moveRaf !== null) {
+                    window.cancelAnimationFrame(moveRaf);
+                    moveRaf = null;
+                  }
+                  delete chart.$crosshairState;
+                  delete chart.$crosshairCleanup;
+                };
+              },
+              beforeDestroy: function (chart) {
+                if (chart.$crosshairCleanup) {
+                  chart.$crosshairCleanup();
+                }
+              },
+              afterDraw: function (chart) {
+                const state = chart.$crosshairState;
+                if (!state || !state.active) {
+                  return;
+                }
+                const ca = chart.chartArea;
+                if (!ca || ca.width <= 0 || ca.height <= 0) {
+                  return;
+                }
+                const xScale = chart.scales.x;
+                const yScale = chart.scales.y;
+                const y1Scale = chart.scales.y1;
+                if (!xScale || !yScale) {
+                  return;
+                }
+
+                const mx = state.x;
+                const my = state.y;
+                const ix = Math.min(Math.max(mx, ca.left), ca.right);
+                const iy = Math.min(Math.max(my, ca.top), ca.bottom);
+                const ctx = chart.ctx;
+                const canvasEl = chart.canvas;
+
+                const snapMs = candleTimeAtPixel(ix, chart);
+                const vx =
+                  snapMs != null ? xScale.getPixelForValue(snapMs) : null;
+
+                ctx.save();
+                ctx.strokeStyle = lineColor;
+                ctx.lineWidth = 1;
+                ctx.setLineDash([5, 4]);
+                ctx.beginPath();
+                if (vx != null && typeof vx === 'number' && !isNaN(vx)) {
+                  ctx.moveTo(vx, ca.top);
+                  ctx.lineTo(vx, ca.bottom);
+                }
+                ctx.moveTo(ca.left, iy);
+                ctx.lineTo(ca.right, iy);
+                ctx.stroke();
+                ctx.setLineDash([]);
+
+                const priceRaw = yScale.getValueForPixel(iy);
+                let dateStr = '';
+                if (snapMs != null && !isNaN(Number(snapMs))) {
+                  dateStr = luxon.DateTime.fromMillis(Number(snapMs), { zone: 'utc' }).toFormat(
+                    'dd LLL yyyy'
+                  );
+                }
+                const priceStr =
+                  priceRaw != null && isFinite(Number(priceRaw)) ? '₹' + Number(priceRaw).toFixed(2) : '';
+
+                let volStr = '';
+                if (snapMs != null && getVolumeOn() && y1Scale && y1Scale.display) {
+                  const volRaw = y1Scale.getValueForPixel(iy);
+                  if (volRaw != null && isFinite(Number(volRaw))) {
+                    volStr = formatVolumeTick(volRaw);
+                  }
+                }
+
+                const pad = 4;
+                ctx.font = labelFont;
+
+                if (dateStr && vx != null && typeof vx === 'number' && !isNaN(vx)) {
+                  const tw = ctx.measureText(dateStr).width;
+                  const tx = Math.min(Math.max(vx, ca.left + tw / 2 + pad), ca.right - tw / 2 - pad);
+                  const ty = ca.bottom + 5;
+                  ctx.textAlign = 'center';
+                  ctx.textBaseline = 'top';
+                  ctx.fillStyle = pillBg;
+                  ctx.fillRect(tx - tw / 2 - pad, ty - 1, tw + pad * 2, 17);
+                  ctx.fillStyle = '#e2e8f0';
+                  ctx.fillText(dateStr, tx, ty);
+                }
+
+                if (priceStr) {
+                  ctx.textAlign = 'left';
+                  ctx.textBaseline = 'middle';
+                  const pw = ctx.measureText(priceStr).width;
+                  const lx = ca.right + 6;
+                  ctx.fillStyle = pillBg;
+                  ctx.fillRect(lx - 3, iy - 9, pw + pad * 2 + 3, 18);
+                  ctx.fillStyle = '#e2e8f0';
+                  ctx.fillText(priceStr, lx, iy);
+                }
+
+                if (volStr) {
+                  ctx.textAlign = 'right';
+                  ctx.textBaseline = 'middle';
+                  const vw = ctx.measureText(volStr).width;
+                  const rx = ca.left - 6;
+                  ctx.fillStyle = pillBg;
+                  ctx.fillRect(rx - vw - pad * 2 + 1, iy - 9, vw + pad * 2 + 4, 18);
+                  ctx.fillStyle = '#cbd5e1';
+                  ctx.fillText(volStr, rx, iy);
+                }
+
+                ctx.restore();
+
+                const inside =
+                  mx >= ca.left && mx <= ca.right && my >= ca.top && my <= ca.bottom;
+                canvasEl.style.cursor = inside ? 'crosshair' : '';
+              },
+            };
+          }
+
           function buildChart() {
             try {
               return new Chart(canvas.getContext('2d'), {
+                plugins: [
+                  createStockCrosshairPlugin(function () {
+                    return volumeUi.on;
+                  }, candleTimesUtc),
+                ],
                 data: {
                   datasets: [
                     {
