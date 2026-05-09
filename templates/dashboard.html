@@ -64,8 +64,8 @@
       </div>
       <div class="kpi-card">
         <div class="kpi-label">Overall P&amp;L</div>
-        <div class="kpi-value {{ portfolio_summary.overall_pnl|sign_class }}" id="stat-portfolio-overall-pnl">
-          {{ portfolio_summary.overall_pnl|inr }}
+        <div class="kpi-value neutral kpi-pending" id="stat-portfolio-overall-pnl" aria-busy="true" title="Mutual fund totals loading…">
+          …
         </div>
       </div>
       <div class="kpi-card">
@@ -548,9 +548,11 @@
 <script>
   (function () {
     const SNAPSHOT_MS = {{ snapshot_interval_ms }};
+    const LIVE_PRICE_KPI_DEBOUNCE_MS = 48;
     const TABLE_SORT_STORAGE_PREFIX = 'momentumDashboard:tableSort:';
     const TABLE_DENSITY_STORAGE_KEY = 'momentumDashboard:tableDensity';
     let toastTimer = null;
+    let livePriceKpiTimer = null;
     let isRefreshing = false;
     let selectedTab = 'equity';
     let selectedSection = 'portfolio';
@@ -1080,6 +1082,24 @@
         return;
       }
       el.textContent = formatInr(value);
+    }
+
+    function setOverallPnlPending(pending) {
+      const el = document.getElementById('stat-portfolio-overall-pnl');
+      if (!el) {
+        return;
+      }
+      if (pending) {
+        el.textContent = '…';
+        el.classList.remove('positive', 'negative');
+        el.classList.add('neutral', 'kpi-pending');
+        el.setAttribute('aria-busy', 'true');
+        el.title = 'Mutual fund totals loading…';
+      } else {
+        el.removeAttribute('aria-busy');
+        el.removeAttribute('title');
+        el.classList.remove('kpi-pending');
+      }
     }
 
     function updateHoldingRow(tr, ltp) {
@@ -1665,6 +1685,17 @@
       });
     }
 
+    function scheduleLivePriceKpiRefresh() {
+      if (livePriceKpiTimer !== null) {
+        window.clearTimeout(livePriceKpiTimer);
+      }
+      livePriceKpiTimer = window.setTimeout(function () {
+        livePriceKpiTimer = null;
+        recalcSummaries();
+        reapplyPersistedTableSorts();
+      }, LIVE_PRICE_KPI_DEBOUNCE_MS);
+    }
+
     function applyLtpMap(ltpMap) {
       Object.keys(ltpMap).forEach(function (tok) {
         const price = ltpMap[tok];
@@ -1690,8 +1721,7 @@
       });
       syncIndexQuoteDom();
       applyHoldingFilters();
-      recalcSummaries();
-      reapplyPersistedTableSorts();
+      scheduleLivePriceKpiRefresh();
     }
 
     function recalcSummaries() {
@@ -1769,7 +1799,12 @@
 
       setPlainStat('stat-portfolio-invested', investedTotal);
       setPlainStat('stat-portfolio-current', totalCurrent);
-      setSignStat('stat-portfolio-overall-pnl', overall);
+      if (!mfHoldingsLoaded) {
+        setOverallPnlPending(true);
+      } else {
+        setOverallPnlPending(false);
+        setSignStat('stat-portfolio-overall-pnl', overall);
+      }
       setSignStat('stat-portfolio-positions-pnl', positionsPnl);
 
       const eqInv = bootstrap.equityInvestedTotal;
@@ -2187,6 +2222,19 @@
     let mfHoldingsCachedPayload = null;
     let mfUnderlyingsCachedPayloadByTone = {};
 
+    function syncBootstrapMfTotalsFromCachedPayload() {
+      const payload = mfHoldingsCachedPayload;
+      if (!payload) {
+        return;
+      }
+      const totals = payload.totals || {};
+      bootstrap.mfTotals = {
+        invested: Number(totals.invested) || 0,
+        current: Number(totals.current) || 0,
+        pnl: Number(totals.pnl) || 0,
+      };
+    }
+
     function currentDayToken() {
       const now = new Date();
       const yyyy = now.getFullYear();
@@ -2320,8 +2368,8 @@
       // Snapshot refresh replaces tab DOM, so cached MF data must repaint
       // before honoring "loaded" flags.
       if (mfHoldingsCachedPayload) {
-        renderMfHoldings(mfHoldingsCachedPayload);
         mfHoldingsLoaded = true;
+        renderMfHoldings(mfHoldingsCachedPayload);
         loadMfUnderlyingBreakdown();
         return;
       }
@@ -2335,15 +2383,19 @@
         const response = await fetch('/dashboard/mf-holdings', { cache: 'no-store' });
         if (!response.ok) {
           host.innerHTML = '<div class="card empty">Unable to load mutual fund holdings right now.</div>';
+          mfHoldingsLoaded = true;
+          recalcSummaries();
           return;
         }
         const payload = await response.json();
         mfHoldingsCachedPayload = payload;
-        renderMfHoldings(payload);
         mfHoldingsLoaded = true;
+        renderMfHoldings(payload);
         loadMfUnderlyingBreakdown();
       } catch (_err) {
         host.innerHTML = '<div class="card empty">Unable to load mutual fund holdings right now.</div>';
+        mfHoldingsLoaded = true;
+        recalcSummaries();
       } finally {
         mfHoldingsLoading = false;
       }
@@ -2541,8 +2593,14 @@
           return;
         }
 
+        if (livePriceKpiTimer !== null) {
+          window.clearTimeout(livePriceKpiTimer);
+          livePriceKpiTimer = null;
+        }
+
         currentRoot.innerHTML = nextRoot.innerHTML;
         bootstrap = readBootstrap();
+        syncBootstrapMfTotalsFromCachedPayload();
         renderIndexQuotes();
         bindSections();
         activateSection(selectedSection || requestedSection);
@@ -2597,6 +2655,7 @@
     selectedTab = getActiveTab();
     tableDensity = readTableDensityPreference();
     ensureMfClientCacheDay();
+    syncBootstrapMfTotalsFromCachedPayload();
     applyInitialTableSorts();
     initEquityHoldingsControls();
     stampUpdatedNow();
