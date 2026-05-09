@@ -32,6 +32,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from app.auth import (  # noqa: E402
     build_authenticated_client,
+    get_kite_client,
     load_cached_access_token,
     load_credentials,
     validate_kite_session,
@@ -245,6 +246,20 @@ def warm_yfinance_cache(args: argparse.Namespace, project_root: Path) -> Path:
     return cache_file
 
 
+def _get_authenticated_kite_client() -> Any:
+    token = load_cached_access_token()
+    if token:
+        api_key, _ = load_credentials()
+        candidate = build_authenticated_client(api_key, token)
+        if validate_kite_session(candidate):
+            return candidate
+        print("Cached Kite token expired. Starting interactive login...")
+        return get_kite_client()
+
+    print("No cached Kite access token found. Starting interactive login...")
+    return get_kite_client()
+
+
 def warm_reference_cache() -> None:
     print()
     print("Warming shared reference cache section in .cache/model_cache.json...")
@@ -261,32 +276,24 @@ def warm_reference_cache() -> None:
     except Exception as exc:
         print(f"NSE reference warmup FAILED: {exc}")
 
-    token = load_cached_access_token()
-    if not token:
-        print("Cash-equity reference warmup skipped: no cached Kite access token.")
-    else:
-        try:
-            api_key, _ = load_credentials()
-            kite = build_authenticated_client(api_key, token)
-            if not validate_kite_session(kite):
-                print("Cash-equity reference warmup skipped: cached Kite token expired.")
-            else:
-                token_to_name, symbol_to_name = get_cash_equity_name_lookups(kite)
-                token_to_sector, symbol_to_sector = get_cash_equity_kite_sector_lookups(kite)
-                token_to_isin, symbol_to_isin = get_cash_equity_isin_lookups(kite)
-                nse_symbol_to_token = get_nse_symbol_to_token_lookup(kite)
-                print(
-                    "Cash-equity references: "
-                    f"token->name={len(token_to_name)}, "
-                    f"symbol->name={len(symbol_to_name)}, "
-                    f"token->sector={len(token_to_sector)}, "
-                    f"symbol->sector={len(symbol_to_sector)}, "
-                    f"token->isin={len(token_to_isin)}, "
-                    f"symbol->isin={len(symbol_to_isin)}, "
-                    f"nse_symbol->token={len(nse_symbol_to_token)}"
-                )
-        except Exception as exc:
-            print(f"Cash-equity reference warmup FAILED: {exc}")
+    try:
+        kite = _get_authenticated_kite_client()
+        token_to_name, symbol_to_name = get_cash_equity_name_lookups(kite)
+        token_to_sector, symbol_to_sector = get_cash_equity_kite_sector_lookups(kite)
+        token_to_isin, symbol_to_isin = get_cash_equity_isin_lookups(kite)
+        nse_symbol_to_token = get_nse_symbol_to_token_lookup(kite)
+        print(
+            "Cash-equity references: "
+            f"token->name={len(token_to_name)}, "
+            f"symbol->name={len(symbol_to_name)}, "
+            f"token->sector={len(token_to_sector)}, "
+            f"symbol->sector={len(symbol_to_sector)}, "
+            f"token->isin={len(token_to_isin)}, "
+            f"symbol->isin={len(symbol_to_isin)}, "
+            f"nse_symbol->token={len(nse_symbol_to_token)}"
+        )
+    except Exception as exc:
+        print(f"Cash-equity reference warmup FAILED: {exc}")
 
     try:
         cache_debug = get_reference_cache_debug_snapshot()
@@ -304,16 +311,8 @@ def warm_reference_cache() -> None:
 def warm_mfdata_cache() -> None:
     print()
     print("Warming mfdata section in .cache/model_cache.json...")
-    token = load_cached_access_token()
-    if not token:
-        print("mfdata warmup skipped: no cached Kite access token.")
-        return
     try:
-        api_key, _ = load_credentials()
-        kite = build_authenticated_client(api_key, token)
-        if not validate_kite_session(kite):
-            print("mfdata warmup skipped: cached Kite token expired.")
-            return
+        kite = _get_authenticated_kite_client()
         try:
             mf_raw = kite.mf_holdings() or []
         except PermissionException:
