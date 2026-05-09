@@ -20,9 +20,12 @@
   Additional data:
     * user_profile        <- KiteConnect.profile() best-effort fetch
     * watch_list          <- Nifty 50 symbols + KiteConnect.quote(...)
+    * market_condition    <- MarketSmith India gateway (model; see ``app.portfolio_model``)
+    * dashboard_bootstrap JSON includes ``marketCondition`` (camelCase) for client startup
 
   Layout:
-  * Topbar with title, live index marquee, and Logout button.
+  * Topbar: title → KPI strip → market trend strip → index marquee (+ meta row).
+  * Market trend uses DOM id ``msi-market-strip-outer`` (outside ``#dashboard-root`` for snapshot sync).
   * Section nav (Profile, Portfolio, Watch List).
   * Portfolio tab nav (5 tabs, accessible buttons with role="tab").
   * One `<section class="panel">` per portfolio tab, one active at a time.
@@ -43,6 +46,70 @@
 {% block title %}Dashboard &middot; {{ dashboard_name }}{% endblock %}
 
 {% block content %}
+  <style>
+    .msi-market-strip {
+      margin-top: 4px;
+      margin-bottom: 0;
+      padding: 10px 14px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border);
+      background: var(--surface);
+      box-shadow: var(--shadow-card);
+      border-left-width: 4px;
+      border-left-style: solid;
+    }
+    .msi-market-strip--uptrend { border-left-color: var(--positive); }
+    .msi-market-strip--downtrend { border-left-color: var(--negative); }
+    .msi-market-strip--caution { border-left-color: #eab308; }
+    .msi-market-strip--unknown { border-left-color: var(--neutral); }
+    .msi-market-strip-inner {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 8px 12px;
+    }
+    .msi-market-strip-main {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 6px 12px;
+      min-width: 0;
+    }
+    .msi-market-strip-kicker {
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .msi-market-strip-headline {
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }
+    .msi-market-strip-detail {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .msi-market-strip-detail .msi-nifty-pct.positive { color: var(--positive); }
+    .msi-market-strip-detail .msi-nifty-pct.negative { color: var(--negative); }
+    .msi-market-strip-detail .msi-nifty-pct.neutral { color: var(--neutral); }
+    /* Tighten flex gap visually: KPI → market trend, and market trend → marquee */
+    .dashboard-kpi-strip + #msi-market-strip-outer {
+      margin-top: -8px;
+    }
+    .dashboard-topbar .topbar-main {
+      margin-top: -8px;
+    }
+    .msi-market-strip-error {
+      margin-top: 8px;
+      color: var(--negative);
+      font-size: 12px;
+    }
+  </style>
+
   <div class="topbar dashboard-topbar">
     <div class="dashboard-topbar-header">
       <div class="dashboard-title-block">
@@ -75,6 +142,37 @@
         </div>
       </div>
     </div>
+
+    <div id="msi-market-strip-outer">
+      <div
+        class="msi-market-strip msi-market-strip--{{ market_condition.tone }}"
+        id="msi-market-strip"
+        role="region"
+        aria-label="Market trend"
+      >
+        <div class="msi-market-strip-inner">
+          <div class="msi-market-strip-main">
+            <span class="msi-market-strip-kicker">Market trend</span>
+            {% if market_condition.available %}
+              <span class="msi-market-strip-headline">{{ market_condition.headline }}</span>
+              {% if market_condition.nifty50_pct is not none and market_condition.regime_since_display %}
+                <span class="msi-market-strip-detail">
+                  Nifty 50
+                  <span class="msi-nifty-pct {{ market_condition.nifty50_pct|sign_class }}">{{ market_condition.nifty50_display }}</span>
+                  <span> &middot; regime since {{ market_condition.regime_since_display }}</span>
+                </span>
+              {% endif %}
+            {% else %}
+              <span class="msi-market-strip-headline">Market regime unavailable</span>
+              {% if market_condition.error %}
+                <span class="msi-market-strip-detail">{{ market_condition.error }}</span>
+              {% endif %}
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="topbar-main">
       <div class="subtitle nifty-quote index-quotes-marquee" id="index-quotes-bar" aria-live="off"></div>
       <div class="dashboard-meta-row">
@@ -2585,6 +2683,13 @@
         const html = await response.text();
         const parser = new DOMParser();
         const doc = parser.parseFromString(html, 'text/html');
+
+        const nextStripOuter = doc.getElementById('msi-market-strip-outer');
+        const currentStripOuter = document.getElementById('msi-market-strip-outer');
+        if (nextStripOuter && currentStripOuter) {
+          currentStripOuter.replaceWith(nextStripOuter.cloneNode(true));
+        }
+
         const nextRoot = doc.getElementById('dashboard-root');
         const currentRoot = document.getElementById('dashboard-root');
 

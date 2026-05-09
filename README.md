@@ -35,16 +35,18 @@ The app is organized in three layers:
    - Kite Connect (`app/auth.py`, `app/live_prices.py`, `app/instruments.py`)
    - NSE India archives (`app/instruments.py`)
    - External metadata (`yfinance`, `mfdata.in`)
+   - MarketSmith India (public gateway for current market regime; model layer only)
 2. **Shared model layer**
    - `app/portfolio_model.py`
    - Builds normalized holdings/MF/positions entities and shared aggregates
    - Owns MF-underlyings metadata caching (`.cache/mfdata_underlyings_cache.json`)
+   - Owns MarketSmith regime snapshot (one fetch per calendar day; `.cache/marketsmith_market_condition.json`)
 3. **Presentation layers**
    - CLI: `app/main.py` (ASCII tables)
    - Web: `app/web.py` + `templates/` (FastAPI + HTML tabs + WS updates)
 
 ```text
-Kite / NSE India / yfinance / mfdata
+Kite / NSE India / yfinance / mfdata / MarketSmith India
           |
           v
   app/portfolio_model.py   <- shared normalization + aggregation + metadata cache
@@ -76,6 +78,10 @@ Contribution guideline: add or change portfolio calculations/normalization in
   current value, and overall profit/loss.
 - Adds mutual fund underlying insights (stock/sector breakdown and weights)
   in both dashboard and CLI when holdings data is available from `mfdata.in`.
+- Shows the India **market regime** from MarketSmith India (Confirmed Uptrend,
+  Correction, etc.) on the dashboard; the value is resolved in
+  `app/portfolio_model.get_marketsmith_market_condition()` and surfaced in HTML
+  and in ``dashboard-bootstrap`` as ``marketCondition`` for client scripts on load.
 - Reuses login state between runs, so day-to-day usage usually requires less
   repeated sign-in.
 
@@ -316,6 +322,7 @@ Section keys accepted by `--sections` / `--exclude-sections`:
 ├── .cache/               # local runtime caches (gitignored)
 │   ├── dashboard_timing.log
 │   ├── mfdata_underlyings_cache.json
+│   ├── marketsmith_market_condition.json
 │   ├── reference_data_cache.json
 │   └── yfinance_industry_cache.json
 ├── app/
@@ -333,12 +340,17 @@ Section keys accepted by `--sections` / `--exclude-sections`:
 
 ## Data Sources
 
-This app combines three external sources:
+This app combines several external sources:
 
 - **Kite Connect** for account data and live prices.
 - **NSE India archives** for index constituents and `Industry`/`ISIN` reference data.
 - **yfinance** for equity metadata enrichment (`industry`/`sector`).
 - **mfdata.in** for mutual-fund underlying holdings aggregation.
+- **MarketSmith India** (William O'Neil India) for the published **current market
+  regime** (via their public `getMarketHistory.json` gateway, same data as
+  [Market Condition History](https://marketsmithindia.com/mstool/marketconditionhistory.jsp)).
+  The dashboard does not send your Kite credentials to MarketSmith; only the
+  optional `MARKETSMITH_MS_AUTH` query override in `.env` is ever sent if you set it.
 
 ### Zerodha Kite Connect (account and live prices)
 
@@ -502,6 +514,31 @@ weights.
 - **Local metadata cache** — mfdata search + family-holdings responses are
   cached to `.cache/mfdata_underlyings_cache.json` (shared by CLI and dashboard,
   rotated monthly). Live market quotes/ticks are not persisted there.
+
+### MarketSmith India (market regime / dashboard banner)
+
+- **Tool page** —
+  <https://marketsmithindia.com/mstool/marketconditionhistory.jsp>
+- **HTTP** — `GET https://marketsmithindia.com/gateway/simple-api/ms-india/mshkSubscription/getMarketHistory.json?ms-auth=<token>`
+- **Used in code** — `app/portfolio_model.get_marketsmith_market_condition()`
+  returns the first ``marketHistory`` row (current regime, Nifty 50 move in
+  regime, etc.), then `app/web.py:/dashboard` passes it into the template and
+  into ``dashboard-bootstrap`` as ``marketCondition`` (camelCase) so browser
+  code can read it as soon as `readBootstrap()` runs.
+
+**Caching (aligned with other “day keyed” flows):** like MF holdings and MF
+underlying payloads in `app/web.py`, the regime snapshot is keyed by **local
+calendar day** ``time.strftime("%Y-%m-%d")`` — not wall-clock TTL seconds. Warm
+responses are kept in memory for the process lifetime; `.cache/marketsmith_market_condition.json`
+stores the same payload so a **restart on the same day** does not refetch until
+midnight rollover. Errors from the gateway are cached for that day as well so
+a broken response does not retry on every `/dashboard` refresh. Optional
+``.env``: ``MARKETSMITH_MS_AUTH`` only (see [.env.example](.env.example)).
+
+| Where used | Call | Endpoint / artifact |
+| ---------- | ---- | ------------------- |
+| `app/portfolio_model` | urllib `GET` | `…/getMarketHistory.json` |
+| `app/web.py:/dashboard` | `get_marketsmith_market_condition()` | Banner HTML + bootstrap JSON |
 
 ## Notes
 

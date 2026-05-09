@@ -55,6 +55,9 @@ Routes
     * ``KiteConnect.quote`` (NSE indices) -> previous close and instrument tokens
       for header index tickers from ``KITE_DASHBOARD_INDICES`` (defaults to
       NIFTY 50, NIFTY BANK, NIFTY IT, NIFTY FIN SERVICE, NIFTY METAL).
+    * MarketSmith India ``getMarketHistory.json`` (once per calendar day;
+      memory + disk cache in :mod:`app.portfolio_model`) -> current market
+      regime banner and ``dashboard-bootstrap.marketCondition``.
 
     Live LTP updates are pushed to the browser over ``WS /ws/live-prices``
     (fed by the existing KiteTicker stream). A separate **slow** full-page
@@ -138,6 +141,8 @@ from app.portfolio_model import (
     build_mf_underlying_breakdown,
     build_position,
     equity_sector_breakdown,
+    get_marketsmith_market_condition,
+    marketsmith_market_condition_bootstrap,
     normalize_equity_sector,
     overlay_live_ltp,
     summarise,
@@ -932,10 +937,11 @@ async def dashboard(request: Request):
     _dashboard_timing_mark(timings, "kite_client", request_start)
 
     mf_error: str | None = None
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    with ThreadPoolExecutor(max_workers=4) as pool:
         future_equity = pool.submit(kite.holdings)
         future_positions = pool.submit(kite.positions)
         future_margins = pool.submit(kite.margins, "equity")
+        future_market_condition = pool.submit(get_marketsmith_market_condition)
 
         try:
             equity_raw = future_equity.result() or []
@@ -947,6 +953,7 @@ async def dashboard(request: Request):
             return RedirectResponse("/", status_code=303)
 
         profile_raw = _get_cached_profile(kite)
+        market_condition = future_market_condition.result()
     _dashboard_timing_mark(timings, "kite_data_fetch_parallel", request_start)
 
     net_positions = positions_raw.get("net", []) or []
@@ -1208,6 +1215,7 @@ async def dashboard(request: Request):
         "portfolioInvestedTotal": total_invested,
         "equityInvestedTotal": equity_totals["invested"],
         "indexQuotes": index_quotes_bootstrap,
+        "marketCondition": marketsmith_market_condition_bootstrap(market_condition),
     }
     context = {
         "request": request,
@@ -1236,6 +1244,7 @@ async def dashboard(request: Request):
         },
         "user_profile": user_profile,
         "watch_list": watch_list,
+        "market_condition": market_condition,
     }
     _dashboard_timing_mark(timings, "context_build", request_start)
     total_ms = (time.perf_counter() - request_start) * 1000.0
