@@ -114,7 +114,7 @@ def load_universe_symbols() -> list[str]:
 def model_cache_path(project_root: Path) -> Path:
     cache_dir = project_root / ".cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir / "model_cache.jason"
+    return cache_dir / "model_cache.json"
 
 
 def read_cache(path: Path) -> dict[str, Any]:

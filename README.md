@@ -175,7 +175,7 @@ watch list) is resolved in this order:
 
 1. **ETF override**: if the symbol or instrument/company name contains `ETF`,
    sector is forced to `ETF`.
-2. **Local model cache** (`.cache/model_cache.jason`) using the
+2. **Local model cache** (`.cache/model_cache.json`) using the
    `sector` field.
 3. **Background yfinance refresh** is queued on cache miss (non-blocking for
    the request path). The refreshed value is written back to the local cache.
@@ -213,7 +213,7 @@ python scripts/build_cache.py --workers 6
 ```
 
 This writes/updates:
-- `.cache/model_cache.jason`
+- `.cache/model_cache.json`
 - `.cache/reference_data_cache.json` (NSE industry maps, Nifty 50 list, and
   cash-equity lookup maps when a valid Kite access token is available)
 - `.cache/mfdata_underlyings_cache.json` (mfdata search/family-holdings metadata
@@ -324,7 +324,7 @@ Section keys accepted by `--sections` / `--exclude-sections`:
 │   ├── mfdata_underlyings_cache.json
 │   ├── marketsmith_market_condition.json
 │   ├── reference_data_cache.json
-│   └── model_cache.jason
+│   └── model_cache.json
 ├── app/
 │   ├── __init__.py       # package docstring + entry point index
 │   ├── auth.py           # Kite login flow + token caching (shared by CLI + web)
@@ -477,7 +477,7 @@ Used in:
 - `app/instruments.py` — `yf.Ticker(f"{symbol}.{exchange}").info` for
   live/cache-backed industry and sector lookup.
 - `scripts/build_cache.py` — `yf.Ticker(...).info` to pre-build
-  `.cache/model_cache.jason` offline.
+  `.cache/model_cache.json` offline.
 
 ### NSE India (constituents and industry reference data)
 

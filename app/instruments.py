@@ -102,8 +102,7 @@ except ValueError:
 _CACHE_TTL_SECONDS = _REFERENCE_CACHE_TTL_SECONDS
 _NIFTY50_CACHE_TTL_SECONDS = _REFERENCE_CACHE_TTL_SECONDS
 _YFINANCE_CACHE_DIR = _PROJECT_ROOT / ".cache"
-_YFINANCE_CACHE_FILE = _YFINANCE_CACHE_DIR / "model_cache.jason"
-_YFINANCE_LEGACY_CACHE_FILE = _YFINANCE_CACHE_DIR / "yfinance_industry_cache.json"
+_YFINANCE_CACHE_FILE = _YFINANCE_CACHE_DIR / "model_cache.json"
 _REFERENCE_CACHE_FILE = _YFINANCE_CACHE_DIR / "reference_data_cache.json"
 _YFINANCE_CACHE_REFRESH_DAYS = 30.0
 
@@ -250,12 +249,9 @@ def _load_yfinance_cache_if_needed() -> None:
             return
 
         _YFINANCE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        cache_file_to_read = _YFINANCE_CACHE_FILE
-        if not cache_file_to_read.exists() and _YFINANCE_LEGACY_CACHE_FILE.exists():
-            cache_file_to_read = _YFINANCE_LEGACY_CACHE_FILE
-        if cache_file_to_read.exists():
+        if _YFINANCE_CACHE_FILE.exists():
             try:
-                payload = json.loads(cache_file_to_read.read_text(encoding="utf-8"))
+                payload = json.loads(_YFINANCE_CACHE_FILE.read_text(encoding="utf-8"))
                 mapping = payload.get("mapping") or {}
                 for k, v in mapping.items():
                     # key is stored as "EXCHANGE|SYMBOL"
