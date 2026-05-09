@@ -176,7 +176,18 @@
       const boot = readBootstrap();
       const token = Number(boot.instrumentToken || 0);
       if (token > 0) {
-        el.setAttribute('href', '/dashboard?focus_token=' + encodeURIComponent(String(token)));
+        let href = '/dashboard?focus_token=' + encodeURIComponent(String(token));
+        const fc = boot.focusContext || '';
+        if (fc === 'watchlist') {
+          href += '&focus_context=' + encodeURIComponent('watchlist');
+          el.textContent = '← Watchlist';
+        } else if (fc === 'equity_holding') {
+          href += '&focus_context=' + encodeURIComponent('equity_holding');
+          el.textContent = '← Holdings';
+        } else {
+          el.textContent = '← Dashboard';
+        }
+        el.setAttribute('href', href);
       }
     }
 

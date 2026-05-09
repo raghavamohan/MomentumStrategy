@@ -1611,11 +1611,16 @@ async def dashboard_stock_chart(
     exchange: str = Query("NSE"),
     label: str = Query(""),
     days: int = Query(365, ge=1, le=3650),
+    ref: str = Query(""),
 ):
     """Full-page candlestick + volume chart for one cash equity instrument.
 
     Historical range is at least one year (365 daily candles) unless a larger
     ``days`` is requested.
+
+    Optional ``ref`` controls the dashboard return target: ``watchlist``,
+    ``equity_holding`` / ``holdings`` (embedded in bootstrap JSON as
+    ``focusContext`` for the back link).
     """
     if not _restore_session_if_token_valid(request):
         return RedirectResponse("/", status_code=303)
@@ -1636,6 +1641,11 @@ async def dashboard_stock_chart(
         "label": display_label,
         "days": days_clamped,
     }
+    ref_clean = (ref or "").strip().lower()
+    if ref_clean == "watchlist":
+        bootstrap["focusContext"] = "watchlist"
+    elif ref_clean in ("equity_holding", "holdings"):
+        bootstrap["focusContext"] = "equity_holding"
 
     return templates.TemplateResponse(
         request,

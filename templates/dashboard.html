@@ -452,7 +452,7 @@
                 <td class="symbol">
                   <a
                     class="stock-chart-link"
-                    href="/dashboard/stock-chart?instrument_token={{ h.instrument_token }}&exchange={{ h.exchange|urlquote }}&label={{ h.symbol_label|urlquote }}"
+                    href="/dashboard/stock-chart?instrument_token={{ h.instrument_token }}&exchange={{ h.exchange|urlquote }}&label={{ h.symbol_label|urlquote }}&ref=equity_holding"
                     title="Daily OHLC &amp; volume (~1 year)"
                   >{{ h.symbol_label }}</a>
                 </td>
@@ -702,7 +702,7 @@
                       <td class="symbol">
                         <a
                           class="stock-chart-link"
-                          href="/dashboard/stock-chart?instrument_token={{ item.instrument_token }}&exchange=NSE&label={{ item.label|urlquote }}"
+                          href="/dashboard/stock-chart?instrument_token={{ item.instrument_token }}&exchange=NSE&label={{ item.label|urlquote }}&ref=watchlist"
                           title="Daily OHLC &amp; volume (~1 year)"
                         >{{ item.label }}</a>
                       </td>
@@ -2443,20 +2443,44 @@
       });
     }
 
-    function stripFocusTokenFromUrl() {
+    function stripDashboardFocusParamsFromUrl() {
       try {
         const url = new URL(window.location.href);
-        if (!url.searchParams.has('focus_token')) {
+        if (
+          !url.searchParams.has('focus_token') &&
+          !url.searchParams.has('focus_context') &&
+          !url.searchParams.has('focus_section')
+        ) {
           return;
         }
         url.searchParams.delete('focus_token');
+        url.searchParams.delete('focus_context');
+        url.searchParams.delete('focus_section');
         history.replaceState(null, '', url.pathname + url.search + url.hash);
       } catch (_e) {
       }
     }
 
     /**
-     * Returning from the stock chart with ?focus_token= opens the right section/tab and scrolls to the row.
+     * Resolve the target row using a stable discriminator (row class + token), not DOM order.
+     * Legacy: no focus_context falls back to first tr[data-token]; focus_section=watchlist still supported.
+     */
+    function resolveDashboardFocusRow(root, token, focusContext, legacyFocusSection) {
+      const sel = '[data-token="' + token + '"]';
+      if (focusContext === 'watchlist') {
+        return root.querySelector('tr.live-watch' + sel);
+      }
+      if (focusContext === 'equity_holding') {
+        return root.querySelector('tr.live-holding' + sel);
+      }
+      if (!focusContext && legacyFocusSection === 'watchlist') {
+        return root.querySelector('tr.live-watch' + sel);
+      }
+      return root.querySelector('tr[data-token="' + token + '"]');
+    }
+
+    /**
+     * Returning from the stock chart with ?focus_token=&focus_context= opens the right section/tab and scrolls.
      */
     function applyDashboardRowFocusFromQuery() {
       const params = new URLSearchParams(window.location.search);
@@ -2466,17 +2490,19 @@
       }
       const token = String(raw).trim();
       if (!/^\d+$/.test(token)) {
-        stripFocusTokenFromUrl();
+        stripDashboardFocusParamsFromUrl();
         return;
       }
       const root = document.getElementById('dashboard-root');
       if (!root) {
-        stripFocusTokenFromUrl();
+        stripDashboardFocusParamsFromUrl();
         return;
       }
-      const row = root.querySelector('tr[data-token="' + token + '"]');
+      const focusContext = params.get('focus_context');
+      const legacyFocusSection = params.get('focus_section');
+      const row = resolveDashboardFocusRow(root, token, focusContext, legacyFocusSection);
       if (!row) {
-        stripFocusTokenFromUrl();
+        stripDashboardFocusParamsFromUrl();
         return;
       }
 
@@ -2489,7 +2515,7 @@
 
       const sectionPanel = row.closest('.section-panel');
       if (!sectionPanel || !sectionPanel.dataset.sectionPanel) {
-        stripFocusTokenFromUrl();
+        stripDashboardFocusParamsFromUrl();
         return;
       }
       const sectionKey = sectionPanel.dataset.sectionPanel;
@@ -2506,7 +2532,7 @@
       window.requestAnimationFrame(function () {
         window.requestAnimationFrame(function () {
           row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          stripFocusTokenFromUrl();
+          stripDashboardFocusParamsFromUrl();
         });
       });
     }
@@ -3022,6 +3048,15 @@
     syncBootstrapMfTotalsFromCachedPayload();
     applyInitialTableSorts();
     initEquityHoldingsControls();
+    (function cleanupOrphanDashboardFocusParams() {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('focus_token')) {
+        return;
+      }
+      if (params.has('focus_context') || params.has('focus_section')) {
+        stripDashboardFocusParamsFromUrl();
+      }
+    })();
     applyDashboardRowFocusFromQuery();
     stampUpdatedNow();
     renderIndexQuotes();
