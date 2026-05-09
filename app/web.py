@@ -128,7 +128,8 @@ from app.instruments import (
     resolve_equity_sector,
     warm_reference_caches,
 )
-from app.live_prices import dashboard_ws_debug_enabled, live_price_stream
+from app.env_util import log_dashboard_ws_debug_exception
+from app.live_prices import live_price_stream
 from app.portfolio_model import (
     EQUITY_EXCHANGES,
     FNO_EXCHANGES,
@@ -900,8 +901,9 @@ async def live_prices_websocket(websocket: WebSocket) -> None:
             except asyncio.CancelledError:
                 break
             except Exception:
-                if dashboard_ws_debug_enabled():
-                    logger.exception("WebSocket send_json failed; ending live-prices stream")
+                log_dashboard_ws_debug_exception(
+                    logger, "WebSocket send_json failed; ending live-prices stream"
+                )
                 break
     except WebSocketDisconnect:
         pass

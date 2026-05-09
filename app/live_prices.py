@@ -13,30 +13,25 @@ https://kite.trade/docs/connect/v3/websocket/
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from collections.abc import Callable
 
 from kiteconnect import KiteTicker
 
+from app.env_util import dashboard_ws_debug_enabled, log_dashboard_ws_debug_exception
+
 logger = logging.getLogger(__name__)
 
 
-def dashboard_ws_debug_enabled() -> bool:
-    """True when ``DASHBOARD_DEBUG_WS`` env requests verbose WebSocket/tick diagnostics."""
-    return os.getenv("DASHBOARD_DEBUG_WS", "").strip().lower() in ("1", "true", "yes")
-
-
-def _configure_kite_ticker_logging() -> None:
-    """pykiteconnect logs every failed/retry at ERROR on ``kiteconnect.ticker`` — suppress unless debug."""
-    if dashboard_ws_debug_enabled():
-        return
+if not dashboard_ws_debug_enabled():
+    # pykiteconnect logs every failed/retry at ERROR on kiteconnect.ticker — suppress unless debug.
     logging.getLogger("kiteconnect.ticker").setLevel(logging.CRITICAL)
 
-
-_configure_kite_ticker_logging()
-
 TickListener = Callable[[dict[int, float]], None]
+
+
+def _positive_instrument_tokens(tokens: set[int]) -> set[int]:
+    return {int(t) for t in tokens if int(t) > 0}
 
 
 def _kite_ws_reason_text(reason: object) -> str:
@@ -54,7 +49,6 @@ def _kite_ws_auth_failure(code: object, reason: object) -> bool:
     return (
         "403" in text
         or "forbidden" in lower
-        or ("upgrade failed" in lower and "403" in text)
         or ("invalid" in lower and "token" in lower)
         or ("incorrect" in lower and "access_token" in lower)
     )
@@ -135,7 +129,7 @@ class LivePriceStream:
         with self._lock:
             if self._ticker is None:
                 return
-            fresh = {int(t) for t in instrument_tokens if int(t) > 0} - self._subscribed_tokens
+            fresh = _positive_instrument_tokens(instrument_tokens) - self._subscribed_tokens
             if not fresh:
                 return
             self._subscribed_tokens.update(fresh)
@@ -149,7 +143,7 @@ class LivePriceStream:
         Waits briefly for at least one tick update when needed so first-load
         dashboard requests can receive streamed prices.
         """
-        wanted = {int(t) for t in instrument_tokens if int(t) > 0}
+        wanted = _positive_instrument_tokens(instrument_tokens)
         if not wanted:
             return {}
 
@@ -180,26 +174,20 @@ class LivePriceStream:
             if not ticks:
                 return
             updates: dict[int, float] = {}
-            with self._lock:
-                for tick in ticks:
-                    token = int(tick.get("instrument_token") or 0)
-                    ltp = tick.get("last_price")
-                    if token > 0 and ltp is not None:
-                        fv = float(ltp)
-                        self._ltp_by_token[token] = fv
-                        updates[token] = fv
+            for tick in ticks:
+                token = int(tick.get("instrument_token") or 0)
+                ltp = tick.get("last_price")
+                if token > 0 and ltp is not None:
+                    fv = float(ltp)
+                    updates[token] = fv
+            if updates:
+                with self._lock:
+                    self._ltp_by_token.update(updates)
             self._tick_event.set()
             self._tick_event.clear()
             self._notify_tick_listeners(updates)
 
-        def _on_close(_ws, code, reason):
-            with self._lock:
-                self._connected = False
-            if _kite_ws_auth_failure(code, reason):
-                detail = _kite_ws_reason_text(reason) or str(code)
-                self._halt_ticker_on_auth_failure(ticker, detail)
-
-        def _on_error(_ws, code, reason):
+        def _on_disconnect(_ws, code, reason):
             with self._lock:
                 self._connected = False
             if _kite_ws_auth_failure(code, reason):
@@ -208,8 +196,8 @@ class LivePriceStream:
 
         ticker.on_connect = _on_connect
         ticker.on_ticks = _on_ticks
-        ticker.on_close = _on_close
-        ticker.on_error = _on_error
+        ticker.on_close = _on_disconnect
+        ticker.on_error = _on_disconnect
 
     def _close_locked(self) -> None:
         if self._ticker is not None:
@@ -246,8 +234,7 @@ class LivePriceStream:
             try:
                 fn(updates)
             except Exception:
-                if dashboard_ws_debug_enabled():
-                    logger.exception("Tick listener callback failed")
+                log_dashboard_ws_debug_exception(logger, "Tick listener callback failed")
 
 
 live_price_stream = LivePriceStream()
