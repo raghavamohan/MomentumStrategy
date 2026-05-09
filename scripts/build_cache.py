@@ -3,6 +3,7 @@
 This script can warm:
 1) yfinance industry/sector cache
 2) shared reference_data cache (NSE maps, Nifty list, cash-equity maps)
+3) MarketSmith India market-regime daily cache
 
 Usage:
   python scripts/build_cache.py
@@ -44,6 +45,9 @@ from app.instruments import (  # noqa: E402
     get_nse_symbol_to_industry,
     get_nse_symbol_to_token_lookup,
     get_reference_cache_debug_snapshot,
+)
+from app.portfolio_model import (  # noqa: E402
+    get_marketsmith_market_condition,
 )
 
 try:
@@ -107,10 +111,10 @@ def load_universe_symbols() -> list[str]:
     return ordered
 
 
-def yfinance_cache_path(project_root: Path) -> Path:
+def model_cache_path(project_root: Path) -> Path:
     cache_dir = project_root / ".cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir / "yfinance_industry_cache.json"
+    return cache_dir / "model_cache.jason"
 
 
 def read_cache(path: Path) -> dict[str, Any]:
@@ -156,7 +160,7 @@ def _entry_needs_yfinance(
 
 
 def warm_yfinance_cache(args: argparse.Namespace, project_root: Path) -> Path:
-    cache_file = yfinance_cache_path(project_root)
+    cache_file = model_cache_path(project_root)
     payload = read_cache(cache_file)
     mapping: dict[str, dict[str, str]] = payload.get("mapping") or {}
 
@@ -282,6 +286,36 @@ def warm_reference_cache() -> None:
         print(f"Reference cache debug snapshot unavailable: {exc}")
 
 
+def warm_marketsmith_cache() -> None:
+    print()
+    print("Warming MarketSmith market-regime cache (.cache/marketsmith_market_condition.json)...")
+    try:
+        data = get_marketsmith_market_condition()
+    except Exception as exc:
+        print(f"MarketSmith warmup FAILED: {exc}")
+        return
+
+    available = bool(data.get("available"))
+    headline = str(data.get("headline") or "") or "-"
+    tone = str(data.get("tone") or "unknown")
+    cached_day = str(data.get("cached_day") or "")
+    source = str(data.get("source_url") or "")
+    if not available:
+        err = str(data.get("error") or "unknown error")
+        print(
+            "MarketSmith cache warmup result: unavailable "
+            f"(tone={tone}, cached_day={cached_day or '-'}, error={err})"
+        )
+        return
+
+    print(
+        "MarketSmith cache warmup result: "
+        f"headline={headline}, tone={tone}, cached_day={cached_day or '-'}"
+    )
+    if source:
+        print(f"MarketSmith source: {source}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=0, help="limit number of symbols (0=all)")
@@ -309,7 +343,7 @@ def main() -> int:
     if args.reference_only and args.skip_reference_cache:
         raise SystemExit("Invalid flags: --reference-only cannot be combined with --skip-reference-cache.")
 
-    cache_file = yfinance_cache_path(PROJECT_ROOT)
+    cache_file = model_cache_path(PROJECT_ROOT)
     if args.reference_only:
         print("Skipping yfinance warmup (--reference-only).")
     else:
@@ -317,8 +351,9 @@ def main() -> int:
 
     if not args.skip_reference_cache:
         warm_reference_cache()
+    warm_marketsmith_cache()
 
-    print(f"Done. Yfinance cache file: {cache_file}")
+    print(f"Done. Model cache file: {cache_file}")
     return 0
 
 

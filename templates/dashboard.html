@@ -100,6 +100,25 @@
     .dashboard-kpi-strip + #msi-market-strip-outer {
       margin-top: -8px;
     }
+    .dashboard-topbar {
+      /* Match the tighter marquee spacing above and below */
+      margin-bottom: 8px;
+      padding-bottom: 8px;
+    }
+    .dashboard-topbar .dashboard-topbar-header {
+      align-items: flex-start;
+    }
+    .dashboard-topbar .right {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 6px;
+      align-self: flex-start;
+      flex-shrink: 0;
+    }
+    .dashboard-topbar .right .last-updated-indicator {
+      text-align: right;
+    }
     .dashboard-topbar .topbar-main {
       margin-top: -8px;
     }
@@ -117,6 +136,7 @@
         <div class="dashboard-subtitle">Portfolio Command Center</div>
       </div>
       <div class="right">
+        <span class="last-updated-indicator" id="last-updated-indicator">Snapshot refreshed: --:--:--</span>
         <a class="button secondary" href="/logout">Logout</a>
       </div>
     </div>
@@ -175,9 +195,6 @@
 
     <div class="topbar-main">
       <div class="subtitle nifty-quote index-quotes-marquee" id="index-quotes-bar" aria-live="off"></div>
-      <div class="dashboard-meta-row">
-        <span class="last-updated-indicator" id="last-updated-indicator">Snapshot refreshed: --:--:--</span>
-      </div>
     </div>
   </div>
 
