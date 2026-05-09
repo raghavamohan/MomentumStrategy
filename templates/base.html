@@ -18,6 +18,20 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}MomentumStrategy{% endblock %}</title>
+  <script>
+    (function () {
+      try {
+        var density = localStorage.getItem('momentumDashboard:tableDensity');
+        if (density === 'compact') {
+          document.documentElement.setAttribute('data-dashboard-density', 'compact');
+        } else {
+          document.documentElement.setAttribute('data-dashboard-density', 'comfortable');
+        }
+      } catch (_e) {
+        document.documentElement.setAttribute('data-dashboard-density', 'comfortable');
+      }
+    })();
+  </script>
   <style>
     :root {
       --bg: #0b1220;
@@ -720,11 +734,14 @@
       color: #d9e7ff;
     }
     #dashboard-root.density-compact table th,
-    #dashboard-root.density-compact table td {
+    #dashboard-root.density-compact table td,
+    html[data-dashboard-density="compact"] #dashboard-root table th,
+    html[data-dashboard-density="compact"] #dashboard-root table td {
       padding: 7px 9px;
       font-size: 12px;
     }
-    #dashboard-root.density-compact th.sortable .th-sort {
+    #dashboard-root.density-compact th.sortable .th-sort,
+    html[data-dashboard-density="compact"] #dashboard-root th.sortable .th-sort {
       padding: 7px 9px;
     }
 

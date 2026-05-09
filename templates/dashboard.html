@@ -115,6 +115,7 @@
       gap: 6px;
       align-self: flex-start;
       flex-shrink: 0;
+      position: relative;
     }
     .dashboard-topbar .right .last-updated-indicator {
       text-align: right;
@@ -128,15 +129,21 @@
       font-size: 12px;
     }
     .cache-refresh-indicator {
-      display: none;
+      display: inline-flex;
+      visibility: hidden;
       align-items: center;
       gap: 8px;
       color: var(--muted);
       font-size: 12px;
       font-weight: 600;
+      position: absolute;
+      top: calc(100% + 4px);
+      right: 0;
+      pointer-events: none;
+      white-space: nowrap;
     }
     .cache-refresh-indicator.is-visible {
-      display: inline-flex;
+      visibility: visible;
     }
     .cache-refresh-dot {
       width: 8px;
@@ -776,6 +783,10 @@
     }
 
     function applyDashboardDensity() {
+      document.documentElement.setAttribute(
+        'data-dashboard-density',
+        tableDensity === 'compact' ? 'compact' : 'comfortable'
+      );
       const root = document.getElementById('dashboard-root');
       if (root) {
         root.classList.toggle('density-compact', tableDensity === 'compact');
