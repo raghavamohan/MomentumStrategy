@@ -22,7 +22,7 @@ from urllib.parse import urlencode
 from urllib.request import Request as URLRequest, urlopen
 
 from app.instruments import resolve_equity_sector, symbol_with_company_name
-from app.live_prices import notify_dashboard_cache_refresh
+from app.events import emit_cache_refresh
 from app.model_cache_store import (
     current_effective_day_ist,
     read_section,
@@ -629,7 +629,7 @@ def build_mf_underlying_breakdown(
     seen_missing: set[str] = set()
     missing_unique = [name for name in not_aggregated if not (name in seen_missing or seen_missing.add(name))]
     if _flush_mfdata_disk_cache():
-        notify_dashboard_cache_refresh()
+        emit_cache_refresh()
     return table_rows, latest_month, missing_unique, len(aggregated_funds), len(all_funds)
 
 
@@ -921,7 +921,7 @@ def _marketsmith_schedule_network_fetch(day: str) -> None:
         finally:
             with _MARKETSMITH_FETCH_LOCK:
                 _MARKETSMITH_NETWORK_FETCH_IN_PROGRESS = False
-        notify_dashboard_cache_refresh()
+        emit_cache_refresh()
 
     start_background_refresh_job("marketsmith-daily", _job)
 

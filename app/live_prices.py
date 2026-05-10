@@ -265,5 +265,7 @@ live_price_stream = LivePriceStream()
 
 
 def notify_dashboard_cache_refresh() -> None:
-    """Tell connected dashboards to refetch HTML after background cache writes."""
-    live_price_stream.notify_cache_refresh()
+    """Backward-compatible alias for cache refresh emission."""
+    from app.events import emit_cache_refresh
+
+    emit_cache_refresh()

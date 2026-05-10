@@ -17,7 +17,7 @@ from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 import logging
-from app.live_prices import notify_dashboard_cache_refresh
+from app.events import emit_cache_refresh
 from app.model_cache_store import (
     current_effective_day_ist,
     load_model_cache,
@@ -350,7 +350,7 @@ def _maybe_start_monthly_yfinance_refresh() -> None:
                 logger.info("yfinance cache refreshed for %d symbols", updated)
             _persist_yfinance_cache()
             _YFINANCE_CACHE_LAST_SOURCE = "network_bg_refresh"
-            notify_dashboard_cache_refresh()
+            emit_cache_refresh()
         finally:
             with _YFINANCE_CACHE_LOCK:
                 _YFINANCE_CACHE_REFRESH_IN_PROGRESS = False
@@ -393,7 +393,7 @@ def _maybe_start_single_symbol_yfinance_refresh(exchange: str, symbol: str) -> N
                 _YFINANCE_CACHE_DAY = _current_reference_day_token()
                 globals()["_YFINANCE_CACHE_LAST_SOURCE"] = "network_bg_refresh"
             _persist_yfinance_cache()
-            notify_dashboard_cache_refresh()
+            emit_cache_refresh()
         except Exception as exc:
             logger.warning(
                 "background yfinance refresh failed for %s:%s: %s",
@@ -627,7 +627,7 @@ def _maybe_start_cash_equity_refresh_unlocked(kite) -> None:
                     _set_reference_cache_source_unlocked("cash_equity", "network_bg_refresh_failed")
                 _CASH_EQUITY_REFRESH_IN_PROGRESS = False
             if ok:
-                notify_dashboard_cache_refresh()
+                emit_cache_refresh()
 
     start_background_refresh_job("reference-cash-equity", _job)
 
@@ -792,7 +792,7 @@ def _maybe_start_nse_merged_refresh_unlocked() -> None:
                     _set_reference_cache_source_unlocked("nse_merged_industry", "network_bg_refresh_failed")
                 _NSE_MERGED_REFRESH_IN_PROGRESS = False
             if ok:
-                notify_dashboard_cache_refresh()
+                emit_cache_refresh()
 
     start_background_refresh_job("reference-nse-merged-industry", _job)
 
@@ -937,7 +937,7 @@ def _maybe_start_nifty50_refresh_unlocked() -> None:
                     _set_reference_cache_source_unlocked("nifty50_symbols", "network_bg_refresh_failed")
                 _NIFTY50_REFRESH_IN_PROGRESS = False
             if ok:
-                notify_dashboard_cache_refresh()
+                emit_cache_refresh()
 
     start_background_refresh_job("reference-nifty50", _job)
 
