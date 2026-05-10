@@ -234,7 +234,7 @@ def _interactive_login(kite: KiteConnect, api_secret: str) -> str:
                     )
                 done.set()
 
-            def log_message(self, format: str, *args) -> None:  # noqa: A003 - stdlib name
+            def log_message(self, _format: str, *args) -> None:
                 return
 
         try:

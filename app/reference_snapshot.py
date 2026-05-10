@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
+from collections.abc import Callable
 from typing import Any
 
 from app.cache import kite_provider
@@ -15,6 +16,14 @@ from app.cache import yfinance_provider
 from app.reference_context import WarmupContext
 
 logger = logging.getLogger(__name__)
+
+REFERENCE_PROVIDER_WARMUPS: tuple[tuple[str, Callable[[WarmupContext], None]], ...] = (
+    ("nse", nse_provider.warmup),
+    ("yfinance", yfinance_provider.warmup),
+    ("mfdata", mfdata_provider.warmup),
+    ("marketsmith", marketsmith_provider.warmup),
+    ("kite", kite_provider.warmup),
+)
 
 _revision_lock = threading.Lock()
 _reference_revision = 0
@@ -157,27 +166,12 @@ def build_reference_snapshot(
 
 
 def warm_reference_snapshot(ctx: WarmupContext) -> None:
-    """Best-effort warmup across providers (order: NSE, yfinance, mfdata, MarketSmith, Kite)."""
-    try:
-        nse_provider.warmup(ctx)
-    except Exception as exc:
-        logger.warning("warm_reference_snapshot NSE failed: %s", exc)
-    try:
-        yfinance_provider.warmup(ctx)
-    except Exception as exc:
-        logger.warning("warm_reference_snapshot yfinance failed: %s", exc)
-    try:
-        mfdata_provider.warmup(ctx)
-    except Exception as exc:
-        logger.warning("warm_reference_snapshot mfdata failed: %s", exc)
-    try:
-        marketsmith_provider.warmup(ctx)
-    except Exception as exc:
-        logger.warning("warm_reference_snapshot MarketSmith failed: %s", exc)
-    try:
-        kite_provider.warmup(ctx)
-    except Exception as exc:
-        logger.warning("warm_reference_snapshot Kite failed: %s", exc)
+    """Best-effort warmup across providers (order: ``REFERENCE_PROVIDER_WARMUPS``)."""
+    for tag, warmup_fn in REFERENCE_PROVIDER_WARMUPS:
+        try:
+            warmup_fn(ctx)
+        except Exception as exc:
+            logger.warning("warm_reference_snapshot %s failed: %s", tag, exc)
 
 
 def _register_revision_with_notifications() -> None:

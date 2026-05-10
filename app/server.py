@@ -100,7 +100,6 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 import json
 import logging
 import os
-import re
 from collections.abc import MutableMapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -152,7 +151,6 @@ from app.portfolio_model import (
     get_marketsmith_market_condition,
     get_reference_cache_debug_snapshot,
     marketsmith_market_condition_bootstrap,
-    normalize_equity_sector,
     overlay_live_ltp,
     resolve_equity_sector,
     start_background_refresh_job,

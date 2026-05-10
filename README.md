@@ -28,35 +28,88 @@ Both interfaces use the same server-side domain/model layer in
 
 ## Architecture
 
-The app is organized in three layers:
+The app is organized in layers so **per-source I/O** stays in small modules,
+**disk persistence** is centralized, and **portfolio-facing APIs** stay in one place.
 
-1. **Data sources / clients**
-   - Kite Connect (`app/auth.py`, `app/live_prices.py`, `app/portfolio_model.py`)
-   - NSE India archives (`app/cache/nse_provider.py`, consumed via `app/portfolio_model.py`)
-   - External metadata (`yfinance`, `mfdata.in`)
-   - MarketSmith India (public gateway for current market regime; model layer only)
-2. **Shared model layer**
-   - `app/portfolio_model.py`
-   - Builds normalized holdings/MF/positions entities and shared aggregates
-   - Owns MF-underlyings metadata cache section inside `.cache/model_cache.json`
-   - Owns MarketSmith regime snapshot section (one fetch per business day) in `.cache/model_cache.json`
-3. **Presentation layers**
-   - CLI: `app/cli_client.py` (HTTP client, ASCII tables)
-   - Web: `app/server.py` + `templates/` (FastAPI + HTML tabs + WS updates)
+1. **Per-source providers** (`app/cache/*_provider.py`)
+   - **`kite_provider`** — cash-equity instrument maps (names, ISIN, Kite `sector`,
+     NSE symbol→token) from `KiteConnect.instruments()` when a session exists.
+   - **`nse_provider`** — NSE index CSVs (Nifty 50 universe, symbol/ISIN→`Industry` maps).
+   - **`yfinance_provider`** — equity `industry`/`sector` labels persisted under the
+     `yfinance` section of the model cache.
+   - **`mfdata_provider`** — mfdata.in search + family holdings metadata (`mfdata` section).
+   - **`marketsmith_provider`** — daily MarketSmith India regime snapshot (`marketsmith` section).
+
+   **Contributors:** Follow **`app/cache/REFERENCE_PROVIDERS.md`** when adding or
+   changing providers (persistence family, warmup, background jobs, notifications,
+   `*_reference_debug_snapshot`). Optional typing: **`app/cache/reference_provider.py`**
+   (`ReferenceWarmupProvider`). Shared symbol/name/ISIN normalization:
+   **`app/cache/text_normalize.py`**.
+
+2. **Persistence and coordination**
+   - **`app/cache/model_cache_store.py`** — single file `.cache/model_cache.json`;
+     typed helpers load/update sections (`yfinance`, `reference_data`, `mfdata`,
+     `marketsmith`, …).
+   - **`app/cache/reference_cache_internal.py`** — shared `reference_data` disk cache,
+     source labels (`REFERENCE_CACHE_LAST_SOURCE`, including **`yfinance`** for
+     unified provenance via **`set_reference_last_source`**), and locking so NSE +
+     Kite-derived maps stay consistent.
+
+3. **Reference snapshots and warmup**
+   - **`app/reference_snapshot.py`** — builds an immutable **`ReferenceSnapshot`**
+     (`build_reference_snapshot`) from provider caches for each dashboard render;
+     **`warm_reference_snapshot`** invokes each module’s **`warmup(ctx)`** in the
+     order defined by **`REFERENCE_PROVIDER_WARMUPS`** (currently NSE → yfinance →
+     mfdata → MarketSmith → Kite). **`app/reference_context.py`** supplies
+     **`WarmupContext`**; see its docstring for which providers read **`kite`**,
+     **`force_refresh`**, **`marketsmith_force_sync`**, and related flags.
+   - **`app/reference_notifications.py`** — debounced revision bump + dashboard
+     cache-refresh signal when providers update disk state (including after mfdata’s
+     **`flush_mfdata_disk_cache`** successfully persists).
+   - **`app/services/cache_warmup.py`** — synchronous warmup invoked from the server
+     (`run_startup_cache_warmup_sync`: reference snapshot + mfdata holdings walk).
+   - **`app/services/cache_orchestrator.py`** — fire-and-forget thread that runs
+     that warmup after startup/login unless **`MOMENTUM_SKIP_CACHE_WARMUP`** is set.
+
+4. **Shared model layer** (`app/portfolio_model.py`)
+   - Normalized holdings/MF/positions entities and portfolio aggregates.
+   - Sector resolution (`resolve_equity_sector`) orchestrating yfinance cache → Kite → NSE → ISIN.
+   - **`warm_reference_caches()`** delegates to **`warm_reference_snapshot`**.
+   - **`get_reference_cache_debug_snapshot()`** merges per-provider
+     **`*_reference_debug_snapshot(now)`** rows (cash equity, NSE, yfinance,
+     mfdata, MarketSmith, etc.) for dashboard timing/API introspection.
+   - Re-exports such as **`get_marketsmith_market_condition`** from
+     **`app/cache/marketsmith_provider`** for scripts and older call sites.
+
+5. **Presentation**
+   - CLI: `app/cli_client.py` (HTTP client, ASCII tables).
+   - Web: `app/server.py` + `templates/` (FastAPI, HTML, **`app/live_prices.py`** WebSocket feed).
+
+Supporting modules unchanged in role: **`app/auth.py`** (Kite login + token cache),
+**`app/events.py`** (dashboard refresh hooks).
 
 ```text
-Kite / NSE India / yfinance / mfdata / MarketSmith India
+External APIs (Kite REST/WS, NSE CSVs, yfinance, mfdata.in, MarketSmith)
           |
           v
-  app/portfolio_model.py   <- shared normalization + aggregation + metadata cache
+  app/cache/*_provider.py  +  model_cache_store / reference_cache_internal
+          |
+          v
+  app/reference_snapshot.py (ReferenceSnapshot, warm_reference_snapshot, REFERENCE_PROVIDER_WARMUPS)
+          |
+          v
+  app/portfolio_model.py   <- normalization, sector resolution, aggregates
       |             |
       v             v
-  app/cli_client.py     app/server.py
-    (CLI)      (Dashboard UI)
+  app/cli_client.py     app/server.py (+ live_prices / cache orchestrator)
 ```
 
 Design intent: UI code stays independent from business/data-model logic; both
-CLI and dashboard should only format/render model outputs.
+CLI and dashboard should only format/render model outputs. Add new reference
+sources as **`app/cache/<name>_provider.py`**, append **`warmup`** to
+**`REFERENCE_PROVIDER_WARMUPS`** in **`reference_snapshot`**, expose any needed
+reads via **`portfolio_model`** (and register **`*_reference_debug_snapshot`** in
+**`get_reference_cache_debug_snapshot`** when observability matters). See **`REFERENCE_PROVIDERS.md`**.
 
 Contribution guideline: add or change portfolio calculations/normalization in
 `app/portfolio_model.py` first, then adapt CLI/web rendering if needed.
@@ -78,9 +131,10 @@ Contribution guideline: add or change portfolio calculations/normalization in
 - Adds mutual fund underlying insights (stock/sector breakdown and weights)
   in both dashboard and CLI when holdings data is available from `mfdata.in`.
 - Shows the India **market regime** from MarketSmith India (Confirmed Uptrend,
-  Correction, etc.) on the dashboard; the value is resolved in
-  `app/portfolio_model.get_marketsmith_market_condition()` and surfaced in HTML
-  and in ``dashboard-bootstrap`` as ``marketCondition`` for client scripts on load.
+  Correction, etc.) on the dashboard; the value is fetched via
+  `app.cache.marketsmith_provider.get_marketsmith_market_condition()` (also
+  importable from `app.portfolio_model`) and surfaced in HTML and in
+  ``dashboard-bootstrap`` as ``marketCondition`` for client scripts on load.
 - Reuses login state between runs, so day-to-day usage usually requires less
   repeated sign-in.
 
@@ -120,6 +174,8 @@ KITE_DASHBOARD_NAME=Raghava's Portfolio
 DASHBOARD_SNAPSHOT_SECONDS=120
 # optional: shared TTL for reference cache entries (cash-equity + NSE maps + Nifty50)
 REFERENCE_CACHE_TTL_SECONDS=86400
+# optional: skip background reference + mfdata warmup after server start (1/true/yes)
+# MOMENTUM_SKIP_CACHE_WARMUP=1
 # optional for CLI auto request_token capture
 KITE_REDIRECT_URL=http://127.0.0.1:5000/callback
 ```
@@ -170,23 +226,24 @@ the on-disk token cache so both dashboard and CLI require a fresh Zerodha login.
 ## Sector data source and cache
 
 The dashboard's **Sector** column for equities (holdings, equity positions, and
-watch list) is resolved in this order:
+watch list) follows `app.portfolio_model.resolve_equity_sector` in this order:
 
 1. **ETF override**: if the symbol or instrument/company name contains `ETF`,
    sector is forced to `ETF`.
-2. **Local model cache** (`.cache/model_cache.json`) using the
-   `sector` field.
-3. **Background yfinance refresh** is queued on cache miss (non-blocking for
-   the request path). The refreshed value is written back to the local cache.
-4. **Kite instruments `sector`** field (when available for the equity row).
-5. **NSE index CSV `Industry`** fallback (coarse backup label).
-6. **ISIN -> Industry** fallback from the same NSE CSV merges.
+2. **yfinance disk cache** (`.cache/model_cache.json`, `yfinance` section): prefer
+   cached `sector`, else cached `industry` for the same lookup keys.
+3. **Kite instruments `sector`** (instrument token, then exchange+symbol pair).
+4. **NSE CSV `Industry`** by symbol (also used when BSE symbol matches NSE).
+5. **ISIN → Industry** from merged NSE lists (including cross-exchange ISIN hints).
 
 Notes:
+- On cache miss, a **background yfinance refresh** may be queued (non-blocking
+  for the request path); refreshed values are written back to the model cache.
 - `Industry` may appear as fallback text if a true sector is unavailable.
 - ETFs are intentionally mapped to `ETF` because exchange/API sector metadata is
   commonly missing or inconsistent for ETFs.
-- yfinance cache refresh runs in background about once every 30 days.
+- yfinance map refresh runs in the background when the effective IST cache day
+  rolls over (09:00 Asia/Kolkata), not on a separate multi-week timer.
 - The dashboard also warms heavy reference caches in the background on startup
   and after successful login (`/callback`) to reduce cold-load latency.
 - Reference cache TTL defaults to 1 day and can be configured via
@@ -202,39 +259,16 @@ Each line includes total duration and cumulative stage marks (for example:
 `kite_data_fetch_parallel`, `instrument_and_reference_lookups`,
 `live_price_stream_bootstrap`) to help isolate bottlenecks.
 
-### Build initial caches offline (recommended)
+### Cache warmup
 
-To keep first app launch fast, pre-warm local caches before running the
-dashboard/CLI:
+Disk caches under `.cache/model_cache.json` (`yfinance`, `reference_data`, `mfdata`,
+`marketsmith`, …) are **warmed when the dashboard server starts** (`app/server.py`
+lifespan → `cache_orchestrator`). There is **no offline cache-build CLI**: first-time
+equity enrichment still fills **`yfinance`** progressively (dashboard lookups and the
+provider’s IST-day background refresh).
 
-```powershell
-python scripts/build_cache.py --workers 6
-```
-
-This writes/updates:
-- `.cache/model_cache.json`
-  - `yfinance` (industry/sector mapping)
-  - `reference_data` (NSE industry maps, Nifty 50 list, cash-equity lookups)
-  - `mfdata` (search/family-holdings metadata used by CLI/dashboard enrichment)
-  - `marketsmith` (daily market regime snapshot)
-
-Optional backfill for older cache rows that have industry but missing sector:
-
-```powershell
-python scripts/build_cache.py --backfill-sector --workers 6
-```
-
-To skip shared reference cache warmup:
-
-```powershell
-python scripts/build_cache.py --skip-reference-cache
-```
-
-Reference-cache only warmup (skip yfinance):
-
-```powershell
-python scripts/build_cache.py --reference-only
-```
+To skip startup warmup entirely, set **`MOMENTUM_SKIP_CACHE_WARMUP`** in `.env`
+(see commented example in the **Environment** section below).
 
 ## Run — CLI
 
@@ -320,7 +354,9 @@ Section keys accepted by `--sections` / `--exclude-sections`:
 ├── .access_token.json    # cached daily access token (gitignored, auto-created)
 ├── .cache/               # local runtime caches (gitignored)
 │   ├── dashboard_timing.log
-│   └── model_cache.json
+│   └── model_cache.json  # yfinance, reference_data, mfdata, marketsmith, …
+├── scripts/
+│   └── line_classification.py  # ancillary script (not used by dashboard warmup)
 ├── app/
 │   ├── __init__.py       # package docstring + entry point index
 │   ├── auth.py           # Kite login flow + token caching (shared by CLI + web)
@@ -328,8 +364,26 @@ Section keys accepted by `--sections` / `--exclude-sections`:
 │   ├── cli_client.py     # CLI: HTTP client to local server
 │   ├── main.py           # shim → cli_client
 │   ├── server.py         # FastAPI app (dashboard + /api/v1)
-│   ├── portfolio_model.py # shared data model + transforms used by CLI and web
-│   └── web.py            # shim → server (ASGI app)
+│   ├── portfolio_model.py # model + sector resolution; facade over cache providers
+│   ├── reference_snapshot.py   # ReferenceSnapshot + warm_reference_snapshot + REFERENCE_PROVIDER_WARMUPS
+│   ├── reference_context.py    # WarmupContext for provider warmup
+│   ├── reference_notifications.py  # debounced cache refresh signaling
+│   ├── events.py         # dashboard cache refresh hooks
+│   ├── web.py            # shim → server (ASGI app)
+│   ├── cache/
+│   │   ├── REFERENCE_PROVIDERS.md   # contributor contract for *_provider modules
+│   │   ├── model_cache_store.py      # single-file JSON sections + IST cache day
+│   │   ├── reference_cache_internal.py  # reference_data coordination + locks
+│   │   ├── reference_provider.py    # Protocol typing for warmup (optional)
+│   │   ├── text_normalize.py        # shared symbol/ISIN/name normalization
+│   │   ├── kite_provider.py
+│   │   ├── nse_provider.py
+│   │   ├── yfinance_provider.py
+│   │   ├── mfdata_provider.py
+│   │   └── marketsmith_provider.py
+│   └── services/
+│       ├── cache_warmup.py       # synchronous startup warmup steps
+│       └── cache_orchestrator.py # background thread + MOMENTUM_SKIP_CACHE_WARMUP
 └── templates/
     ├── base.html         # shared layout + CSS
     ├── index.html        # login landing page
@@ -469,10 +523,8 @@ The app uses `yfinance` only for equity metadata enrichment (`industry` and
 
 Used in:
 
-- `app/cache/yfinance_provider.py` / `app/portfolio_model.py` — `yf.Ticker(...).info` for
-  live/cache-backed industry and sector lookup.
-- `scripts/build_cache.py` — `yf.Ticker(...).info` to pre-build
-  `.cache/model_cache.json` offline.
+- `app/cache/yfinance_provider.py` (called from `app/portfolio_model.resolve_equity_sector`)
+  — `yf.Ticker(...).info` for cache-backed industry and sector lookup.
 
 ### NSE India (constituents and industry reference data)
 
@@ -515,7 +567,7 @@ weights.
 - **Tool page** —
   <https://marketsmithindia.com/mstool/marketconditionhistory.jsp>
 - **HTTP** — `GET https://marketsmithindia.com/gateway/simple-api/ms-india/mshkSubscription/getMarketHistory.json?ms-auth=<token>`
-- **Used in code** — `app/portfolio_model.get_marketsmith_market_condition()`
+- **Used in code** — `app.cache.marketsmith_provider.get_marketsmith_market_condition()`
   returns the first ``marketHistory`` row (current regime, Nifty 50 move in
   regime, etc.), then `app/server.py:/dashboard` passes it into the template and
   into ``dashboard-bootstrap`` as ``marketCondition`` (camelCase) so browser
@@ -531,7 +583,7 @@ a broken response does not retry on every `/dashboard` refresh. Optional
 
 | Where used | Call | Endpoint / artifact |
 | ---------- | ---- | ------------------- |
-| `app/portfolio_model` | urllib `GET` | `…/getMarketHistory.json` |
+| `app/cache/marketsmith_provider.py` | urllib `GET` | `…/getMarketHistory.json` |
 | `app/server.py:/dashboard` | `get_marketsmith_market_condition()` | Banner HTML + bootstrap JSON |
 
 ## Notes

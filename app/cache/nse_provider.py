@@ -12,6 +12,7 @@ from urllib.request import Request, urlopen
 
 from app.reference_context import WarmupContext
 from app.reference_notifications import notify_reference_cache_refresh
+from app.cache.text_normalize import normalise_isin, normalise_name, normalise_symbol
 from app.cache.model_cache_store import start_background_refresh_job
 from app.cache.reference_cache_internal import (
     REFERENCE_CACHE_LAST_SOURCE,
@@ -57,18 +58,6 @@ _NSE_MERGED_REFRESH_IN_PROGRESS = False
 _NIFTY50_REFRESH_IN_PROGRESS = False
 
 
-def _normalise_name(raw: Any) -> str:
-    return str(raw or "").strip()
-
-
-def _normalise_symbol(raw: Any) -> str:
-    return str(raw or "").strip().upper()
-
-
-def _normalise_isin(raw: Any) -> str:
-    return str(raw or "").strip().upper().replace(" ", "")
-
-
 def _fetch_nse_industry_csv_body(url: str) -> str | None:
     req = Request(url, headers=_NSE_HEADERS)
     try:
@@ -83,9 +72,9 @@ def _merge_industry_rows(body: str, nse_symbol_out: dict[str, str], isin_out: di
     reader = csv.DictReader(io.StringIO(body))
     for row in reader:
         r = row or {}
-        symbol = _normalise_symbol(r.get("Symbol"))
-        industry = _normalise_name(r.get("Industry"))
-        isin = _normalise_isin(r.get("ISIN Code") or r.get("ISIN"))
+        symbol = normalise_symbol(r.get("Symbol"))
+        industry = normalise_name(r.get("Industry"))
+        isin = normalise_isin(r.get("ISIN Code") or r.get("ISIN"))
         if symbol and industry:
             nse_symbol_out[symbol] = industry
         if isin and industry:
@@ -108,13 +97,13 @@ def _apply_nse_merged_payload_unlocked(payload: dict[str, Any], expires_at: floa
     clean_nse: dict[str, str] = {}
     clean_isin: dict[str, str] = {}
     for k, v in nse_symbol_to_industry.items():
-        symbol = _normalise_symbol(k)
-        industry = _normalise_name(v)
+        symbol = normalise_symbol(k)
+        industry = normalise_name(v)
         if symbol and industry:
             clean_nse[symbol] = industry
     for k, v in isin_to_industry.items():
-        isin = _normalise_isin(k)
-        industry = _normalise_name(v)
+        isin = normalise_isin(k)
+        industry = normalise_name(v)
         if isin and industry:
             clean_isin[isin] = industry
     if not clean_nse and not clean_isin:
@@ -229,7 +218,7 @@ def _refresh_nifty50_cache_unlocked() -> bool:
         symbols: list[str] = []
         seen: set[str] = set()
         for raw in symbols_payload:
-            symbol = _normalise_symbol(raw)
+            symbol = normalise_symbol(raw)
             if not symbol or symbol in seen:
                 continue
             seen.add(symbol)
@@ -259,7 +248,7 @@ def _refresh_nifty50_from_network_unlocked() -> bool:
     ordered_unique: list[str] = []
     seen: set[str] = set()
     for row in reader:
-        symbol = _normalise_symbol((row or {}).get("Symbol"))
+        symbol = normalise_symbol((row or {}).get("Symbol"))
         if not symbol or symbol in seen:
             continue
         seen.add(symbol)
@@ -291,7 +280,7 @@ def _maybe_start_nifty50_refresh_unlocked() -> None:
             ordered_unique: list[str] = []
             seen: set[str] = set()
             for row in reader:
-                symbol = _normalise_symbol((row or {}).get("Symbol"))
+                symbol = normalise_symbol((row or {}).get("Symbol"))
                 if not symbol or symbol in seen:
                     continue
                 seen.add(symbol)
@@ -326,7 +315,7 @@ def get_nifty50_symbols() -> list[str]:
         return list(_CACHED_NIFTY50_SYMBOLS)
 
 
-def nse_provider_cache_debug_snapshot(now: float) -> dict[str, dict[str, Any]]:
+def nse_reference_debug_snapshot(now: float) -> dict[str, dict[str, Any]]:
     """Entries merged into :func:`app.portfolio_model.get_reference_cache_debug_snapshot`."""
     return {
         "nse_merged_industry": {
@@ -342,15 +331,15 @@ def nse_provider_cache_debug_snapshot(now: float) -> dict[str, dict[str, Any]]:
     }
 
 
-def warm_nse_provider_caches(*, force_refresh: bool = False) -> None:
-    """Populate NSE CSV-backed lookups; optionally force background refresh jobs."""
+def warmup(ctx: WarmupContext) -> None:
+    """Populate NSE CSV-backed lookups; respects ``ctx.force_refresh``."""
     try:
         get_nse_symbol_to_industry()
         get_isin_to_industry()
         get_nifty50_symbols()
     except Exception as exc:
         logger.warning("NSE reference lookup warmup failed: %s", exc)
-    if force_refresh:
+    if ctx.force_refresh:
         try:
             with _CACHE_LOCK:
                 _maybe_start_nse_merged_refresh_unlocked()
@@ -359,16 +348,10 @@ def warm_nse_provider_caches(*, force_refresh: bool = False) -> None:
             logger.warning("NSE reference startup refresh failed: %s", exc)
 
 
-def warmup(ctx: WarmupContext) -> None:
-    """Populate NSE CSV-backed lookups; respects ``ctx.force_refresh``."""
-    warm_nse_provider_caches(force_refresh=ctx.force_refresh)
-
-
 __all__ = [
     "warmup",
     "get_isin_to_industry",
     "get_nifty50_symbols",
     "get_nse_symbol_to_industry",
-    "nse_provider_cache_debug_snapshot",
-    "warm_nse_provider_caches",
+    "nse_reference_debug_snapshot",
 ]

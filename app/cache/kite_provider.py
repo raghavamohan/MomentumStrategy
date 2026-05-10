@@ -8,6 +8,7 @@ from typing import Any
 
 from app.reference_context import WarmupContext
 from app.reference_notifications import notify_reference_cache_refresh
+from app.cache.text_normalize import normalise_isin, normalise_name, normalise_symbol
 from app.cache.model_cache_store import start_background_refresh_job
 from app.cache.reference_cache_internal import (
     REFERENCE_CACHE_LAST_SOURCE,
@@ -39,18 +40,6 @@ _CACHED_SYMBOL_TO_ISIN: dict[tuple[str, str], str] = {}
 _CASH_EQUITY_REFRESH_IN_PROGRESS = False
 
 
-def _normalise_name(raw: Any) -> str:
-    return str(raw or "").strip()
-
-
-def _normalise_symbol(raw: Any) -> str:
-    return str(raw or "").strip().upper()
-
-
-def _normalise_isin(raw: Any) -> str:
-    return str(raw or "").strip().upper().replace(" ", "")
-
-
 def _encode_int_key_dict(data: dict[int, Any]) -> dict[str, Any]:
     return {str(int(k)): v for k, v in data.items() if int(k) > 0}
 
@@ -77,7 +66,7 @@ def _encode_symbol_key_dict(data: dict[tuple[str, str], Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for (exchange, symbol), value in data.items():
         exch = str(exchange or "").strip().upper()
-        sym = _normalise_symbol(symbol)
+        sym = normalise_symbol(symbol)
         if exch and sym:
             out[f"{exch}|{sym}"] = value
     return out
@@ -92,7 +81,7 @@ def _decode_symbol_key_dict(data: Any, value_cast: Any = str) -> dict[tuple[str,
             continue
         exch, sym = raw_key.split("|", 1)
         exch = exch.strip().upper()
-        sym = _normalise_symbol(sym)
+        sym = normalise_symbol(sym)
         if not exch or not sym:
             continue
         try:
@@ -110,7 +99,7 @@ def _kite_row_industry(row: dict) -> str:
     """Industry / sector string from a Kite instrument row (EQ only)."""
     if not _kite_row_is_equity_cash(row):
         return ""
-    return _normalise_name(
+    return normalise_name(
         row.get("industry")
         or row.get("Industry")
         or row.get("sector")
@@ -122,7 +111,7 @@ def _kite_row_sector_only(row: dict) -> str:
     """Exchange ``sector`` field from Kite instrument row (EQ only)."""
     if not _kite_row_is_equity_cash(row):
         return ""
-    return _normalise_name(row.get("sector") or row.get("Sector"))
+    return normalise_name(row.get("sector") or row.get("Sector"))
 
 
 def _build_cash_equity_maps(kite) -> tuple[
@@ -154,7 +143,7 @@ def _build_cash_equity_maps(kite) -> tuple[
             continue
 
         for row in instruments:
-            symbol = _normalise_symbol(row.get("tradingsymbol"))
+            symbol = normalise_symbol(row.get("tradingsymbol"))
             token = int(row.get("instrument_token") or 0)
             if symbol and token > 0:
                 symbol_to_token[(exchange, symbol)] = token
@@ -174,14 +163,14 @@ def _build_cash_equity_maps(kite) -> tuple[
                     symbol_to_kite_sector[(exchange, symbol)] = k_sec
 
             if _kite_row_is_equity_cash(row):
-                isin = _normalise_isin(row.get("isin") or row.get("ISIN"))
+                isin = normalise_isin(row.get("isin") or row.get("ISIN"))
                 if isin:
                     if token > 0:
                         token_to_isin[token] = isin
                     if symbol:
                         symbol_to_isin[(exchange, symbol)] = isin
 
-            name = _normalise_name(row.get("name"))
+            name = normalise_name(row.get("name"))
             if not name:
                 continue
 
@@ -386,7 +375,7 @@ def warmup(ctx: WarmupContext) -> None:
             logger.warning("Kite reference startup refresh failed: %s", exc)
 
 
-def kite_provider_cash_equity_debug_snapshot(now: float) -> dict[str, Any]:
+def kite_reference_debug_snapshot(now: float) -> dict[str, Any]:
     """``cash_equity`` row for :func:`app.portfolio_model.get_reference_cache_debug_snapshot`."""
     return {
         "source": REFERENCE_CACHE_LAST_SOURCE.get("cash_equity", "unknown"),
@@ -402,6 +391,5 @@ __all__ = [
     "get_cash_equity_kite_sector_lookups",
     "get_cash_equity_name_lookups",
     "get_nse_symbol_to_token_lookup",
-    "kite_provider_cash_equity_debug_snapshot",
-    "maybe_start_cash_equity_refresh_unlocked",
+    "kite_reference_debug_snapshot",
 ]

@@ -1,4 +1,4 @@
-"""Background cache warmup aligned with :mod:`scripts.build_cache`."""
+"""Background cache warmup after the HTTP server process starts."""
 
 from __future__ import annotations
 

@@ -15,47 +15,32 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import logging
-import os
-import re
 import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 
-from app.cache.kite_provider import (
-    get_cash_equity_isin_lookups,
-    get_cash_equity_kite_sector_lookups,
-    get_cash_equity_name_lookups,
-    get_nse_symbol_to_token_lookup,
-    kite_provider_cash_equity_debug_snapshot,
-)
+from app.cache.kite_provider import kite_reference_debug_snapshot
 from app.cache.marketsmith_provider import (
     get_marketsmith_market_condition,
     marketsmith_market_condition_bootstrap,
+    marketsmith_reference_debug_snapshot,
 )
 from app.cache.mfdata_provider import (
     flush_mfdata_disk_cache,
     mfdata_holdings_for_family,
+    mfdata_reference_debug_snapshot,
     mfdata_search_fund,
     normalize_match_text as _normalize_match_text,
     rank_mfdata_variants,
 )
-from app.cache.nse_provider import (
-    get_isin_to_industry,
-    get_nifty50_symbols,
-    get_nse_symbol_to_industry,
-    nse_provider_cache_debug_snapshot,
-)
+from app.cache.nse_provider import nse_reference_debug_snapshot
 from app.cache.yfinance_provider import (
-    get_cache_debug_snapshot,
     lookup_yfinance_sector_labels,
+    yfinance_reference_debug_snapshot,
 )
 from app.reference_context import WarmupContext
 from app.reference_notifications import notify_reference_cache_refresh
-from app.reference_snapshot import (
-    build_reference_snapshot,
-    get_reference_revision,
-    warm_reference_snapshot,
-)
+from app.reference_snapshot import build_reference_snapshot, warm_reference_snapshot
 from app.cache.reference_cache_internal import instrument_reference_lock
 from app.cache.model_cache_store import (
     current_effective_day_ist,
@@ -88,12 +73,14 @@ def get_reference_cache_debug_snapshot() -> dict[str, dict[str, Any]]:
     """Return cache-source/expiry metadata for dashboard timing logs."""
     now = time.time()
     with _REFERENCE_CACHE_LOCK:
-        nse_rows = nse_provider_cache_debug_snapshot(now)
+        nse_rows = nse_reference_debug_snapshot(now)
         return {
-            "cash_equity": kite_provider_cash_equity_debug_snapshot(now),
+            "cash_equity": kite_reference_debug_snapshot(now),
             "nse_merged_industry": nse_rows["nse_merged_industry"],
             "nifty50_symbols": nse_rows["nifty50_symbols"],
-            "yfinance": get_cache_debug_snapshot(now),
+            "yfinance": yfinance_reference_debug_snapshot(now),
+            "mfdata": mfdata_reference_debug_snapshot(now),
+            "marketsmith": marketsmith_reference_debug_snapshot(now),
         }
 
 
@@ -633,3 +620,30 @@ def build_mf_underlying_breakdown(
     if flush_mfdata_disk_cache():
         notify_reference_cache_refresh()
     return table_rows, latest_month, missing_unique, len(aggregated_funds), len(all_funds)
+
+
+__all__ = [
+    "EQUITY_EXCHANGES",
+    "FNO_EXCHANGES",
+    "EquityHolding",
+    "MfHolding",
+    "Position",
+    "build_equity_holding",
+    "build_mf_holding",
+    "build_mf_underlying_breakdown",
+    "build_position",
+    "build_reference_snapshot",
+    "current_effective_day_ist",
+    "equity_sector_breakdown",
+    "get_marketsmith_market_condition",
+    "get_reference_cache_debug_snapshot",
+    "marketsmith_market_condition_bootstrap",
+    "normalize_equity_sector",
+    "overlay_live_ltp",
+    "resolve_equity_sector",
+    "start_background_refresh_job",
+    "summarise",
+    "summarise_equity_by_sector",
+    "symbol_with_company_name",
+    "warm_reference_caches",
+]

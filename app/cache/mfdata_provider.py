@@ -11,7 +11,13 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request as URLRequest, urlopen
 
-from app.cache.model_cache_store import current_effective_day_ist, read_section, update_section
+from app.reference_notifications import notify_reference_cache_refresh
+from app.cache.model_cache_store import (
+    current_effective_day_ist,
+    next_cutoff_epoch_ist,
+    read_section,
+    update_section,
+)
 from app.reference_context import WarmupContext
 
 MFDATA_BASE_URL = "https://mfdata.in"
@@ -81,6 +87,7 @@ def _prepare_mfdata_cache_locked() -> None:
 def flush_mfdata_disk_cache() -> bool:
     """Persist dirty mfdata section if needed; returns whether a write occurred."""
     global _MFDATA_DISK_CACHE_DIRTY
+    wrote = False
     with _MFDATA_CACHE_LOCK:
         _prepare_mfdata_cache_locked()
         if not _MFDATA_DISK_CACHE_DIRTY:
@@ -88,9 +95,12 @@ def flush_mfdata_disk_cache() -> bool:
         try:
             _save_mfdata_disk_cache_locked()
             _MFDATA_DISK_CACHE_DIRTY = False
-            return True
+            wrote = True
         except Exception:
             return False
+    if wrote:
+        notify_reference_cache_refresh()
+    return True
 
 
 def _mfdata_json_get(path: str, query: dict[str, Any] | None = None) -> Any:
@@ -184,6 +194,40 @@ def warmup(_ctx: WarmupContext) -> None:
         _prepare_mfdata_cache_locked()
 
 
+def mfdata_reference_debug_snapshot(now: float) -> dict[str, Any]:
+    """Metadata row for :func:`app.portfolio_model.get_reference_cache_debug_snapshot`."""
+    expires_ms = max(0.0, (next_cutoff_epoch_ist(9) - now) * 1000.0)
+    with _MFDATA_CACHE_LOCK:
+        _prepare_mfdata_cache_locked()
+        meta = (
+            _MFDATA_DISK_CACHE.get("meta")
+            if isinstance(_MFDATA_DISK_CACHE.get("meta"), dict)
+            else {}
+        )
+        cached_day = str(meta.get("cache_day") or "").strip()
+        cur = _current_cache_day_token()
+        dirty = _MFDATA_DISK_CACHE_DIRTY
+        search = (
+            _MFDATA_DISK_CACHE.get("search")
+            if isinstance(_MFDATA_DISK_CACHE.get("search"), dict)
+            else {}
+        )
+        holdings = (
+            _MFDATA_DISK_CACHE.get("holdings")
+            if isinstance(_MFDATA_DISK_CACHE.get("holdings"), dict)
+            else {}
+        )
+        prefix = "aligned" if cached_day == cur else "day_mismatch"
+        source = f"{prefix}_dirty" if dirty else prefix
+        return {
+            "source": source,
+            "expires_in_ms": expires_ms,
+            "refresh_in_progress": False,
+            "search_keys_cached": len(search),
+            "holdings_families_cached": len(holdings),
+        }
+
+
 def rank_mfdata_variants(fund_name: str, variants: list[dict[str, Any]]) -> list[int]:
     canonical_fund = canonicalize_mf_scheme_name(fund_name)
     if not canonical_fund:
@@ -216,9 +260,8 @@ def rank_mfdata_variants(fund_name: str, variants: list[dict[str, Any]]) -> list
 
 
 __all__ = [
+    "mfdata_reference_debug_snapshot",
     "mfdata_disk_table_snapshot",
-    "MFDATA_BASE_URL",
-    "MFDATA_HTTP_TIMEOUT_SECONDS",
     "canonicalize_mf_scheme_name",
     "flush_mfdata_disk_cache",
     "mfdata_holdings_for_family",

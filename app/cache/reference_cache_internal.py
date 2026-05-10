@@ -35,7 +35,18 @@ REFERENCE_CACHE_LAST_SOURCE: dict[str, str] = {
     "cash_equity": "unknown",
     "nse_merged_industry": "unknown",
     "nifty50_symbols": "unknown",
+    "yfinance": "unknown",
 }
+
+
+def set_reference_last_source(section: str, source: str) -> None:
+    """Record provenance for dashboards and debug snapshots (thread-safe)."""
+    key = str(section or "").strip()
+    if not key:
+        return
+    val = str(source or "").strip() or "unknown"
+    with instrument_reference_lock:
+        REFERENCE_CACHE_LAST_SOURCE[key] = val
 
 
 def _current_reference_day_token() -> str:

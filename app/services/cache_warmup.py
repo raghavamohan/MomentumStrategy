@@ -1,7 +1,4 @@
-"""Shared cache warmup used by the HTTP server startup path and ``scripts/build_cache``.
-
-Keeps CLI/script behavior and dashboard background warmup aligned without dynamic imports.
-"""
+"""Synchronous cache warmup steps invoked from the HTTP server startup path."""
 
 from __future__ import annotations
 
@@ -29,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 def load_authenticated_kite_client_for_scripts() -> Any:
-    """Return a validated Kite client; fall back to interactive login when needed (CLI scripts)."""
+    """Return a validated Kite client; fall back to interactive login when no valid token exists."""
     token = load_cached_access_token()
     if token:
         api_key, _ = load_credentials()
@@ -44,7 +41,7 @@ def load_authenticated_kite_client_for_scripts() -> Any:
 
 
 def warm_mfdata_holdings_cache(*, emit: Callable[[str], None] | None = None) -> None:
-    """Populate mfdata cache sections from current MF holdings (same behavior as ``build_cache``)."""
+    """Populate mfdata cache sections from current MF holdings (Kite session required)."""
     _emit = emit or print
 
     _emit("")

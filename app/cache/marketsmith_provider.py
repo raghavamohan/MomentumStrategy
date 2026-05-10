@@ -16,6 +16,7 @@ from urllib.request import Request as URLRequest, urlopen
 from app.reference_notifications import notify_reference_cache_refresh
 from app.cache.model_cache_store import (
     current_effective_day_ist,
+    next_cutoff_epoch_ist,
     read_section,
     start_background_refresh_job,
     update_section,
@@ -321,7 +322,7 @@ def get_marketsmith_market_condition(*, force_sync_fetch: bool = False) -> dict[
     MF underlyings): serves from process memory when warm,
     else from the ``marketsmith`` section inside ``.cache/model_cache.json``,
     else a background HTTPS fetch for the day (dashboard) or a blocking fetch
-    when ``force_sync_fetch`` is True (e.g. ``scripts/build_cache.py``).
+    when ``force_sync_fetch`` is True (blocking refresh for callers that need disk filled immediately).
     Optional env ``MARKETSMITH_MS_AUTH`` overrides the gateway ``ms-auth`` query parameter.
     """
     global _MARKET_CONDITION_MEMORY_DAY, _MARKET_CONDITION_MEMORY
@@ -365,6 +366,52 @@ def get_marketsmith_market_condition(*, force_sync_fetch: bool = False) -> dict[
     return _marketsmith_finalize_model(loading)
 
 
+def marketsmith_reference_debug_snapshot(now: float) -> dict[str, Any]:
+    """Metadata row for :func:`app.portfolio_model.get_reference_cache_debug_snapshot`."""
+    expires_ms = max(0.0, (next_cutoff_epoch_ist(9) - now) * 1000.0)
+    day = _marketsmith_calendar_day_token()
+    with _MARKET_CONDITION_LOCK:
+        mem_day = _MARKET_CONDITION_MEMORY_DAY
+        memory_ready = (
+            mem_day == day
+            and _MARKET_CONDITION_MEMORY is not None
+        )
+        mem_headline = ""
+        if _MARKET_CONDITION_MEMORY is not None:
+            headline = _MARKET_CONDITION_MEMORY.get("headline")
+            if isinstance(headline, str):
+                mem_headline = headline.strip()
+            loading_placeholder = (_MARKET_CONDITION_MEMORY.get("error") or "").strip().startswith(
+                "Refreshing market regime"
+            )
+        else:
+            loading_placeholder = False
+    with _MARKETSMITH_FETCH_LOCK:
+        fetch_busy = _MARKETSMITH_NETWORK_FETCH_IN_PROGRESS
+    disk_for_day_ok = _marketsmith_read_disk_for_day(day) is not None
+
+    if memory_ready:
+        if loading_placeholder and not mem_headline:
+            source = "loading"
+        else:
+            source = "memory"
+    elif disk_for_day_ok:
+        source = "disk"
+    elif fetch_busy:
+        source = "network_refresh"
+    elif _marketsmith_read_disk_any_model()[1] is not None:
+        source = "disk_stale"
+    else:
+        source = "cold"
+
+    return {
+        "source": source,
+        "expires_in_ms": expires_ms,
+        "refresh_in_progress": fetch_busy,
+        "cached_day_memory": mem_day if memory_ready else "",
+    }
+
+
 def marketsmith_market_condition_bootstrap(model: dict[str, Any]) -> dict[str, Any]:
     """CamelCase JSON projection for ``dashboard-bootstrap`` (client reads on load)."""
     raw_cached = model.get("cached_day")
@@ -391,5 +438,6 @@ def marketsmith_market_condition_bootstrap(model: dict[str, Any]) -> dict[str, A
 __all__ = [
     "get_marketsmith_market_condition",
     "marketsmith_market_condition_bootstrap",
+    "marketsmith_reference_debug_snapshot",
     "warmup",
 ]
