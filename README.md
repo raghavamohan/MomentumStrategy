@@ -23,8 +23,9 @@ There are two interfaces, sharing the same authentication flow and token cache:
   cards, tabs, live equity/F&O prices via Kite WebSocket (`KiteTicker`), and
   JSON APIs under `/api/v1/`.
 
-Both interfaces use the same server-side domain/model layer in
-`app/portfolio_model.py` for holdings/MF/positions normalization and aggregates.
+Portfolio normalization and aggregates run on the server in
+`app/portfolio_model.py`. The CLI calls the REST API (`/api/v1/...`) implemented
+there; it does not import `portfolio_model` directly.
 
 ## Architecture
 
@@ -69,7 +70,10 @@ The app is organized in layers so **per-source I/O** stays in small modules,
    - **`app/services/cache_warmup.py`** — synchronous warmup invoked from the server
      (`run_startup_cache_warmup_sync`: reference snapshot + mfdata holdings walk).
    - **`app/services/cache_orchestrator.py`** — fire-and-forget thread that runs
-     that warmup after startup/login unless **`MOMENTUM_SKIP_CACHE_WARMUP`** is set.
+     **`run_startup_cache_warmup_sync`** (`warm_reference_snapshot` with no Kite +
+     **`warm_mfdata_holdings_cache`**) unless **`MOMENTUM_SKIP_CACHE_WARMUP`** is set.
+     This does **not** disable **`_start_reference_cache_warmup`** in **`app/server.py`**
+     ( **`warm_reference_caches`** with optional Kite session and **`force_refresh=True`** ).
 
 4. **Shared model layer** (`app/portfolio_model.py`)
    - Normalized holdings/MF/positions entities and portfolio aggregates.
@@ -79,7 +83,8 @@ The app is organized in layers so **per-source I/O** stays in small modules,
      **`*_reference_debug_snapshot(now)`** rows (cash equity, NSE, yfinance,
      mfdata, MarketSmith, etc.) for dashboard timing/API introspection.
    - Re-exports such as **`get_marketsmith_market_condition`** from
-     **`app/cache/marketsmith_provider`** for scripts and older call sites.
+     **`app/cache/marketsmith_provider`** so **`app/server.py`** imports most of this
+     surface from one module.
 
 5. **Presentation**
    - CLI: `app/cli_client.py` (HTTP client, ASCII tables).
@@ -172,9 +177,8 @@ KITE_DASHBOARD_NAME=Raghava's Portfolio
 # Optional: live index quotes under the dashboard title (NSE). Default: NIFTY50,BANKNIFTY,NIFTYIT,NIFTYFINSERVICE,NIFTYMET
 # KITE_DASHBOARD_INDICES=NIFTY50,BANKNIFTY,NIFTYIT,NIFTYFINSERVICE,NIFTYMET
 DASHBOARD_SNAPSHOT_SECONDS=120
-# optional: shared TTL for reference cache entries (cash-equity + NSE maps + Nifty50)
-REFERENCE_CACHE_TTL_SECONDS=86400
-# optional: skip background reference + mfdata warmup after server start (1/true/yes)
+# optional: skip the startup thread that runs run_startup_cache_warmup_sync (1/true/yes).
+# Does not disable web reference warmup (warm_reference_caches); see "## Cache warmup".
 # MOMENTUM_SKIP_CACHE_WARMUP=1
 # optional for CLI auto request_token capture
 KITE_REDIRECT_URL=http://127.0.0.1:5000/callback
@@ -245,9 +249,9 @@ Notes:
 - yfinance map refresh runs in the background when the effective IST cache day
   rolls over (09:00 Asia/Kolkata), not on a separate multi-week timer.
 - The dashboard also warms heavy reference caches in the background on startup
-  and after successful login (`/callback`) to reduce cold-load latency.
-- Reference cache TTL defaults to 1 day and can be configured via
-  `REFERENCE_CACHE_TTL_SECONDS` in `.env`.
+  and after successful login (`/callback`) to reduce cold-load latency (`warm_reference_caches`
+  via **`web-reference-warmup`** jobs). **`reference_data`** memory/disk TTL is driven by **the next
+  09:00 IST cutoff** (`model_cache_store.next_cutoff_epoch_ist`), not a separate seconds-based env knob.
 
 ## Dashboard timing logs
 
@@ -261,14 +265,23 @@ Each line includes total duration and cumulative stage marks (for example:
 
 ### Cache warmup
 
-Disk caches under `.cache/model_cache.json` (`yfinance`, `reference_data`, `mfdata`,
-`marketsmith`, …) are **warmed when the dashboard server starts** (`app/server.py`
-lifespan → `cache_orchestrator`). There is **no offline cache-build CLI**: first-time
-equity enrichment still fills **`yfinance`** progressively (dashboard lookups and the
-provider’s IST-day background refresh).
+Two complementary paths run shortly after **`app/server.py`** starts:
 
-To skip startup warmup entirely, set **`MOMENTUM_SKIP_CACHE_WARMUP`** in `.env`
-(see commented example in the **Environment** section below).
+1. **`run_startup_cache_warmup()`** (**`cache_orchestrator`**): a daemon thread calling
+   **`run_startup_cache_warmup_sync`** (`warm_reference_snapshot` with **`kite=None`**
+   plus **`warm_mfdata_holdings_cache`** when a usable Kite token exists). Omit this
+   with **`MOMENTUM_SKIP_CACHE_WARMUP=1`**.
+2. **`_start_reference_cache_warmup()`** (started from lifespan after the above):
+
+   **`warm_reference_caches(kite, force_refresh=True)`** when a valid cached token
+   exists (NSE/yfinance/mfdata/MarketSmith/Kite instrument maps with background
+   refresh hints). This still runs when **`MOMENTUM_SKIP_CACHE_WARMUP`** is set.
+
+There is **no offline cache-build CLI**; **`yfinance`** fills from lookups and the
+provider’s IST-day background refresh.
+
+To skip only path (1), set **`MOMENTUM_SKIP_CACHE_WARMUP`** in `.env` (see
+[`.env.example`](.env.example)).
 
 ## Run — CLI
 
@@ -540,8 +553,8 @@ Method used in code:
 - Parse CSV using `csv.DictReader`
 - Merge selected files (for example Nifty 50/100/200/500 and mid/small-cap lists)
   into in-memory maps
-- Persist and reuse via `.cache/model_cache.json` (`reference_data` section) with refresh policy
-  (`REFERENCE_CACHE_TTL_SECONDS`)
+- Persist and reuse via `.cache/model_cache.json` (`reference_data` section); in-memory
+  expiry uses the next **09:00 IST** boundary (see **`model_cache_store.next_cutoff_epoch_ist`**).
 
 ### mfdata.in (MF underlying aggregation)
 

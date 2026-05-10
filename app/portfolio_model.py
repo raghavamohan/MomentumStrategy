@@ -7,8 +7,8 @@ NSE CSV merges (:mod:`app.cache.nse_provider`), and yfinance-backed labels
 for market regime. MF metadata from mfdata.in is implemented in
 :mod:`app.cache.mfdata_provider`.
 
-Callers such as :mod:`app.server` should use this module rather than importing
-:mod:`app.cache` packages directly for portfolio-facing lookups.
+Web code should import portfolio-facing helpers here (e.g. :mod:`app.server`) rather
+than pulling from :mod:`app.cache` ad hoc, unless implementing a new provider.
 """
 
 from __future__ import annotations

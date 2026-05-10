@@ -1,6 +1,6 @@
 # Reference data providers
 
-Modules named `*_provider.py` under `app/cache/` supply offline or cached lookups used by [`app.reference_snapshot`] and [`app.portfolio_model`]. Follow this convention when adding a new provider.
+Modules named `*_provider.py` under `app/cache/` supply cached lookups used by `app.reference_snapshot` and `app.portfolio_model`. Follow this convention when adding a new provider.
 
 ## Module API
 
@@ -62,4 +62,4 @@ After a **successful** update that should refresh the dashboard’s reference sn
 
 ## Optional typing
 
-[`reference_provider`](reference_provider.py) defines a `typing.Protocol` for `warmup`; modules do not need to subclass anything.
+`reference_provider.py` defines a `typing.Protocol` for `warmup`; modules do not need to subclass anything.
