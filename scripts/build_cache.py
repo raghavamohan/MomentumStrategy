@@ -30,34 +30,21 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.auth import (  # noqa: E402
-    build_authenticated_client,
-    get_kite_client,
-    load_cached_access_token,
-    load_credentials,
-    validate_kite_session,
-)
-from app.instruments import (  # noqa: E402
-    get_cash_equity_isin_lookups,
-    get_cash_equity_kite_sector_lookups,
-    get_cash_equity_name_lookups,
-    get_isin_to_industry,
-    get_nifty50_symbols,
-    get_nse_symbol_to_industry,
-    get_nse_symbol_to_token_lookup,
+from app.portfolio_model import (  # noqa: E402
+    build_reference_snapshot,
+    get_marketsmith_market_condition,
     get_reference_cache_debug_snapshot,
+    warm_reference_caches,
 )
-from app.model_cache_store import (  # noqa: E402
+from app.services.cache_warmup import (  # noqa: E402
+    load_authenticated_kite_client_for_scripts,
+    warm_mfdata_holdings_cache,
+)
+from app.cache.model_cache_store import (  # noqa: E402
     current_effective_day_ist,
     load_model_cache,
     save_model_cache,
 )
-from app.portfolio_model import (  # noqa: E402
-    build_mf_holding,
-    build_mf_underlying_breakdown,
-    get_marketsmith_market_condition,
-)
-from kiteconnect.exceptions import PermissionException, TokenException  # noqa: E402
 
 try:
     import yfinance as yf  # type: ignore  # noqa: E402
@@ -139,7 +126,7 @@ def _persist_yfinance_section(
         "cache_day": cache_day,
     }
     # Older build_cache.py wrote ``mapping`` / ``last_refresh_epoch`` at the root;
-    # remove so :func:`app.model_cache_store.read_section` sees a single shape.
+    # remove so :func:`app.cache.model_cache_store.read_section` sees a single shape.
     root.pop("mapping", None)
     root.pop("last_refresh_epoch", None)
     save_model_cache(root)
@@ -246,51 +233,34 @@ def warm_yfinance_cache(args: argparse.Namespace, project_root: Path) -> Path:
     return cache_file
 
 
-def _get_authenticated_kite_client() -> Any:
-    token = load_cached_access_token()
-    if token:
-        api_key, _ = load_credentials()
-        candidate = build_authenticated_client(api_key, token)
-        if validate_kite_session(candidate):
-            return candidate
-        print("Cached Kite token expired. Starting interactive login...")
-        return get_kite_client()
-
-    print("No cached Kite access token found. Starting interactive login...")
-    return get_kite_client()
-
-
 def warm_reference_cache() -> None:
     print()
     print("Warming shared reference cache section in .cache/model_cache.json...")
     try:
-        nse_symbol_to_industry = get_nse_symbol_to_industry()
-        isin_to_industry = get_isin_to_industry()
-        nifty50_symbols = get_nifty50_symbols()
+        warm_reference_caches(None, force_refresh=False)
+        pre = build_reference_snapshot(None)
         print(
             "NSE references: "
-            f"symbol->industry={len(nse_symbol_to_industry)}, "
-            f"isin->industry={len(isin_to_industry)}, "
-            f"nifty50={len(nifty50_symbols)}"
+            f"symbol->industry={len(pre.nse.symbol_to_industry)}, "
+            f"isin->industry={len(pre.nse.isin_to_industry)}, "
+            f"nifty50={len(pre.nse.nifty50_symbols)}"
         )
     except Exception as exc:
         print(f"NSE reference warmup FAILED: {exc}")
 
     try:
-        kite = _get_authenticated_kite_client()
-        token_to_name, symbol_to_name = get_cash_equity_name_lookups(kite)
-        token_to_sector, symbol_to_sector = get_cash_equity_kite_sector_lookups(kite)
-        token_to_isin, symbol_to_isin = get_cash_equity_isin_lookups(kite)
-        nse_symbol_to_token = get_nse_symbol_to_token_lookup(kite)
+        kite = load_authenticated_kite_client_for_scripts()
+        warm_reference_caches(kite, force_refresh=False)
+        snap = build_reference_snapshot(kite)
         print(
             "Cash-equity references: "
-            f"token->name={len(token_to_name)}, "
-            f"symbol->name={len(symbol_to_name)}, "
-            f"token->sector={len(token_to_sector)}, "
-            f"symbol->sector={len(symbol_to_sector)}, "
-            f"token->isin={len(token_to_isin)}, "
-            f"symbol->isin={len(symbol_to_isin)}, "
-            f"nse_symbol->token={len(nse_symbol_to_token)}"
+            f"token->name={len(snap.kite.token_to_name)}, "
+            f"symbol->name={len(snap.kite.symbol_to_name)}, "
+            f"token->sector={len(snap.kite.token_to_kite_sector)}, "
+            f"symbol->sector={len(snap.kite.symbol_to_kite_sector)}, "
+            f"token->isin={len(snap.kite.token_to_isin)}, "
+            f"symbol->isin={len(snap.kite.symbol_to_isin)}, "
+            f"nse_symbol->token={len(snap.kite.nse_symbol_to_token)}"
         )
     except Exception as exc:
         print(f"Cash-equity reference warmup FAILED: {exc}")
@@ -306,33 +276,6 @@ def warm_reference_cache() -> None:
             )
     except Exception as exc:
         print(f"Reference cache debug snapshot unavailable: {exc}")
-
-
-def warm_mfdata_cache() -> None:
-    print()
-    print("Warming mfdata section in .cache/model_cache.json...")
-    try:
-        kite = _get_authenticated_kite_client()
-        try:
-            mf_raw = kite.mf_holdings() or []
-        except PermissionException:
-            print("mfdata warmup skipped: Kite MF API permission is not enabled for this app.")
-            return
-        except TokenException:
-            print("mfdata warmup skipped: Kite session expired during MF holdings fetch.")
-            return
-        mf_rows = sorted((build_mf_holding(h).to_dict() for h in mf_raw), key=lambda r: r["fund"])
-        if not mf_rows:
-            print("mfdata warmup skipped: no MF holdings in account.")
-            return
-        rows, month, missing_funds, aggregated_count, total_count = build_mf_underlying_breakdown(mf_rows)
-        print(
-            "mfdata warmup result: "
-            f"funds={total_count}, aggregated={aggregated_count}, "
-            f"rows={len(rows)}, month={month or '-'}, missing={len(missing_funds)}"
-        )
-    except Exception as exc:
-        print(f"mfdata warmup FAILED: {exc}")
 
 
 def warm_marketsmith_cache() -> None:
@@ -406,7 +349,7 @@ def main() -> int:
     if not args.skip_reference_cache:
         warm_reference_cache()
     if not args.skip_mfdata_cache:
-        warm_mfdata_cache()
+        warm_mfdata_holdings_cache()
     warm_marketsmith_cache()
 
     print(f"Done. Model cache file: {cache_file}")

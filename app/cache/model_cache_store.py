@@ -12,7 +12,7 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo
 from datetime import datetime, timedelta
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MODEL_CACHE_FILE = PROJECT_ROOT / ".cache" / "model_cache.json"
 _MODEL_CACHE_LOCK = threading.Lock()
 _IST = ZoneInfo("Asia/Kolkata")
@@ -98,4 +98,3 @@ def start_background_refresh_job(name: str, job: Callable[[], None]) -> bool:
 
     threading.Thread(target=_runner, daemon=True).start()
     return True
-

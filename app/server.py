@@ -135,22 +135,9 @@ from app.auth import (
     save_cached_access_token,
     validate_kite_session,
 )
-from app.instruments import (
-    get_cash_equity_isin_lookups,
-    get_cash_equity_kite_sector_lookups,
-    get_cash_equity_name_lookups,
-    get_reference_cache_debug_snapshot,
-    get_isin_to_industry,
-    get_nifty50_symbols,
-    get_nse_symbol_to_industry,
-    get_nse_symbol_to_token_lookup,
-    resolve_equity_sector,
-    warm_reference_caches,
-)
 from app.env_util import log_dashboard_ws_debug_exception
 from app.events import subscribe_cache_refresh
 from app.live_prices import live_price_stream, notify_dashboard_cache_refresh
-from app.model_cache_store import current_effective_day_ist, start_background_refresh_job
 from app.services.cache_orchestrator import run_startup_cache_warmup
 from app.portfolio_model import (
     EQUITY_EXCHANGES,
@@ -159,13 +146,19 @@ from app.portfolio_model import (
     build_mf_holding,
     build_mf_underlying_breakdown,
     build_position,
+    build_reference_snapshot,
+    current_effective_day_ist,
     equity_sector_breakdown,
     get_marketsmith_market_condition,
+    get_reference_cache_debug_snapshot,
     marketsmith_market_condition_bootstrap,
     normalize_equity_sector,
     overlay_live_ltp,
+    resolve_equity_sector,
+    start_background_refresh_job,
     summarise,
     summarise_equity_by_sector,
+    warm_reference_caches,
 )
 
 
@@ -1393,22 +1386,17 @@ async def _build_dashboard_view_model(
     index_tokens: set[int] = set()
     index_quotes_bootstrap: list[dict[str, Any]] = []
 
-    equity_token_to_name, equity_symbol_to_name = get_cash_equity_name_lookups(kite)
-    _dashboard_timing_mark(timings, "lookup_cash_equity_names", request_start)
-    equity_token_to_kite_sector, equity_symbol_to_kite_sector = (
-        get_cash_equity_kite_sector_lookups(kite)
-    )
-    _dashboard_timing_mark(timings, "lookup_cash_equity_kite_sectors", request_start)
-    equity_token_to_isin, equity_symbol_to_isin = get_cash_equity_isin_lookups(kite)
-    _dashboard_timing_mark(timings, "lookup_cash_equity_isin", request_start)
-    nse_symbol_to_industry = get_nse_symbol_to_industry()
-    _dashboard_timing_mark(timings, "lookup_nse_symbol_industry", request_start)
-    isin_to_industry = get_isin_to_industry()
-    _dashboard_timing_mark(timings, "lookup_isin_industry", request_start)
-    nse_symbol_to_token = get_nse_symbol_to_token_lookup(kite)
-    _dashboard_timing_mark(timings, "lookup_nse_symbol_token", request_start)
-    nifty50_symbols = get_nifty50_symbols()
-    _dashboard_timing_mark(timings, "lookup_nifty50_symbols", request_start)
+    ref_snap = build_reference_snapshot(kite, market_condition=market_condition)
+    equity_token_to_name = ref_snap.kite.token_to_name
+    equity_symbol_to_name = ref_snap.kite.symbol_to_name
+    equity_token_to_kite_sector = ref_snap.kite.token_to_kite_sector
+    equity_symbol_to_kite_sector = ref_snap.kite.symbol_to_kite_sector
+    equity_token_to_isin = ref_snap.kite.token_to_isin
+    equity_symbol_to_isin = ref_snap.kite.symbol_to_isin
+    nse_symbol_to_industry = ref_snap.nse.symbol_to_industry
+    isin_to_industry = ref_snap.nse.isin_to_industry
+    nse_symbol_to_token = ref_snap.kite.nse_symbol_to_token
+    nifty50_symbols = list(ref_snap.nse.nifty50_symbols)
     reference_cache_debug = get_reference_cache_debug_snapshot()
     _dashboard_timing_mark(timings, "instrument_and_reference_lookups", request_start)
     watch_quote_keys = [f"NSE:{sym}" for sym in nifty50_symbols]

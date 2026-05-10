@@ -31,8 +31,8 @@ Both interfaces use the same server-side domain/model layer in
 The app is organized in three layers:
 
 1. **Data sources / clients**
-   - Kite Connect (`app/auth.py`, `app/live_prices.py`, `app/instruments.py`)
-   - NSE India archives (`app/instruments.py`)
+   - Kite Connect (`app/auth.py`, `app/live_prices.py`, `app/portfolio_model.py`)
+   - NSE India archives (`app/cache/nse_provider.py`, consumed via `app/portfolio_model.py`)
    - External metadata (`yfinance`, `mfdata.in`)
    - MarketSmith India (public gateway for current market regime; model layer only)
 2. **Shared model layer**
@@ -469,7 +469,7 @@ The app uses `yfinance` only for equity metadata enrichment (`industry` and
 
 Used in:
 
-- `app/instruments.py` — `yf.Ticker(f"{symbol}.{exchange}").info` for
+- `app/cache/yfinance_provider.py` / `app/portfolio_model.py` — `yf.Ticker(...).info` for
   live/cache-backed industry and sector lookup.
 - `scripts/build_cache.py` — `yf.Ticker(...).info` to pre-build
   `.cache/model_cache.json` offline.
@@ -484,7 +484,7 @@ The app fetches NSE reference CSVs from `nsearchives.nseindia.com` to power:
 Method used in code:
 
 - HTTP GET with Python `urllib.request.Request` + browser-like headers
-  (`User-Agent`, `Accept`, `Referer`) in `app/instruments.py`
+  (`User-Agent`, `Accept`, `Referer`) in `app/cache/nse_provider.py`
 - Parse CSV using `csv.DictReader`
 - Merge selected files (for example Nifty 50/100/200/500 and mid/small-cap lists)
   into in-memory maps
