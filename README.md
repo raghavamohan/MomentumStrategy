@@ -24,7 +24,7 @@ There are two interfaces, sharing the same authentication flow and token cache:
   JSON APIs under `/api/v1/`.
 
 Portfolio normalization and aggregates run on the server in
-`app/portfolio_model.py`. The CLI calls the REST API (`/api/v1/...`) implemented
+`app/domain/portfolio_model.py`. The CLI calls the REST API (`/api/v1/...`) implemented
 there; it does not import `portfolio_model` directly.
 
 ## Architecture
@@ -32,7 +32,7 @@ there; it does not import `portfolio_model` directly.
 The app is organized in layers so **per-source I/O** stays in small modules,
 **disk persistence** is centralized, and **portfolio-facing APIs** stay in one place.
 
-1. **Per-source providers** (`app/cache/*_provider.py`)
+1. **Per-source providers** (`app/infrastructure/cache/*_provider.py`)
    - **`kite_provider`** — cash-equity instrument maps (names, ISIN, Kite `sector`,
      NSE symbol→token) from `KiteConnect.instruments()` when a session exists.
    - **`nse_provider`** — NSE index CSVs (Nifty 50 universe, symbol/ISIN→`Industry` maps).
@@ -41,40 +41,40 @@ The app is organized in layers so **per-source I/O** stays in small modules,
    - **`mfdata_provider`** — mfdata.in search + family holdings metadata (`mfdata` section).
    - **`marketsmith_provider`** — daily MarketSmith India regime snapshot (`marketsmith` section).
 
-   **Contributors:** Follow **`app/cache/REFERENCE_PROVIDERS.md`** when adding or
+   **Contributors:** Follow **`app/infrastructure/cache/REFERENCE_PROVIDERS.md`** when adding or
    changing providers (persistence family, warmup, background jobs, notifications,
-   `*_reference_debug_snapshot`). Optional typing: **`app/cache/reference_provider.py`**
+   `*_reference_debug_snapshot`). Optional typing: **`app/infrastructure/cache/reference_provider.py`**
    (`ReferenceWarmupProvider`). Shared symbol/name/ISIN normalization:
-   **`app/cache/text_normalize.py`**.
+   **`app/infrastructure/cache/text_normalize.py`**.
 
 2. **Persistence and coordination**
-   - **`app/cache/model_cache_store.py`** — single file `.cache/model_cache.json`;
+   - **`app/infrastructure/cache/model_cache_store.py`** — single file `.cache/model_cache.json`;
      typed helpers load/update sections (`yfinance`, `reference_data`, `mfdata`,
      `marketsmith`, …).
-   - **`app/cache/reference_cache_internal.py`** — shared `reference_data` disk cache,
+   - **`app/infrastructure/cache/reference_cache_internal.py`** — shared `reference_data` disk cache,
      source labels (`REFERENCE_CACHE_LAST_SOURCE`, including **`yfinance`** for
      unified provenance via **`set_reference_last_source`**), and locking so NSE +
      Kite-derived maps stay consistent.
 
 3. **Reference snapshots and warmup**
-   - **`app/reference_snapshot.py`** — builds an immutable **`ReferenceSnapshot`**
+   - **`app/domain/reference_snapshot.py`** — builds an immutable **`ReferenceSnapshot`**
      (`build_reference_snapshot`) from provider caches for each dashboard render;
      **`warm_reference_snapshot`** invokes each module’s **`warmup(ctx)`** in the
      order defined by **`REFERENCE_PROVIDER_WARMUPS`** (currently NSE → yfinance →
-     mfdata → MarketSmith → Kite). **`app/reference_context.py`** supplies
+     mfdata → MarketSmith → Kite). **`app/domain/reference_context.py`** supplies
      **`WarmupContext`**; see its docstring for which providers read **`kite`**,
      **`force_refresh`**, **`marketsmith_force_sync`**, and related flags.
-   - **`app/reference_notifications.py`** — debounced revision bump + dashboard
+   - **`app/domain/reference_notifications.py`** — debounced revision bump + dashboard
      cache-refresh signal when providers update disk state (including after mfdata’s
      **`flush_mfdata_disk_cache`** successfully persists).
-   - **`app/services/cache_warmup.py`** — **`run_startup_cache_warmup_sync`** loads a Kite
+   - **`app/infrastructure/services/cache_warmup.py`** — **`run_startup_cache_warmup_sync`** loads a Kite
      client when a valid cached token exists, runs **`warm_reference_snapshot`** once
      (`force_refresh` when Kite is present), then **`warm_mfdata_holdings_cache`**.
-   - **`app/services/cache_orchestrator.py`** — **`run_startup_cache_warmup`** starts that
+   - **`app/infrastructure/services/cache_orchestrator.py`** — **`run_startup_cache_warmup`** starts that
      sync routine on a daemon thread unless **`MOMENTUM_SKIP_CACHE_WARMUP`** is set.
      **`app/server.py`** invokes it from lifespan and again after **`/callback`** login.
 
-4. **Shared model layer** (`app/portfolio_model.py`)
+4. **Shared model layer** (`app/domain/portfolio_model.py`)
    - Normalized holdings/MF/positions entities and portfolio aggregates.
    - Sector resolution (`resolve_equity_sector`) orchestrating yfinance cache → Kite → NSE → ISIN.
    - **`warm_reference_caches()`** delegates to **`warm_reference_snapshot`**.
@@ -82,27 +82,27 @@ The app is organized in layers so **per-source I/O** stays in small modules,
      **`*_reference_debug_snapshot(now)`** rows (cash equity, NSE, yfinance,
      mfdata, MarketSmith, etc.) for dashboard timing/API introspection.
    - Re-exports such as **`get_marketsmith_market_condition`** from
-     **`app/cache/marketsmith_provider`** so **`app/server.py`** imports most of this
+     **`app/infrastructure/cache/marketsmith_provider`** so **`app/server.py`** imports most of this
      surface from one module.
 
 5. **Presentation**
    - CLI: `app/cli_client.py` (HTTP client, ASCII tables).
-   - Web: `app/server.py` + `templates/` (FastAPI, HTML, **`app/live_prices.py`** WebSocket feed).
+   - Web: `app/server.py` + `templates/` (FastAPI, HTML, **`app/infrastructure/live_prices.py`** WebSocket feed).
 
-Supporting modules unchanged in role: **`app/auth.py`** (Kite login + token cache),
+Supporting modules unchanged in role: **`app/infrastructure/auth.py`** (Kite login + token cache),
 **`app/events.py`** (dashboard refresh hooks).
 
 ```text
 External APIs (Kite REST/WS, NSE CSVs, yfinance, mfdata.in, MarketSmith)
           |
           v
-  app/cache/*_provider.py  +  model_cache_store / reference_cache_internal
+  app/infrastructure/cache/*_provider.py  +  model_cache_store / reference_cache_internal
           |
           v
-  app/reference_snapshot.py (ReferenceSnapshot, warm_reference_snapshot, REFERENCE_PROVIDER_WARMUPS)
+  app/domain/reference_snapshot.py (ReferenceSnapshot, warm_reference_snapshot, REFERENCE_PROVIDER_WARMUPS)
           |
           v
-  app/portfolio_model.py   <- normalization, sector resolution, aggregates
+  app/domain/portfolio_model.py   <- normalization, sector resolution, aggregates
       |             |
       v             v
   app/cli_client.py     app/server.py (+ live_prices / cache orchestrator)
@@ -110,13 +110,13 @@ External APIs (Kite REST/WS, NSE CSVs, yfinance, mfdata.in, MarketSmith)
 
 Design intent: UI code stays independent from business/data-model logic; both
 CLI and dashboard should only format/render model outputs. Add new reference
-sources as **`app/cache/<name>_provider.py`**, append **`warmup`** to
+sources as **`app/infrastructure/cache/<name>_provider.py`**, append **`warmup`** to
 **`REFERENCE_PROVIDER_WARMUPS`** in **`reference_snapshot`**, expose any needed
 reads via **`portfolio_model`** (and register **`*_reference_debug_snapshot`** in
 **`get_reference_cache_debug_snapshot`** when observability matters). See **`REFERENCE_PROVIDERS.md`**.
 
 Contribution guideline: add or change portfolio calculations/normalization in
-`app/portfolio_model.py` first, then adapt CLI/web rendering if needed.
+`app/domain/portfolio_model.py` first, then adapt CLI/web rendering if needed.
 
 ## What it does
 
@@ -363,31 +363,43 @@ Section keys accepted by `--sections` / `--exclude-sections`:
 │   └── line_classification.py  # ancillary script (not used by dashboard warmup)
 ├── app/
 │   ├── __init__.py       # package docstring + entry point index
-│   ├── auth.py           # Kite login flow + token caching (shared by CLI + web)
-│   ├── live_prices.py    # KiteTicker websocket manager for live LTP snapshots
 │   ├── cli_client.py     # CLI: HTTP client to local server
-│   ├── main.py           # shim → cli_client
-│   ├── server.py         # FastAPI app (dashboard + /api/v1)
-│   ├── portfolio_model.py # model + sector resolution; facade over cache providers
-│   ├── reference_snapshot.py   # ReferenceSnapshot + warm_reference_snapshot + REFERENCE_PROVIDER_WARMUPS
-│   ├── reference_context.py    # WarmupContext for provider warmup
-│   ├── reference_notifications.py  # debounced cache refresh signaling
-│   ├── events.py         # dashboard cache refresh hooks
+│   ├── server.py         # FastAPI composition root (dashboard + /api/v1)
 │   ├── web.py            # shim → server (ASGI app)
-│   ├── cache/
-│   │   ├── REFERENCE_PROVIDERS.md   # contributor contract for *_provider modules
-│   │   ├── model_cache_store.py      # single-file JSON sections + IST cache day
-│   │   ├── reference_cache_internal.py  # reference_data coordination + locks
-│   │   ├── reference_provider.py    # Protocol typing for warmup (optional)
-│   │   ├── text_normalize.py        # shared symbol/ISIN/name normalization
-│   │   ├── kite_provider.py
-│   │   ├── nse_provider.py
-│   │   ├── yfinance_provider.py
-│   │   ├── mfdata_provider.py
-│   │   └── marketsmith_provider.py
-│   └── services/
-│       ├── cache_warmup.py       # synchronous startup warmup steps
-│       └── cache_orchestrator.py # background thread + MOMENTUM_SKIP_CACHE_WARMUP
+│   ├── env_util.py       # logging / dashboard WS helpers
+│   ├── events.py         # dashboard cache refresh hooks
+│   ├── application/
+│   │   ├── dashboard_view_model.py
+│   │   └── portfolio_application_service.py
+│   ├── domain/
+│   │   ├── portfolio_model.py
+│   │   ├── reference_snapshot.py
+│   │   ├── reference_context.py
+│   │   └── reference_notifications.py
+│   ├── infrastructure/
+│   │   ├── auth.py       # Kite login flow + token caching (shared by CLI + web)
+│   │   ├── live_prices.py # KiteTicker websocket manager for live LTP snapshots
+│   │   ├── cache/
+│   │   │   ├── REFERENCE_PROVIDERS.md
+│   │   │   ├── model_cache_store.py
+│   │   │   ├── reference_cache_internal.py
+│   │   │   ├── reference_provider.py
+│   │   │   ├── text_normalize.py
+│   │   │   ├── kite_provider.py
+│   │   │   ├── nse_provider.py
+│   │   │   ├── yfinance_provider.py
+│   │   │   ├── mfdata_provider.py
+│   │   │   └── marketsmith_provider.py
+│   │   └── services/
+│   │       ├── dashboard_caches.py
+│   │       ├── cache_warmup.py
+│   │       └── cache_orchestrator.py
+│   └── presentation/
+│       └── http/
+│           ├── jinja_env.py
+│           ├── server_config.py
+│           ├── server_auth.py
+│           └── routes/   # FastAPI APIRouter modules (pages, API v1, WebSocket)
 └── templates/
     ├── base.html         # shared layout + CSS
     ├── index.html        # login landing page
@@ -428,16 +440,16 @@ External documentation:
 
 | Where used                          | `pykiteconnect` method                       | HTTP endpoint                  | Docs                                                                                                                                                       |
 | ----------------------------------- | -------------------------------------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `app/auth.py` / `app/server.py:/login` | `KiteConnect.login_url()`                    | (URL builder, no HTTP call)    | <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.login_url>                                                                              |
-| `app/auth.py` / `app/server.py:/callback` | `KiteConnect.generate_session()`          | `POST /session/token`          | <https://kite.trade/docs/connect/v3/user/#login-flow> · <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.generate_session>               |
-| `app/auth.py`                       | `KiteConnect.set_access_token()`             | (in-memory)                    | <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.set_access_token>                                                                       |
-| `app/auth.py` (validation)          | `KiteConnect.profile()`                      | `GET /user/profile`            | <https://kite.trade/docs/connect/v3/user/#user-profile> · <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.profile>                      |
-| `app/auth.py` (error)               | `kiteconnect.exceptions.TokenException`      | (raised on 403 token errors)   | <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.exceptions.TokenException>                                                                          |
+| `app/infrastructure/auth.py` / `app/server.py:/login` | `KiteConnect.login_url()`                    | (URL builder, no HTTP call)    | <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.login_url>                                                                              |
+| `app/infrastructure/auth.py` / `app/server.py:/callback` | `KiteConnect.generate_session()`          | `POST /session/token`          | <https://kite.trade/docs/connect/v3/user/#login-flow> · <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.generate_session>               |
+| `app/infrastructure/auth.py`                       | `KiteConnect.set_access_token()`             | (in-memory)                    | <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.set_access_token>                                                                       |
+| `app/infrastructure/auth.py` (validation)          | `KiteConnect.profile()`                      | `GET /user/profile`            | <https://kite.trade/docs/connect/v3/user/#user-profile> · <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.profile>                      |
+| `app/infrastructure/auth.py` (error)               | `kiteconnect.exceptions.TokenException`      | (raised on 403 token errors)   | <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.exceptions.TokenException>                                                                          |
 | `app/server.py` (`/dashboard`, `/api/v1/portfolio/snapshot`, MF JSON routes) | `KiteConnect.holdings()`                  | `GET /portfolio/holdings`      | <https://kite.trade/docs/connect/v3/portfolio/#holdings> · <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.holdings>                    |
 | `app/server.py` (same) | `KiteConnect.mf_holdings()`            | `GET /mf/holdings`             | <https://kite.trade/docs/connect/v3/mutual-funds/#mutual-fund-holdings> · <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.mf_holdings>  |
 | `app/server.py` (same) | `KiteConnect.positions()`                | `GET /portfolio/positions`     | <https://kite.trade/docs/connect/v3/portfolio/#positions> · <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.positions>                  |
 | `app/server.py` (same) | `KiteConnect.margins("equity")`       | `GET /user/margins/equity`     | <https://kite.trade/docs/connect/v3/user/#funds-and-margins> · <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteConnect.margins>                 |
-| `app/live_prices.py` · `app/server.py:/dashboard` | `KiteTicker.subscribe()` / `set_mode("ltp")` | `wss://ws.kite.trade` | <https://kite.trade/docs/connect/v3/websocket/> · <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteTicker> |
+| `app/infrastructure/live_prices.py` · `app/server.py:/dashboard` | `KiteTicker.subscribe()` / `set_mode("ltp")` | `wss://ws.kite.trade` | <https://kite.trade/docs/connect/v3/websocket/> · <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.KiteTicker> |
 | `app/server.py` WebSocket `/ws/live-prices` | (ticks from existing `KiteTicker` stream) | Browser ← JSON LTP deltas | Same WebSocket docs as above (feed is shared with server-side LTP cache). |
 | `app/server.py:/favicon.ico` | (no Kite call) | `GET /favicon.ico` → **204** | Browsers request this automatically; empty response avoids 404 noise. |
 | MF section (error)                  | `kiteconnect.exceptions.PermissionException` | (raised on 403 when MF API not enabled) | <https://kite.trade/docs/pykiteconnect/v4/#kiteconnect.exceptions.PermissionException>                                                            |
@@ -527,7 +539,7 @@ The app uses `yfinance` only for equity metadata enrichment (`industry` and
 
 Used in:
 
-- `app/cache/yfinance_provider.py` (called from `app/portfolio_model.resolve_equity_sector`)
+- `app/infrastructure/cache/yfinance_provider.py` (called from `app.domain.portfolio_model.resolve_equity_sector`)
   — `yf.Ticker(...).info` for cache-backed industry and sector lookup.
 
 ### NSE India (constituents and industry reference data)
@@ -540,7 +552,7 @@ The app fetches NSE reference CSVs from `nsearchives.nseindia.com` to power:
 Method used in code:
 
 - HTTP GET with Python `urllib.request.Request` + browser-like headers
-  (`User-Agent`, `Accept`, `Referer`) in `app/cache/nse_provider.py`
+  (`User-Agent`, `Accept`, `Referer`) in `app/infrastructure/cache/nse_provider.py`
 - Parse CSV using `csv.DictReader`
 - Merge selected files (for example Nifty 50/100/200/500 and mid/small-cap lists)
   into in-memory maps
@@ -587,7 +599,7 @@ a broken response does not retry on every `/dashboard` refresh. Optional
 
 | Where used | Call | Endpoint / artifact |
 | ---------- | ---- | ------------------- |
-| `app/cache/marketsmith_provider.py` | urllib `GET` | `…/getMarketHistory.json` |
+| `app/infrastructure/cache/marketsmith_provider.py` | urllib `GET` | `…/getMarketHistory.json` |
 | `app/server.py:/dashboard` | `get_marketsmith_market_condition()` | Banner HTML + bootstrap JSON |
 
 ## Notes

@@ -19,12 +19,8 @@ Entry points
     Command-line HTTP client; prints snapshot sections as ASCII tables. Requires
     the server to be running and a cached Kite token (log in via the browser once).
 
-``python -m app.main``
-    Compatibility shim for ``cli_client``.
-
-Both the CLI and dashboard share authentication via ``app.auth`` (compatibility
-shim for ``app.infrastructure.auth``) and the same on-disk access-token cache
-after browser login.
+Both the CLI and dashboard share authentication via ``app.infrastructure.auth``
+and the same on-disk access-token cache after browser login.
 
 Package layout (approximate layers)
 -----------------------------------

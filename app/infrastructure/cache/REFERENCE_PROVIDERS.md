@@ -58,7 +58,7 @@ After a **successful** update that should refresh the dashboard’s reference sn
 ## Source labels and debug rows
 
 - **Reference-disk keys** use `REFERENCE_CACHE_LAST_SOURCE` (and may be mirrored for model-cache providers — e.g. `yfinance` — for a unified debug view).
-- Implement `*_reference_debug_snapshot` and register rows in `get_reference_cache_debug_snapshot` in `app/portfolio_model.py`.
+- Implement `*_reference_debug_snapshot` and register rows in `get_reference_cache_debug_snapshot` in `app/domain/portfolio_model.py`.
 
 ## Optional typing
 

@@ -90,12 +90,12 @@ A single central streaming pipeline aligns with Kite’s APIs.
 
 ### 3. Row-level model overlay
 
-- `app/portfolio_model.py` `overlay_live_ltp()` injects WebSocket LTP into holdings/positions rows.
+- `app/domain/portfolio_model.py` `overlay_live_ltp()` injects WebSocket LTP into holdings/positions rows.
 - `build_equity_holding()` / `build_position()` recompute selected metrics when `_live_ltp_applied` is true.
 
 ### 4. CLI path
 
-- `app/main.py` watchlist uses REST `kite.quote(...)` snapshots only (no WebSocket stream).
+- `app/cli_client.py` watchlist uses REST `kite.quote(...)` snapshots only (no WebSocket stream).
 
 ## Findings
 
