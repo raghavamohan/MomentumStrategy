@@ -1,6 +1,6 @@
 # Reference data providers
 
-Modules named `*_provider.py` under `app/cache/` supply cached lookups used by `app.reference_snapshot` and `app.portfolio_model`. Follow this convention when adding a new provider.
+Modules named `*_provider.py` under `app/infrastructure/cache/` supply cached lookups used by `app.domain.reference_snapshot` and `app.domain.portfolio_model`. Follow this convention when adding a new provider.
 
 ## Module API
 
@@ -8,7 +8,7 @@ Each provider module SHOULD export:
 
 | Export | Purpose |
 |--------|---------|
-| `warmup(ctx: WarmupContext) -> None` | Preload disk state and optionally trigger refresh; see `app/reference_context.py` for which fields each provider reads |
+| `warmup(ctx: WarmupContext) -> None` | Preload disk state and optionally trigger refresh; see `app/domain/reference_context.py` for which fields each provider reads |
 | Stable read helpers | Explicit names such as `get_*`, `lookup_*`; avoid hiding I/O behind generic getters |
 | `__all__` | Marks the stable public surface for importers |
 
@@ -18,7 +18,7 @@ Optional but recommended:
 |--------|---------|
 | `*_reference_debug_snapshot(now)` | Single row (`dict`) or multiple rows (`dict[str, dict]`) for observability — each row SHOULD include `source`, `expires_in_ms`, `refresh_in_progress` where applicable |
 
-Orchestration: `app.reference_snapshot.warm_reference_snapshot` invokes providers in a fixed order. New providers that participate in dashboard reference data SHOULD be wired there (see `REFERENCE_PROVIDER_WARMUPS` in that module).
+Orchestration: `app.domain.reference_snapshot.warm_reference_snapshot` invokes providers in a fixed order. New providers that participate in dashboard reference data SHOULD be wired there (see `REFERENCE_PROVIDER_WARMUPS` in that module).
 
 ## Persistence: choose one family
 

@@ -136,8 +136,8 @@ Contribution guideline: add or change portfolio calculations/normalization in
   in both dashboard and CLI when holdings data is available from `mfdata.in`.
 - Shows the India **market regime** from MarketSmith India (Confirmed Uptrend,
   Correction, etc.) on the dashboard; the value is fetched via
-  `app.cache.marketsmith_provider.get_marketsmith_market_condition()` (also
-  importable from `app.portfolio_model`) and surfaced in HTML and in
+  `app.infrastructure.cache.marketsmith_provider.get_marketsmith_market_condition()` (also
+  importable from `app.domain.portfolio_model`) and surfaced in HTML and in
   ``dashboard-bootstrap`` as ``marketCondition`` for client scripts on load.
 - Reuses login state between runs, so day-to-day usage usually requires less
   repeated sign-in.
@@ -228,7 +228,7 @@ the on-disk token cache so both dashboard and CLI require a fresh Zerodha login.
 ## Sector data source and cache
 
 The dashboard's **Sector** column for equities (holdings, equity positions, and
-watch list) follows `app.portfolio_model.resolve_equity_sector` in this order:
+watch list) follows `app.domain.portfolio_model.resolve_equity_sector` in this order:
 
 1. **ETF override**: if the symbol or instrument/company name contains `ETF`,
    sector is forced to `ETF`.
@@ -571,7 +571,7 @@ weights.
 - **Tool page** —
   <https://marketsmithindia.com/mstool/marketconditionhistory.jsp>
 - **HTTP** — `GET https://marketsmithindia.com/gateway/simple-api/ms-india/mshkSubscription/getMarketHistory.json?ms-auth=<token>`
-- **Used in code** — `app.cache.marketsmith_provider.get_marketsmith_market_condition()`
+- **Used in code** — `app.infrastructure.cache.marketsmith_provider.get_marketsmith_market_condition()`
   returns the first ``marketHistory`` row (current regime, Nifty 50 move in
   regime, etc.), then `app/server.py:/dashboard` passes it into the template and
   into ``dashboard-bootstrap`` as ``marketCondition`` (camelCase) so browser

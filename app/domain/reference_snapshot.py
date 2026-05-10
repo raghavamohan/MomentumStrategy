@@ -8,12 +8,12 @@ from dataclasses import dataclass
 from collections.abc import Callable
 from typing import Any
 
-from app.cache import kite_provider
-from app.cache import mfdata_provider
-from app.cache import marketsmith_provider
-from app.cache import nse_provider
-from app.cache import yfinance_provider
-from app.reference_context import WarmupContext
+from app.infrastructure.cache import kite_provider
+from app.infrastructure.cache import mfdata_provider
+from app.infrastructure.cache import marketsmith_provider
+from app.infrastructure.cache import nse_provider
+from app.infrastructure.cache import yfinance_provider
+from app.domain.reference_context import WarmupContext
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +108,7 @@ def build_reference_snapshot(
     """Compose immutable snapshots from provider caches (single dashboard entry point).
 
     When ``market_condition`` is omitted, loads MarketSmith via
-    :func:`app.cache.marketsmith_provider.get_marketsmith_market_condition` (non-blocking
+    :func:`app.infrastructure.cache.marketsmith_provider.get_marketsmith_market_condition` (non-blocking
     unless callers pass a pre-fetched dict from a parallel fetch).
     """
     revision = get_reference_revision()
@@ -175,7 +175,7 @@ def warm_reference_snapshot(ctx: WarmupContext) -> None:
 
 
 def _register_revision_with_notifications() -> None:
-    from app import reference_notifications as rn
+    from app.domain import reference_notifications as rn
 
     rn.register_reference_revision_bump(_bump_reference_revision)
 

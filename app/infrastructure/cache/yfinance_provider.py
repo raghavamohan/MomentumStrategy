@@ -6,16 +6,16 @@ import logging
 import threading
 from typing import Any
 
-from app.reference_context import WarmupContext
-from app.reference_notifications import notify_reference_cache_refresh
-from app.cache.text_normalize import normalise_name, normalise_symbol
-from app.cache.model_cache_store import (
+from app.domain.reference_context import WarmupContext
+from app.domain.reference_notifications import notify_reference_cache_refresh
+from app.infrastructure.cache.text_normalize import normalise_name, normalise_symbol
+from app.infrastructure.cache.model_cache_store import (
     load_model_cache,
     read_section,
     start_background_refresh_job,
     update_section,
 )
-from app.cache.reference_cache_internal import (
+from app.infrastructure.cache.reference_cache_internal import (
     REFERENCE_CACHE_LAST_SOURCE,
     _current_reference_day_token,
     _next_reference_cutoff_epoch,
@@ -263,7 +263,7 @@ def lookup_yfinance_sector_labels(
 
     Runs monthly staleness refresh, performs the lookup, and queues a single-symbol background
     fetch when both sector and industry are missing (same policy as
-    :func:`app.portfolio_model.resolve_equity_sector`).
+    :func:`app.domain.portfolio_model.resolve_equity_sector`).
     """
     _maybe_start_monthly_yfinance_refresh()
     clean_exchange = str(exchange or "").strip().upper()
@@ -308,7 +308,7 @@ def _read_cached_sector_industry(
 
 
 def yfinance_reference_debug_snapshot(now: float) -> dict[str, Any]:
-    """Metadata row for :func:`app.portfolio_model.get_reference_cache_debug_snapshot`."""
+    """Metadata row for :func:`app.domain.portfolio_model.get_reference_cache_debug_snapshot`."""
     return {
         "source": REFERENCE_CACHE_LAST_SOURCE.get("yfinance", "unknown"),
         "expires_in_ms": max(0.0, (_next_reference_cutoff_epoch() - now) * 1000.0),

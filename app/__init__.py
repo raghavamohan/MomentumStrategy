@@ -22,8 +22,18 @@ Entry points
 ``python -m app.main``
     Compatibility shim for ``cli_client``.
 
-Both the CLI and dashboard share authentication via ``app.auth`` and the same
-on-disk access-token cache after browser login.
+Both the CLI and dashboard share authentication via ``app.auth`` (compatibility
+shim for ``app.infrastructure.auth``) and the same on-disk access-token cache
+after browser login.
+
+Package layout (approximate layers)
+-----------------------------------
+``app.domain`` — portfolio model and reference snapshots.
+``app.application`` — dashboard view-model assembly.
+``app.infrastructure`` — Kite auth, WebSocket prices, cache providers, orchestration.
+``app.presentation.http`` — FastAPI routers, Jinja environment, session config.
+Thin modules at the ``app`` package root (``server``, ``web``, ``cli_client``)
+wire these layers together.
 
 External dependencies / references
 ----------------------------------

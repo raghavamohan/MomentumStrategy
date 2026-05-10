@@ -1,6 +1,6 @@
 """Portfolio application service (orchestrated DTO assembly).
 
-Dashboard assembly currently lives in :func:`app.server._build_dashboard_view_model`;
+Dashboard assembly currently lives in :func:`app.application.dashboard_view_model.build_dashboard_view_model`;
 migrate incremental logic here without changing behaviour.
 """
 

@@ -8,19 +8,19 @@ from typing import Any
 
 from kiteconnect.exceptions import PermissionException, TokenException
 
-from app.auth import (
+from app.infrastructure.auth import (
     build_authenticated_client,
     get_kite_client,
     load_cached_access_token,
     load_credentials,
     validate_kite_session,
 )
-from app.portfolio_model import (
+from app.domain.portfolio_model import (
     build_mf_holding,
     build_mf_underlying_breakdown,
 )
-from app.reference_context import WarmupContext
-from app.reference_snapshot import warm_reference_snapshot
+from app.domain.reference_context import WarmupContext
+from app.domain.reference_snapshot import warm_reference_snapshot
 
 logger = logging.getLogger(__name__)
 

@@ -10,11 +10,11 @@ from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-from app.reference_context import WarmupContext
-from app.reference_notifications import notify_reference_cache_refresh
-from app.cache.text_normalize import normalise_isin, normalise_name, normalise_symbol
-from app.cache.model_cache_store import start_background_refresh_job
-from app.cache.reference_cache_internal import (
+from app.domain.reference_context import WarmupContext
+from app.domain.reference_notifications import notify_reference_cache_refresh
+from app.infrastructure.cache.text_normalize import normalise_isin, normalise_name, normalise_symbol
+from app.infrastructure.cache.model_cache_store import start_background_refresh_job
+from app.infrastructure.cache.reference_cache_internal import (
     REFERENCE_CACHE_LAST_SOURCE,
     instrument_reference_lock,
     _current_reference_day_token,
@@ -316,7 +316,7 @@ def get_nifty50_symbols() -> list[str]:
 
 
 def nse_reference_debug_snapshot(now: float) -> dict[str, dict[str, Any]]:
-    """Entries merged into :func:`app.portfolio_model.get_reference_cache_debug_snapshot`."""
+    """Entries merged into :func:`app.domain.portfolio_model.get_reference_cache_debug_snapshot`."""
     return {
         "nse_merged_industry": {
             "source": REFERENCE_CACHE_LAST_SOURCE.get("nse_merged_industry", "unknown"),

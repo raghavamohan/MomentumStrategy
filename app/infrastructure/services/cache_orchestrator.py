@@ -6,7 +6,7 @@ import logging
 import os
 import threading
 
-from app.services.cache_warmup import run_startup_cache_warmup_sync
+from app.infrastructure.services.cache_warmup import run_startup_cache_warmup_sync
 
 logger = logging.getLogger(__name__)
 

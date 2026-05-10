@@ -13,15 +13,15 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request as URLRequest, urlopen
 
-from app.reference_notifications import notify_reference_cache_refresh
-from app.cache.model_cache_store import (
+from app.domain.reference_notifications import notify_reference_cache_refresh
+from app.infrastructure.cache.model_cache_store import (
     current_effective_day_ist,
     next_cutoff_epoch_ist,
     read_section,
     start_background_refresh_job,
     update_section,
 )
-from app.reference_context import WarmupContext
+from app.domain.reference_context import WarmupContext
 
 logger = logging.getLogger(__name__)
 
@@ -367,7 +367,7 @@ def get_marketsmith_market_condition(*, force_sync_fetch: bool = False) -> dict[
 
 
 def marketsmith_reference_debug_snapshot(now: float) -> dict[str, Any]:
-    """Metadata row for :func:`app.portfolio_model.get_reference_cache_debug_snapshot`."""
+    """Metadata row for :func:`app.domain.portfolio_model.get_reference_cache_debug_snapshot`."""
     expires_ms = max(0.0, (next_cutoff_epoch_ist(9) - now) * 1000.0)
     day = _marketsmith_calendar_day_token()
     with _MARKET_CONDITION_LOCK:

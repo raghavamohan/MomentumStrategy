@@ -16,7 +16,7 @@ _revision_bump: Callable[[], None] | None = None
 
 
 def register_reference_revision_bump(fn: Callable[[], None]) -> None:
-    """Called once from :mod:`app.reference_snapshot` on import."""
+    """Called once from :mod:`app.domain.reference_snapshot` on import."""
     global _revision_bump
     _revision_bump = fn
 

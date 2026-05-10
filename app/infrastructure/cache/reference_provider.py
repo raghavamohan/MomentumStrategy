@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from app.reference_context import WarmupContext
+from app.domain.reference_context import WarmupContext
 
 
 class ReferenceWarmupProvider(Protocol):

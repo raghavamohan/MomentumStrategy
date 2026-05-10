@@ -6,11 +6,11 @@ import logging
 import time
 from typing import Any
 
-from app.reference_context import WarmupContext
-from app.reference_notifications import notify_reference_cache_refresh
-from app.cache.text_normalize import normalise_isin, normalise_name, normalise_symbol
-from app.cache.model_cache_store import start_background_refresh_job
-from app.cache.reference_cache_internal import (
+from app.domain.reference_context import WarmupContext
+from app.domain.reference_notifications import notify_reference_cache_refresh
+from app.infrastructure.cache.text_normalize import normalise_isin, normalise_name, normalise_symbol
+from app.infrastructure.cache.model_cache_store import start_background_refresh_job
+from app.infrastructure.cache.reference_cache_internal import (
     REFERENCE_CACHE_LAST_SOURCE,
     instrument_reference_lock,
     _current_reference_day_token,
@@ -376,7 +376,7 @@ def warmup(ctx: WarmupContext) -> None:
 
 
 def kite_reference_debug_snapshot(now: float) -> dict[str, Any]:
-    """``cash_equity`` row for :func:`app.portfolio_model.get_reference_cache_debug_snapshot`."""
+    """``cash_equity`` row for :func:`app.domain.portfolio_model.get_reference_cache_debug_snapshot`."""
     return {
         "source": REFERENCE_CACHE_LAST_SOURCE.get("cash_equity", "unknown"),
         "expires_in_ms": max(0.0, (_CACHE_EXPIRES_AT - now) * 1000.0),

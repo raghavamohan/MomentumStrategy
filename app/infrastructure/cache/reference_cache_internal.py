@@ -1,12 +1,12 @@
 """Shared ``reference_data`` disk cache, source labels, and lock.
 
-Cash-equity instrument maps (via :mod:`app.portfolio_model` / :mod:`app.cache.kite_provider`)
+Cash-equity instrument maps (via :mod:`app.domain.portfolio_model` / :mod:`app.infrastructure.cache.kite_provider`)
 and NSE CSV reference
-data (in :mod:`app.cache.nse_provider`) coordinate through this module so the
+data (in :mod:`app.infrastructure.cache.nse_provider`) coordinate through this module so the
 ``reference_data`` on-disk section and in-memory snapshot stay consistent.
 
 Sector/industry hints from yfinance use a separate ``yfinance`` disk section;
-see :mod:`app.cache.yfinance_provider`.
+see :mod:`app.infrastructure.cache.yfinance_provider`.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import threading
 import time
 from typing import Any
 
-from app.cache.model_cache_store import (
+from app.infrastructure.cache.model_cache_store import (
     current_effective_day_ist,
     next_cutoff_epoch_ist,
     read_section,

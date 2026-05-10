@@ -22,7 +22,7 @@ from typing import Any
 
 from tabulate import tabulate
 
-from app.auth import load_cached_access_token
+from app.infrastructure.auth import load_cached_access_token
 
 SECTION_KEYS: tuple[str, ...] = (
     "profile",

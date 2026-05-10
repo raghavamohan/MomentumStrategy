@@ -8,7 +8,7 @@ from typing import Any
 
 @dataclass(frozen=True)
 class WarmupContext:
-    """Parameters for :func:`app.reference_snapshot.warm_reference_snapshot`.
+    """Parameters for :func:`app.domain.reference_snapshot.warm_reference_snapshot`.
 
     Which fields each provider reads:
 
@@ -18,7 +18,7 @@ class WarmupContext:
       next lookup can schedule a background map refresh again.
     - **mfdata_provider:** no fields (preload / align mfdata section only).
     - **marketsmith_provider:** ``marketsmith_force_sync`` — passed to
-      :func:`~app.cache.marketsmith_provider.get_marketsmith_market_condition` as
+      :func:`~app.infrastructure.cache.marketsmith_provider.get_marketsmith_market_condition` as
       ``force_sync_fetch`` for blocking network fetch (primarily tooling/tests).
     - **kite_provider:** ``kite`` — when set, hydrates cash-equity caches;
       ``force_refresh`` triggers background instrument refresh even if memory TTL is valid.
