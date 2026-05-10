@@ -25,6 +25,18 @@ from app.reference_snapshot import warm_reference_snapshot
 logger = logging.getLogger(__name__)
 
 
+def _kite_from_cached_token() -> Any | None:
+    """Return a Kite client when ``.access_token`` validates; no interactive login."""
+    token = load_cached_access_token()
+    if not token:
+        return None
+    api_key, _ = load_credentials()
+    candidate = build_authenticated_client(api_key, token)
+    if validate_kite_session(candidate):
+        return candidate
+    return None
+
+
 def load_authenticated_kite_client_for_scripts() -> Any:
     """Return a validated Kite client; fall back to interactive login when no valid token exists."""
     token = load_cached_access_token()
@@ -71,7 +83,17 @@ def warm_mfdata_holdings_cache(*, emit: Callable[[str], None] | None = None) -> 
 
 
 def run_startup_cache_warmup_sync() -> None:
-    """Best-effort reference warmup then mfdata holdings walk (dashboard startup)."""
-    logger.info("Startup cache warmup: reference + mfdata (holdings walk)")
-    warm_reference_snapshot(WarmupContext(kite=None, force_refresh=False))
+    """Best-effort dashboard cache warmup (single path).
+
+    Loads a Kite client when a valid cached token exists; runs
+    :func:`warm_reference_snapshot` once (``force_refresh`` only when Kite is
+    available, matching former ``warm_reference_caches(..., force_refresh=True)``),
+    then :func:`warm_mfdata_holdings_cache`.
+    """
+    kite = _kite_from_cached_token()
+    logger.info(
+        "Dashboard cache warmup: reference providers + mfdata holdings (has_kite=%s)",
+        bool(kite),
+    )
+    warm_reference_snapshot(WarmupContext(kite=kite, force_refresh=bool(kite)))
     warm_mfdata_holdings_cache(emit=lambda msg: logger.info("%s", msg))

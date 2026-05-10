@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 def run_startup_cache_warmup() -> None:
-    """Fire-and-forget reference + mfdata holdings warmup (not full yfinance universe)."""
+    """Fire-and-forget :func:`run_startup_cache_warmup_sync` on a daemon thread."""
     if os.getenv("MOMENTUM_SKIP_CACHE_WARMUP", "").strip().lower() in (
         "1",
         "true",

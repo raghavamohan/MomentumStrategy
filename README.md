@@ -67,13 +67,12 @@ The app is organized in layers so **per-source I/O** stays in small modules,
    - **`app/reference_notifications.py`** — debounced revision bump + dashboard
      cache-refresh signal when providers update disk state (including after mfdata’s
      **`flush_mfdata_disk_cache`** successfully persists).
-   - **`app/services/cache_warmup.py`** — synchronous warmup invoked from the server
-     (`run_startup_cache_warmup_sync`: reference snapshot + mfdata holdings walk).
-   - **`app/services/cache_orchestrator.py`** — fire-and-forget thread that runs
-     **`run_startup_cache_warmup_sync`** (`warm_reference_snapshot` with no Kite +
-     **`warm_mfdata_holdings_cache`**) unless **`MOMENTUM_SKIP_CACHE_WARMUP`** is set.
-     This does **not** disable **`_start_reference_cache_warmup`** in **`app/server.py`**
-     ( **`warm_reference_caches`** with optional Kite session and **`force_refresh=True`** ).
+   - **`app/services/cache_warmup.py`** — **`run_startup_cache_warmup_sync`** loads a Kite
+     client when a valid cached token exists, runs **`warm_reference_snapshot`** once
+     (`force_refresh` when Kite is present), then **`warm_mfdata_holdings_cache`**.
+   - **`app/services/cache_orchestrator.py`** — **`run_startup_cache_warmup`** starts that
+     sync routine on a daemon thread unless **`MOMENTUM_SKIP_CACHE_WARMUP`** is set.
+     **`app/server.py`** invokes it from lifespan and again after **`/callback`** login.
 
 4. **Shared model layer** (`app/portfolio_model.py`)
    - Normalized holdings/MF/positions entities and portfolio aggregates.
@@ -177,8 +176,7 @@ KITE_DASHBOARD_NAME=Raghava's Portfolio
 # Optional: live index quotes under the dashboard title (NSE). Default: NIFTY50,BANKNIFTY,NIFTYIT,NIFTYFINSERVICE,NIFTYMET
 # KITE_DASHBOARD_INDICES=NIFTY50,BANKNIFTY,NIFTYIT,NIFTYFINSERVICE,NIFTYMET
 DASHBOARD_SNAPSHOT_SECONDS=120
-# optional: skip the startup thread that runs run_startup_cache_warmup_sync (1/true/yes).
-# Does not disable web reference warmup (warm_reference_caches); see "## Cache warmup".
+# optional: skip dashboard cache warmup thread (1/true/yes); see "## Cache warmup".
 # MOMENTUM_SKIP_CACHE_WARMUP=1
 # optional for CLI auto request_token capture
 KITE_REDIRECT_URL=http://127.0.0.1:5000/callback
@@ -248,9 +246,9 @@ Notes:
   commonly missing or inconsistent for ETFs.
 - yfinance map refresh runs in the background when the effective IST cache day
   rolls over (09:00 Asia/Kolkata), not on a separate multi-week timer.
-- The dashboard also warms heavy reference caches in the background on startup
-  and after successful login (`/callback`) to reduce cold-load latency (`warm_reference_caches`
-  via **`web-reference-warmup`** jobs). **`reference_data`** memory/disk TTL is driven by **the next
+- The dashboard also warms caches in the background on startup and after successful login
+  (`/callback`) via **`run_startup_cache_warmup`** (`warm_reference_snapshot` +
+  **`warm_mfdata_holdings_cache`**). **`reference_data`** memory/disk TTL is driven by **the next
   09:00 IST cutoff** (`model_cache_store.next_cutoff_epoch_ist`), not a separate seconds-based env knob.
 
 ## Dashboard timing logs
@@ -265,23 +263,16 @@ Each line includes total duration and cumulative stage marks (for example:
 
 ### Cache warmup
 
-Two complementary paths run shortly after **`app/server.py`** starts:
-
-1. **`run_startup_cache_warmup()`** (**`cache_orchestrator`**): a daemon thread calling
-   **`run_startup_cache_warmup_sync`** (`warm_reference_snapshot` with **`kite=None`**
-   plus **`warm_mfdata_holdings_cache`** when a usable Kite token exists). Omit this
-   with **`MOMENTUM_SKIP_CACHE_WARMUP=1`**.
-2. **`_start_reference_cache_warmup()`** (started from lifespan after the above):
-
-   **`warm_reference_caches(kite, force_refresh=True)`** when a valid cached token
-   exists (NSE/yfinance/mfdata/MarketSmith/Kite instrument maps with background
-   refresh hints). This still runs when **`MOMENTUM_SKIP_CACHE_WARMUP`** is set.
+After **`app/server.py`** starts (and again after **`/callback`** when you log in),
+**`run_startup_cache_warmup()`** (**`cache_orchestrator`**) runs **`run_startup_cache_warmup_sync`**
+on a daemon thread: validate cached access token → **`warm_reference_snapshot`**
+(with **`force_refresh`** when a Kite client is available) → **`warm_mfdata_holdings_cache`**.
+Set **`MOMENTUM_SKIP_CACHE_WARMUP=1`** to skip this entire routine.
 
 There is **no offline cache-build CLI**; **`yfinance`** fills from lookups and the
 provider’s IST-day background refresh.
 
-To skip only path (1), set **`MOMENTUM_SKIP_CACHE_WARMUP`** in `.env` (see
-[`.env.example`](.env.example)).
+See [`.env.example`](.env.example) for **`MOMENTUM_SKIP_CACHE_WARMUP`**.
 
 ## Run — CLI
 

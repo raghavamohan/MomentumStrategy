@@ -156,7 +156,6 @@ from app.portfolio_model import (
     start_background_refresh_job,
     summarise,
     summarise_equity_by_sector,
-    warm_reference_caches,
 )
 
 
@@ -170,8 +169,6 @@ SESSION_SECRET_FILE = PROJECT_ROOT / ".session_secret"
 SESSION_SECRET_KEYRING_SERVICE = "MomentumStrategy"
 SESSION_SECRET_KEYRING_ACCOUNT = "dashboard-session-secret"
 DASHBOARD_TIMING_LOG_FILE = PROJECT_ROOT / ".cache" / "dashboard_timing.log"
-_REFERENCE_WARMUP_LOCK = threading.Lock()
-_REFERENCE_WARMUP_IN_PROGRESS = False
 _PROFILE_CACHE_LOCK = threading.Lock()
 _PROFILE_CACHE_TTL_SECONDS = 600.0
 _PROFILE_CACHE_VALUE: dict[str, Any] = {}
@@ -436,7 +433,6 @@ async def _lifespan(_: FastAPI):
             "Startup note: live dashboard prices require Kite WebSocket market data "
             "to be enabled for this API key in developers.kite.trade."
         )
-        _start_reference_cache_warmup()
         try:
             yield
         except asyncio.CancelledError:
@@ -1083,38 +1079,6 @@ def _get_cached_mf_underlyings_payload(kite, *, tone: str = "all") -> dict[str, 
     return _mf_underlyings_loading_payload(tone_key, holdings_error=holdings_error)
 
 
-def _start_reference_cache_warmup() -> None:
-    """Warm/refresh reference caches in background on server startup."""
-    global _REFERENCE_WARMUP_IN_PROGRESS
-    with _REFERENCE_WARMUP_LOCK:
-        if _REFERENCE_WARMUP_IN_PROGRESS:
-            return
-        _REFERENCE_WARMUP_IN_PROGRESS = True
-
-    def _job() -> None:
-        global _REFERENCE_WARMUP_IN_PROGRESS
-        try:
-            token = load_cached_access_token()
-            kite = None
-            if token:
-                api_key, _ = load_credentials()
-                candidate = build_authenticated_client(api_key, token)
-                if validate_kite_session(candidate):
-                    kite = candidate
-            # Warm NSE/Nifty references regardless of auth state, and force
-            # background refresh jobs so startup doesn't wait for first request.
-            warm_reference_caches(kite, force_refresh=True)
-        except Exception as exc:
-            logger.info("Reference cache warmup skipped/failed: %s", exc)
-        finally:
-            with _REFERENCE_WARMUP_LOCK:
-                _REFERENCE_WARMUP_IN_PROGRESS = False
-
-    if not start_background_refresh_job("web-reference-warmup", _job):
-        with _REFERENCE_WARMUP_LOCK:
-            _REFERENCE_WARMUP_IN_PROGRESS = False
-
-
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -1198,7 +1162,7 @@ async def callback(
 
     save_cached_access_token(session["access_token"])
     request.session["authenticated"] = True
-    _start_reference_cache_warmup()
+    run_startup_cache_warmup()
     return RedirectResponse("/dashboard", status_code=303)
 
 

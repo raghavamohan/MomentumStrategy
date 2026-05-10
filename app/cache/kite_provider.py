@@ -385,7 +385,6 @@ def kite_reference_debug_snapshot(now: float) -> dict[str, Any]:
 
 
 __all__ = [
-    "EQUITY_EXCHANGES",
     "warmup",
     "get_cash_equity_isin_lookups",
     "get_cash_equity_kite_sector_lookups",
