@@ -3,26 +3,62 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Any
 
 from app.domain.reference_context import WarmupContext
 from app.domain.reference_notifications import notify_reference_cache_refresh
 from app.infrastructure.cache.text_normalize import normalise_isin, normalise_name, normalise_symbol
-from app.infrastructure.cache.model_cache_store import start_background_refresh_job
-from app.infrastructure.cache.reference_cache_internal import (
-    REFERENCE_CACHE_LAST_SOURCE,
-    instrument_reference_lock,
-    _current_reference_day_token,
-    _next_reference_cutoff_epoch,
-    _reference_cache_get_entry_unlocked,
-    _reference_cache_set_entry_unlocked,
-    _set_reference_cache_source_unlocked,
+from app.infrastructure.cache.model_cache_store import (
+    REFERENCE_CUTOFF_HOUR,
+    current_effective_day_ist,
+    next_cutoff_epoch_ist,
+    read_section,
+    start_background_refresh_job,
+    update_section,
 )
 
 logger = logging.getLogger(__name__)
 
-_CACHE_LOCK = instrument_reference_lock
+_CACHE_LOCK = threading.Lock()
+
+_SOURCE_LABEL = "unknown"
+
+
+def _current_reference_day_token() -> str:
+    return current_effective_day_ist()
+
+
+def _next_reference_cutoff_epoch() -> float:
+    return next_cutoff_epoch_ist()
+
+
+def _kite_cache_get_entry_unlocked(section: str) -> tuple[dict[str, Any], str]:
+    """Return (payload, cache_day) from local 'kite' section."""
+    root = read_section("kite")
+    entry = root.get(section)
+    if not isinstance(entry, dict):
+        return {}, ""
+    payload = entry.get("payload")
+    if not isinstance(payload, dict):
+        payload = {}
+    cache_day = str(entry.get("cache_day") or "").strip()
+    return payload, cache_day
+
+
+def _kite_cache_set_entry_unlocked(section: str, payload: dict[str, Any]) -> None:
+    """Store payload into local 'kite' section."""
+    update_section(
+        "kite",
+        lambda root: {
+            **root,
+            section: {
+                "cache_day": _current_reference_day_token(),
+                "payload": payload,
+            },
+        },
+    )
 
 EQUITY_EXCHANGES = ("NSE", "BSE")
 
@@ -245,7 +281,7 @@ def maybe_start_cash_equity_refresh_unlocked(kite) -> None:
     _CASH_EQUITY_REFRESH_IN_PROGRESS = True
 
     def _job() -> None:
-        global _CACHE_EXPIRES_AT, _CASH_EQUITY_REFRESH_IN_PROGRESS
+        global _CACHE_EXPIRES_AT, _CASH_EQUITY_REFRESH_IN_PROGRESS, _SOURCE_LABEL
         ok = False
         try:
             (
@@ -281,18 +317,18 @@ def maybe_start_cash_equity_refresh_unlocked(kite) -> None:
                 _CACHED_SYMBOL_TO_ISIN.clear()
                 _CACHED_SYMBOL_TO_ISIN.update(symbol_to_isin)
                 _CACHE_EXPIRES_AT = _next_reference_cutoff_epoch()
-                _reference_cache_set_entry_unlocked(
+                _kite_cache_set_entry_unlocked(
                     "cash_equity",
                     _cash_equity_payload_unlocked(),
                 )
-                _set_reference_cache_source_unlocked("cash_equity", "network_bg_refresh")
+                _SOURCE_LABEL = "network_bg_refresh"
                 ok = True
         except Exception:
             pass
         finally:
             with _CACHE_LOCK:
                 if not ok:
-                    _set_reference_cache_source_unlocked("cash_equity", "network_bg_refresh_failed")
+                    _SOURCE_LABEL = "network_bg_refresh_failed"
                 _CASH_EQUITY_REFRESH_IN_PROGRESS = False
             if ok:
                 notify_reference_cache_refresh()
@@ -305,23 +341,23 @@ def _refresh_cash_equity_cache(kite) -> None:
     global _CACHE_EXPIRES_AT, _CACHED_TOKEN_TO_NAME, _CACHED_SYMBOL_TO_NAME, _CACHED_SYMBOL_TO_TOKEN
     global _CACHED_TOKEN_TO_INDUSTRY, _CACHED_SYMBOL_TO_INDUSTRY
     global _CACHED_TOKEN_TO_KITE_SECTOR, _CACHED_SYMBOL_TO_KITE_SECTOR
-    global _CACHED_TOKEN_TO_ISIN, _CACHED_SYMBOL_TO_ISIN
+    global _CACHED_TOKEN_TO_ISIN, _CACHED_SYMBOL_TO_ISIN, _SOURCE_LABEL
     now = time.time()
     if now < _CACHE_EXPIRES_AT and _CACHED_TOKEN_TO_NAME and _CACHED_SYMBOL_TO_NAME:
-        _set_reference_cache_source_unlocked("cash_equity", "memory")
+        _SOURCE_LABEL = "memory"
         return
 
     day = _current_reference_day_token()
-    payload, cache_day = _reference_cache_get_entry_unlocked("cash_equity")
+    payload, cache_day = _kite_cache_get_entry_unlocked("cash_equity")
     if payload and _apply_cash_equity_payload_unlocked(payload, _next_reference_cutoff_epoch()):
         if cache_day != day:
-            _set_reference_cache_source_unlocked("cash_equity", "disk_stale_bg_refresh")
+            _SOURCE_LABEL = "disk_stale_bg_refresh"
             maybe_start_cash_equity_refresh_unlocked(kite)
         else:
-            _set_reference_cache_source_unlocked("cash_equity", "disk")
+            _SOURCE_LABEL = "disk"
         return
 
-    _set_reference_cache_source_unlocked("cash_equity", "cold_start_bg_refresh")
+    _SOURCE_LABEL = "cold_start_bg_refresh"
     maybe_start_cash_equity_refresh_unlocked(kite)
 
 
@@ -377,8 +413,10 @@ def warmup(ctx: WarmupContext) -> None:
 
 def kite_reference_debug_snapshot(now: float) -> dict[str, Any]:
     """``cash_equity`` row for :func:`app.domain.portfolio_model.get_reference_cache_debug_snapshot`."""
+    with _CACHE_LOCK:
+        src = _SOURCE_LABEL
     return {
-        "source": REFERENCE_CACHE_LAST_SOURCE.get("cash_equity", "unknown"),
+        "source": src,
         "expires_in_ms": max(0.0, (_CACHE_EXPIRES_AT - now) * 1000.0),
         "refresh_in_progress": _CASH_EQUITY_REFRESH_IN_PROGRESS,
     }

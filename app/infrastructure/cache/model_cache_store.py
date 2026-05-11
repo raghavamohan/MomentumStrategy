@@ -16,11 +16,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MODEL_CACHE_FILE = PROJECT_ROOT / ".cache" / "model_cache.json"
 _MODEL_CACHE_LOCK = threading.Lock()
 _IST = ZoneInfo("Asia/Kolkata")
+REFERENCE_CUTOFF_HOUR = 9
+
 _BACKGROUND_REFRESH_LOCK = threading.Lock()
 _BACKGROUND_REFRESH_RUNNING: set[str] = set()
 
 
-def current_effective_day_ist(cutoff_hour: int = 9) -> str:
+def current_effective_day_ist(cutoff_hour: int = REFERENCE_CUTOFF_HOUR) -> str:
     """Return effective IST cache day, rolling over at ``cutoff_hour``."""
     now = datetime.now(_IST)
     if now.hour < cutoff_hour:
@@ -28,7 +30,7 @@ def current_effective_day_ist(cutoff_hour: int = 9) -> str:
     return now.strftime("%Y-%m-%d")
 
 
-def next_cutoff_epoch_ist(cutoff_hour: int = 9) -> float:
+def next_cutoff_epoch_ist(cutoff_hour: int = REFERENCE_CUTOFF_HOUR) -> float:
     """Epoch seconds for the next IST cutoff boundary."""
     now = datetime.now(_IST)
     cutoff = now.replace(hour=cutoff_hour, minute=0, second=0, microsecond=0)

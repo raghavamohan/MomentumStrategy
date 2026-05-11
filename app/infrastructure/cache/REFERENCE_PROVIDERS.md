@@ -22,27 +22,26 @@ Orchestration: `app.domain.reference_snapshot.warm_reference_snapshot` invokes p
 
 ## Persistence: choose one family
 
-### A. Reference-disk style (`reference_data` in `model_cache.json`)
+### A. Model-section style (`read_section` / `update_section`)
 
-Use when data is shared with instrument / NSE reference resolution and must stay consistent with other reference entries.
+Use for self-contained blobs keyed by their own JSON shape. This is the preferred style for all providers.
 
-- Coordinate through [`reference_cache_internal`](reference_cache_internal.py): `instrument_reference_lock`, `_reference_cache_get_entry_unlocked`, `_reference_cache_set_entry_unlocked`.
-- Record provenance via `REFERENCE_CACHE_LAST_SOURCE` keys (with `set_reference_last_source` in `reference_cache_internal.py` when updating outside the unlocked reference-disk path).
-- **Examples:** [`kite_provider`](kite_provider.py), [`nse_provider`](nse_provider.py).
+- Prefer a dedicated section name (e.g. `nse`, `kite`, `mfdata`, `marketsmith`, `yfinance`).
+- Use a **module-local** `threading.Lock`.
+- Store a day token under `meta.cache_day` or within the section structure so IST rollover is explicit.
+- **Examples:** [`nse_provider`](nse_provider.py), [`kite_provider`](kite_provider.py), [`yfinance_provider`](yfinance_provider.py), [`mfdata_provider`](mfdata_provider.py), [`marketsmith_provider`](marketsmith_provider.py).
 
-### B. Model-section style (`read_section` / `update_section`)
+### B. Joined / Domain Providers
 
-Use for self-contained blobs keyed by their own JSON shape.
+Use when data must be aggregated across multiple source providers.
 
-- Prefer a dedicated section name (e.g. `mfdata`, `marketsmith`, `yfinance`).
-- Use a **module-local** `threading.Lock`; do not share `instrument_reference_lock` unless you are also mutating reference-disk payloads.
-- Store a day token under `meta.cache_day` or `cache_day` so IST rollover (see below) is explicit.
-- **Examples:** [`yfinance_provider`](yfinance_provider.py), [`mfdata_provider`](mfdata_provider.py), [`marketsmith_provider`](marketsmith_provider.py).
+- Coordinate resolution logic in a dedicated provider (e.g., `equity_metadata_provider`).
+- Consumes snapshots or direct lookups from source providers.
+- **Example:** [`equity_metadata_provider`](equity_metadata_provider.py).
 
 ## IST day boundary (09:00)
 
-- **Reference-disk entries** reuse `current_effective_day_ist` / `next_cutoff_epoch_ist` from `model_cache_store.py` via `_current_reference_day_token()` in `reference_cache_internal`.
-- **Model sections** SHOULD use `current_effective_day_ist(cutoff_hour=9)` (or the same convention) for `cache_day` fields so all providers agree on the “business day”.
+- **All entries** should reuse `current_effective_day_ist` / `next_cutoff_epoch_ist` from `model_cache_store.py`. They use `cutoff_hour=9` by default to agree on the same "business day".
 
 ## Background network work
 

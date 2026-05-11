@@ -10,16 +10,13 @@ from app.domain.reference_context import WarmupContext
 from app.domain.reference_notifications import notify_reference_cache_refresh
 from app.infrastructure.cache.text_normalize import normalise_name, normalise_symbol
 from app.infrastructure.cache.model_cache_store import (
+    REFERENCE_CUTOFF_HOUR,
+    current_effective_day_ist,
+    next_cutoff_epoch_ist,
     load_model_cache,
     read_section,
     start_background_refresh_job,
     update_section,
-)
-from app.infrastructure.cache.reference_cache_internal import (
-    REFERENCE_CACHE_LAST_SOURCE,
-    _current_reference_day_token,
-    _next_reference_cutoff_epoch,
-    set_reference_last_source,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,6 +38,15 @@ _YFINANCE_REFRESH_THREAD_STARTED = False
 _YFINANCE_SYMBOL_REFRESH_IN_PROGRESS: set[tuple[str, str]] = set()
 
 _YFINANCE_CACHE_DAY = ""
+_YFINANCE_SOURCE = "unknown"
+
+
+def _current_reference_day_token() -> str:
+    return current_effective_day_ist()
+
+
+def _next_reference_cutoff_epoch() -> float:
+    return next_cutoff_epoch_ist()
 
 
 def _yfinance_cache_key(exchange: str, symbol: str) -> tuple[str, str]:
@@ -48,7 +54,7 @@ def _yfinance_cache_key(exchange: str, symbol: str) -> tuple[str, str]:
 
 
 def _load_yfinance_cache_if_needed() -> None:
-    global _YFINANCE_CACHE_LOADED
+    global _YFINANCE_CACHE_LOADED, _YFINANCE_SOURCE
     if _YFINANCE_CACHE_LOADED:
         return
 
@@ -84,7 +90,7 @@ def _load_yfinance_cache_if_needed() -> None:
                 _CACHED_YFINANCE_KEY_TO_SECTOR[key] = sec
             globals()["_YFINANCE_CACHE_DAY"] = cache_day
             if _CACHED_YFINANCE_KEY_TO_INDUSTRY:
-                set_reference_last_source("yfinance", "disk")
+                _YFINANCE_SOURCE = "disk"
         except Exception as exc:
             logger.warning("Failed to read yfinance cache file: %s", exc)
 
@@ -116,7 +122,7 @@ def _persist_yfinance_cache() -> None:
 
 def _maybe_start_monthly_yfinance_refresh() -> None:
     """Start a daily background refresh aligned to the 09:00 IST cache day."""
-    global _YFINANCE_REFRESH_THREAD_STARTED, _YFINANCE_CACHE_REFRESH_IN_PROGRESS
+    global _YFINANCE_REFRESH_THREAD_STARTED, _YFINANCE_CACHE_REFRESH_IN_PROGRESS, _YFINANCE_SOURCE
 
     _load_yfinance_cache_if_needed()
     with _YFINANCE_CACHE_LOCK:
@@ -128,14 +134,14 @@ def _maybe_start_monthly_yfinance_refresh() -> None:
             return
 
         if _YFINANCE_CACHE_DAY == _current_reference_day_token():
-            set_reference_last_source("yfinance", "memory")
+            _YFINANCE_SOURCE = "memory"
             return
 
-        set_reference_last_source("yfinance", "disk_stale_bg_refresh")
+        _YFINANCE_SOURCE = "disk_stale_bg_refresh"
         _YFINANCE_REFRESH_THREAD_STARTED = True
 
     def _refresh_job() -> None:
-        global _YFINANCE_CACHE_REFRESH_IN_PROGRESS, _YFINANCE_CACHE_DAY, _YFINANCE_REFRESH_THREAD_STARTED
+        global _YFINANCE_CACHE_REFRESH_IN_PROGRESS, _YFINANCE_CACHE_DAY, _YFINANCE_REFRESH_THREAD_STARTED, _YFINANCE_SOURCE
         with _YFINANCE_CACHE_LOCK:
             if _YFINANCE_CACHE_REFRESH_IN_PROGRESS:
                 return
@@ -175,7 +181,7 @@ def _maybe_start_monthly_yfinance_refresh() -> None:
             if updated:
                 logger.info("yfinance cache refreshed for %d symbols", updated)
             _persist_yfinance_cache()
-            set_reference_last_source("yfinance", "network_bg_refresh")
+            _YFINANCE_SOURCE = "network_bg_refresh"
             notify_reference_cache_refresh()
         finally:
             with _YFINANCE_CACHE_LOCK:
@@ -201,6 +207,7 @@ def _maybe_start_single_symbol_yfinance_refresh(exchange: str, symbol: str) -> N
         _YFINANCE_SYMBOL_REFRESH_IN_PROGRESS.add(key)
 
     def _refresh_one() -> None:
+        global _YFINANCE_SOURCE
         try:
             yf_symbol = clean_symbol
             if "." not in yf_symbol:
@@ -217,7 +224,7 @@ def _maybe_start_single_symbol_yfinance_refresh(exchange: str, symbol: str) -> N
                 _CACHED_YFINANCE_KEY_TO_INDUSTRY[key] = y_ind
                 _CACHED_YFINANCE_KEY_TO_SECTOR[key] = y_sec
                 _YFINANCE_CACHE_DAY = _current_reference_day_token()
-            set_reference_last_source("yfinance", "network_bg_refresh")
+            _YFINANCE_SOURCE = "network_bg_refresh"
             _persist_yfinance_cache()
             notify_reference_cache_refresh()
         except Exception as exc:
@@ -309,8 +316,10 @@ def _read_cached_sector_industry(
 
 def yfinance_reference_debug_snapshot(now: float) -> dict[str, Any]:
     """Metadata row for :func:`app.domain.portfolio_model.get_reference_cache_debug_snapshot`."""
+    with _YFINANCE_CACHE_LOCK:
+        src = _YFINANCE_SOURCE
     return {
-        "source": REFERENCE_CACHE_LAST_SOURCE.get("yfinance", "unknown"),
+        "source": src,
         "expires_in_ms": max(0.0, (_next_reference_cutoff_epoch() - now) * 1000.0),
         "refresh_in_progress": (
             _YFINANCE_CACHE_REFRESH_IN_PROGRESS or bool(_YFINANCE_SYMBOL_REFRESH_IN_PROGRESS)

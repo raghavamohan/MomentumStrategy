@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import logging
+import threading
 import time
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -38,10 +39,13 @@ from app.infrastructure.cache.yfinance_provider import (
     lookup_yfinance_sector_labels,
     yfinance_reference_debug_snapshot,
 )
+from app.infrastructure.cache.equity_metadata_provider import (
+    equity_metadata_reference_debug_snapshot,
+    resolve_metadata as _resolve_metadata,
+)
 from app.domain.reference_context import WarmupContext
 from app.domain.reference_notifications import notify_reference_cache_refresh
 from app.domain.reference_snapshot import build_reference_snapshot, warm_reference_snapshot
-from app.infrastructure.cache.reference_cache_internal import instrument_reference_lock
 from app.infrastructure.cache.model_cache_store import (
     current_effective_day_ist,
     start_background_refresh_job,
@@ -52,7 +56,7 @@ logger = logging.getLogger(__name__)
 EQUITY_EXCHANGES = {"NSE", "BSE"}
 FNO_EXCHANGES = {"NFO", "BFO", "CDS", "BCD", "MCX"}
 
-_REFERENCE_CACHE_LOCK = instrument_reference_lock
+_REFERENCE_CACHE_LOCK = threading.Lock()
 
 
 def _normalise_name(raw: Any) -> str:
@@ -81,6 +85,7 @@ def get_reference_cache_debug_snapshot() -> dict[str, dict[str, Any]]:
             "yfinance": yfinance_reference_debug_snapshot(now),
             "mfdata": mfdata_reference_debug_snapshot(now),
             "marketsmith": marketsmith_reference_debug_snapshot(now),
+            "equity_metadata": equity_metadata_reference_debug_snapshot(now),
         }
 
 
@@ -106,77 +111,21 @@ def resolve_equity_sector(
     token_to_isin: dict[int, str],
     symbol_to_isin: dict[tuple[str, str], str],
 ) -> str:
-    """Resolve a display **sector** for NSE/BSE cash equities.
-
-    Order: yfinance ``sector`` (else cached ``industry`` for the same key(s)),
-    Kite ``sector`` column, then NSE CSV ``Industry`` mapped by symbol (also
-    used for BSE when the symbol matches), then reference ISIN→industry maps.
-    """
-    clean_symbol = _normalise_symbol(symbol)
-    clean_exchange = str(exchange or "").strip().upper()
-    token = int(instrument_token or 0)
-
-    if clean_exchange not in EQUITY_EXCHANGES:
-        return ""
-
-    instrument_name = ""
-    if token > 0:
-        instrument_name = _normalise_name(token_to_name.get(token))
-    if not instrument_name and clean_symbol:
-        instrument_name = _normalise_name(symbol_to_name.get((clean_exchange, clean_symbol)))
-
-    # ETFs often lack reliable sector metadata. If symbol/name indicates ETF,
-    # force a dedicated sector label.
-    if "ETF" in clean_symbol or "ETF" in instrument_name.upper():
-        return "ETF"
-
-    sec = ""
-    if clean_symbol:
-        cached_sec, cached_ind, matched_key, matched_ind_key = lookup_yfinance_sector_labels(
-            clean_exchange,
-            clean_symbol,
-        )
-
-        if cached_sec:
-            sec = cached_sec
-            logger.debug(
-                "Sector for %s resolved via yfinance cache (%s|%s): %s",
-                f"{clean_exchange}:{clean_symbol}",
-                matched_key[0] if matched_key else "?",
-                matched_key[1] if matched_key else "?",
-                sec,
-            )
-        elif cached_ind:
-            sec = cached_ind
-            logger.debug(
-                "Sector for %s resolved via yfinance cache industry fallback (%s|%s): %s",
-                f"{clean_exchange}:{clean_symbol}",
-                matched_ind_key[0] if matched_ind_key else "?",
-                matched_ind_key[1] if matched_ind_key else "?",
-                sec,
-            )
-
-    if not sec and token > 0:
-        sec = _normalise_name(token_to_kite_sector.get(token))
-    if not sec and clean_symbol:
-        sec = _normalise_name(symbol_to_kite_sector.get((clean_exchange, clean_symbol)))
-    if not sec and clean_symbol:
-        sec = _normalise_name(nse_symbol_to_industry.get(clean_symbol))
-    if not sec:
-        isin = ""
-        if token > 0:
-            isin = _normalise_isin(token_to_isin.get(token))
-        if not isin and clean_symbol:
-            isin = _normalise_isin(symbol_to_isin.get((clean_exchange, clean_symbol)))
-        if not isin and clean_symbol:
-            if clean_exchange == "BSE":
-                isin = _normalise_isin(symbol_to_isin.get(("NSE", clean_symbol)))
-            elif clean_exchange == "NSE":
-                isin = _normalise_isin(symbol_to_isin.get(("BSE", clean_symbol)))
-        if isin:
-            sec = _normalise_name(isin_to_industry.get(isin))
-
-    return sec
+    """Resolve a display **sector** for NSE/BSE cash equities."""
+    metadata = _resolve_metadata(
+        symbol=symbol,
+        exchange=exchange,
+        instrument_token=instrument_token,
+        token_to_name=token_to_name,
+        symbol_to_name=symbol_to_name,
+        token_to_kite_sector=token_to_kite_sector,
+        symbol_to_kite_sector=symbol_to_kite_sector,
+        nse_symbol_to_industry=nse_symbol_to_industry,
+        isin_to_industry=isin_to_industry,
+        token_to_isin=token_to_isin,
+        symbol_to_isin=symbol_to_isin,
+    )
+    return metadata.sector
 
 
 def symbol_with_company_name(

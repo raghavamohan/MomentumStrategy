@@ -13,6 +13,7 @@ from app.infrastructure.cache import mfdata_provider
 from app.infrastructure.cache import marketsmith_provider
 from app.infrastructure.cache import nse_provider
 from app.infrastructure.cache import yfinance_provider
+from app.infrastructure.cache import equity_metadata_provider
 from app.domain.reference_context import WarmupContext
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,7 @@ REFERENCE_PROVIDER_WARMUPS: tuple[tuple[str, Callable[[WarmupContext], None]], .
     ("mfdata", mfdata_provider.warmup),
     ("marketsmith", marketsmith_provider.warmup),
     ("kite", kite_provider.warmup),
+    ("equity_metadata", equity_metadata_provider.warmup),
 )
 
 _revision_lock = threading.Lock()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import threading
 import time
 from typing import Any
 from urllib.error import URLError
@@ -13,20 +14,56 @@ from urllib.request import Request, urlopen
 from app.domain.reference_context import WarmupContext
 from app.domain.reference_notifications import notify_reference_cache_refresh
 from app.infrastructure.cache.text_normalize import normalise_isin, normalise_name, normalise_symbol
-from app.infrastructure.cache.model_cache_store import start_background_refresh_job
-from app.infrastructure.cache.reference_cache_internal import (
-    REFERENCE_CACHE_LAST_SOURCE,
-    instrument_reference_lock,
-    _current_reference_day_token,
-    _next_reference_cutoff_epoch,
-    _reference_cache_get_entry_unlocked,
-    _reference_cache_set_entry_unlocked,
-    _set_reference_cache_source_unlocked,
+from app.infrastructure.cache.model_cache_store import (
+    REFERENCE_CUTOFF_HOUR,
+    current_effective_day_ist,
+    next_cutoff_epoch_ist,
+    read_section,
+    start_background_refresh_job,
+    update_section,
 )
 
 logger = logging.getLogger(__name__)
 
-_CACHE_LOCK = instrument_reference_lock
+_CACHE_LOCK = threading.Lock()
+
+_NSE_MERGED_SOURCE = "unknown"
+_NIFTY50_SOURCE = "unknown"
+
+
+def _current_reference_day_token() -> str:
+    return current_effective_day_ist()
+
+
+def _next_reference_cutoff_epoch() -> float:
+    return next_cutoff_epoch_ist()
+
+
+def _nse_cache_get_entry_unlocked(section: str) -> tuple[dict[str, Any], str]:
+    """Return (payload, cache_day) from local 'nse' section."""
+    root = read_section("nse")
+    entry = root.get(section)
+    if not isinstance(entry, dict):
+        return {}, ""
+    payload = entry.get("payload")
+    if not isinstance(payload, dict):
+        payload = {}
+    cache_day = str(entry.get("cache_day") or "").strip()
+    return payload, cache_day
+
+
+def _nse_cache_set_entry_unlocked(section: str, payload: dict[str, Any]) -> None:
+    """Store payload into local 'nse' section."""
+    update_section(
+        "nse",
+        lambda root: {
+            **root,
+            section: {
+                "cache_day": _current_reference_day_token(),
+                "payload": payload,
+            },
+        },
+    )
 
 _NIFTY50_CSV_URL = "https://nsearchives.nseindia.com/content/indices/ind_nifty50list.csv"
 _NSE_INDUSTRY_CSV_URLS: tuple[str, ...] = (
@@ -135,7 +172,7 @@ def _maybe_start_nse_merged_refresh_unlocked() -> None:
 
     def _job() -> None:
         global _NSE_MERGED_REFRESH_IN_PROGRESS, _NSE_MERGED_INDUSTRY_EXPIRES_AT
-        global _CACHED_NSE_SYMBOL_TO_INDUSTRY, _CACHED_ISIN_TO_INDUSTRY
+        global _CACHED_NSE_SYMBOL_TO_INDUSTRY, _CACHED_ISIN_TO_INDUSTRY, _NSE_MERGED_SOURCE
         ok = False
         try:
             nse_sym, isin_map, any_ok = _fetch_nse_merged_industry_maps()
@@ -145,16 +182,16 @@ def _maybe_start_nse_merged_refresh_unlocked() -> None:
                 _CACHED_NSE_SYMBOL_TO_INDUSTRY = nse_sym
                 _CACHED_ISIN_TO_INDUSTRY = isin_map
                 _NSE_MERGED_INDUSTRY_EXPIRES_AT = _next_reference_cutoff_epoch()
-                _reference_cache_set_entry_unlocked(
+                _nse_cache_set_entry_unlocked(
                     "nse_merged_industry",
                     _nse_merged_payload_unlocked(),
                 )
-                _set_reference_cache_source_unlocked("nse_merged_industry", "network_bg_refresh")
+                _NSE_MERGED_SOURCE = "network_bg_refresh"
                 ok = True
         finally:
             with _CACHE_LOCK:
                 if not ok:
-                    _set_reference_cache_source_unlocked("nse_merged_industry", "network_bg_refresh_failed")
+                    _NSE_MERGED_SOURCE = "network_bg_refresh_failed"
                 _NSE_MERGED_REFRESH_IN_PROGRESS = False
             if ok:
                 notify_reference_cache_refresh()
@@ -164,25 +201,25 @@ def _maybe_start_nse_merged_refresh_unlocked() -> None:
 
 def _refresh_nse_merged_industry_unlocked() -> bool:
     """Merge Industry + ISIN from multiple NSE index CSVs. Returns False if all failed."""
-    global _NSE_MERGED_INDUSTRY_EXPIRES_AT, _CACHED_NSE_SYMBOL_TO_INDUSTRY, _CACHED_ISIN_TO_INDUSTRY
+    global _NSE_MERGED_INDUSTRY_EXPIRES_AT, _CACHED_NSE_SYMBOL_TO_INDUSTRY, _CACHED_ISIN_TO_INDUSTRY, _NSE_MERGED_SOURCE
     now = time.time()
     if now < _NSE_MERGED_INDUSTRY_EXPIRES_AT and (
         _CACHED_NSE_SYMBOL_TO_INDUSTRY or _CACHED_ISIN_TO_INDUSTRY
     ):
-        _set_reference_cache_source_unlocked("nse_merged_industry", "memory")
+        _NSE_MERGED_SOURCE = "memory"
         return True
 
     day = _current_reference_day_token()
-    payload, cache_day = _reference_cache_get_entry_unlocked("nse_merged_industry")
+    payload, cache_day = _nse_cache_get_entry_unlocked("nse_merged_industry")
     if payload and _apply_nse_merged_payload_unlocked(payload, _next_reference_cutoff_epoch()):
         if cache_day != day:
-            _set_reference_cache_source_unlocked("nse_merged_industry", "disk_stale_bg_refresh")
+            _NSE_MERGED_SOURCE = "disk_stale_bg_refresh"
             _maybe_start_nse_merged_refresh_unlocked()
         else:
-            _set_reference_cache_source_unlocked("nse_merged_industry", "disk")
+            _NSE_MERGED_SOURCE = "disk"
         return True
 
-    _set_reference_cache_source_unlocked("nse_merged_industry", "cold_start_bg_refresh")
+    _NSE_MERGED_SOURCE = "cold_start_bg_refresh"
     _maybe_start_nse_merged_refresh_unlocked()
     return bool(_CACHED_NSE_SYMBOL_TO_INDUSTRY or _CACHED_ISIN_TO_INDUSTRY)
 
@@ -205,14 +242,14 @@ def get_isin_to_industry() -> dict[str, str]:
 
 def _refresh_nifty50_cache_unlocked() -> bool:
     """Load Nifty50 symbol order from NSE CSV (watch list)."""
-    global _NIFTY50_CACHE_EXPIRES_AT, _CACHED_NIFTY50_SYMBOLS
+    global _NIFTY50_CACHE_EXPIRES_AT, _CACHED_NIFTY50_SYMBOLS, _NIFTY50_SOURCE
     now = time.time()
     if now < _NIFTY50_CACHE_EXPIRES_AT and _CACHED_NIFTY50_SYMBOLS:
-        _set_reference_cache_source_unlocked("nifty50_symbols", "memory")
+        _NIFTY50_SOURCE = "memory"
         return True
 
     day = _current_reference_day_token()
-    payload, cache_day = _reference_cache_get_entry_unlocked("nifty50_symbols")
+    payload, cache_day = _nse_cache_get_entry_unlocked("nifty50_symbols")
     symbols_payload = payload.get("symbols") if isinstance(payload, dict) else None
     if isinstance(symbols_payload, list):
         symbols: list[str] = []
@@ -227,13 +264,13 @@ def _refresh_nifty50_cache_unlocked() -> bool:
             _CACHED_NIFTY50_SYMBOLS = symbols
             _NIFTY50_CACHE_EXPIRES_AT = _next_reference_cutoff_epoch()
             if cache_day != day:
-                _set_reference_cache_source_unlocked("nifty50_symbols", "disk_stale_bg_refresh")
+                _NIFTY50_SOURCE = "disk_stale_bg_refresh"
                 _maybe_start_nifty50_refresh_unlocked()
             else:
-                _set_reference_cache_source_unlocked("nifty50_symbols", "disk")
+                _NIFTY50_SOURCE = "disk"
             return True
 
-    _set_reference_cache_source_unlocked("nifty50_symbols", "cold_start_bg_refresh")
+    _NIFTY50_SOURCE = "cold_start_bg_refresh"
     _maybe_start_nifty50_refresh_unlocked()
     return bool(_CACHED_NIFTY50_SYMBOLS)
 
@@ -256,7 +293,7 @@ def _refresh_nifty50_from_network_unlocked() -> bool:
 
     _CACHED_NIFTY50_SYMBOLS = ordered_unique
     _NIFTY50_CACHE_EXPIRES_AT = _next_reference_cutoff_epoch()
-    _reference_cache_set_entry_unlocked(
+    _nse_cache_set_entry_unlocked(
         "nifty50_symbols",
         {"symbols": ordered_unique},
     )
@@ -271,6 +308,7 @@ def _maybe_start_nifty50_refresh_unlocked() -> None:
 
     def _job() -> None:
         global _NIFTY50_REFRESH_IN_PROGRESS, _NIFTY50_CACHE_EXPIRES_AT
+        global _CACHED_NIFTY50_SYMBOLS, _NIFTY50_SOURCE
         ok = False
         try:
             body = _fetch_nse_industry_csv_body(_NIFTY50_CSV_URL)
@@ -290,16 +328,16 @@ def _maybe_start_nifty50_refresh_unlocked() -> None:
             with _CACHE_LOCK:
                 _CACHED_NIFTY50_SYMBOLS[:] = ordered_unique
                 _NIFTY50_CACHE_EXPIRES_AT = _next_reference_cutoff_epoch()
-                _reference_cache_set_entry_unlocked(
+                _nse_cache_set_entry_unlocked(
                     "nifty50_symbols",
                     {"symbols": ordered_unique},
                 )
-                _set_reference_cache_source_unlocked("nifty50_symbols", "network_bg_refresh")
+                _NIFTY50_SOURCE = "network_bg_refresh"
                 ok = True
         finally:
             with _CACHE_LOCK:
                 if not ok:
-                    _set_reference_cache_source_unlocked("nifty50_symbols", "network_bg_refresh_failed")
+                    _NIFTY50_SOURCE = "network_bg_refresh_failed"
                 _NIFTY50_REFRESH_IN_PROGRESS = False
             if ok:
                 notify_reference_cache_refresh()
@@ -317,14 +355,17 @@ def get_nifty50_symbols() -> list[str]:
 
 def nse_reference_debug_snapshot(now: float) -> dict[str, dict[str, Any]]:
     """Entries merged into :func:`app.domain.portfolio_model.get_reference_cache_debug_snapshot`."""
+    with _CACHE_LOCK:
+        src_merged = _NSE_MERGED_SOURCE
+        src_nifty = _NIFTY50_SOURCE
     return {
         "nse_merged_industry": {
-            "source": REFERENCE_CACHE_LAST_SOURCE.get("nse_merged_industry", "unknown"),
+            "source": src_merged,
             "expires_in_ms": max(0.0, (_NSE_MERGED_INDUSTRY_EXPIRES_AT - now) * 1000.0),
             "refresh_in_progress": _NSE_MERGED_REFRESH_IN_PROGRESS,
         },
         "nifty50_symbols": {
-            "source": REFERENCE_CACHE_LAST_SOURCE.get("nifty50_symbols", "unknown"),
+            "source": src_nifty,
             "expires_in_ms": max(0.0, (_NIFTY50_CACHE_EXPIRES_AT - now) * 1000.0),
             "refresh_in_progress": _NIFTY50_REFRESH_IN_PROGRESS,
         },

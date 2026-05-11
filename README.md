@@ -34,34 +34,35 @@ The app is organized in layers so **per-source I/O** stays in small modules,
 
 1. **Per-source providers** (`app/infrastructure/cache/*_provider.py`)
    - **`kite_provider`** — cash-equity instrument maps (names, ISIN, Kite `sector`,
-     NSE symbol→token) from `KiteConnect.instruments()` when a session exists.
-   - **`nse_provider`** — NSE index CSVs (Nifty 50 universe, symbol/ISIN→`Industry` maps).
+     NSE symbol→token) persisted under the `kite` section.
+   - **`nse_provider`** — NSE index CSVs (Nifty 50 universe, symbol/ISIN→`Industry` maps)
+     persisted under the `nse` section.
    - **`yfinance_provider`** — equity `industry`/`sector` labels persisted under the
-     `yfinance` section of the model cache.
+     `yfinance` section.
    - **`mfdata_provider`** — mfdata.in search + family holdings metadata (`mfdata` section).
    - **`marketsmith_provider`** — daily MarketSmith India regime snapshot (`marketsmith` section).
 
    **Contributors:** Follow **`app/infrastructure/cache/REFERENCE_PROVIDERS.md`** when adding or
-   changing providers (persistence family, warmup, background jobs, notifications,
-   `*_reference_debug_snapshot`). Optional typing: **`app/infrastructure/cache/reference_provider.py`**
-   (`ReferenceWarmupProvider`). Shared symbol/name/ISIN normalization:
-   **`app/infrastructure/cache/text_normalize.py`**.
+   changing providers. The project uses a **Resolution Layer** pattern (see **`equity_metadata_provider`**)
+   to join data across sources.
 
 2. **Persistence and coordination**
    - **`app/infrastructure/cache/model_cache_store.py`** — single file `.cache/model_cache.json`;
-     typed helpers load/update sections (`yfinance`, `reference_data`, `mfdata`,
-     `marketsmith`, …).
-   - **`app/infrastructure/cache/reference_cache_internal.py`** — shared `reference_data` disk cache,
-     source labels (`REFERENCE_CACHE_LAST_SOURCE`, including **`yfinance`** for
-     unified provenance via **`set_reference_last_source`**), and locking so NSE +
-     Kite-derived maps stay consistent.
+     typed helpers load/update sections (`kite`, `nse`, `yfinance`, `mfdata`, `marketsmith`, …).
+     This module also defines infrastructure-wide business day standards (09:00 IST rollover).
 
-3. **Reference snapshots and warmup**
+3. **Domain Resolution Layer**
+   - **`app/infrastructure/cache/equity_metadata_provider.py`** — aggregates data from
+     source providers (Kite, NSE, yfinance) to implement a unified resolution hierarchy
+     for equity names, sectors, and industries. It handles fallback logic (e.g.,
+     trusting NSE CSVs for industry but yfinance for sectors) in a single place.
+
+4. **Reference snapshots and warmup**
    - **`app/domain/reference_snapshot.py`** — builds an immutable **`ReferenceSnapshot`**
      (`build_reference_snapshot`) from provider caches for each dashboard render;
      **`warm_reference_snapshot`** invokes each module’s **`warmup(ctx)`** in the
      order defined by **`REFERENCE_PROVIDER_WARMUPS`** (currently NSE → yfinance →
-     mfdata → MarketSmith → Kite). **`app/domain/reference_context.py`** supplies
+     mfdata → MarketSmith → Kite → equity_metadata).
      **`WarmupContext`**; see its docstring for which providers read **`kite`**,
      **`force_refresh`**, **`marketsmith_force_sync`**, and related flags.
    - **`app/domain/reference_notifications.py`** — debounced revision bump + dashboard
@@ -74,13 +75,14 @@ The app is organized in layers so **per-source I/O** stays in small modules,
      sync routine on a daemon thread unless **`MOMENTUM_SKIP_CACHE_WARMUP`** is set.
      **`app/server.py`** invokes it from lifespan and again after **`/callback`** login.
 
-4. **Shared model layer** (`app/domain/portfolio_model.py`)
+5. **Shared model layer** (`app/domain/portfolio_model.py`)
    - Normalized holdings/MF/positions entities and portfolio aggregates.
-   - Sector resolution (`resolve_equity_sector`) orchestrating yfinance cache → Kite → NSE → ISIN.
+   - Sector resolution (**`resolve_equity_sector`**) delegating to the
+     **`equity_metadata_provider`** resolution hierarchy.
    - **`warm_reference_caches()`** delegates to **`warm_reference_snapshot`**.
    - **`get_reference_cache_debug_snapshot()`** merges per-provider
      **`*_reference_debug_snapshot(now)`** rows (cash equity, NSE, yfinance,
-     mfdata, MarketSmith, etc.) for dashboard timing/API introspection.
+     mfdata, MarketSmith, equity_metadata, etc.) for dashboard timing/API introspection.
    - Re-exports such as **`get_marketsmith_market_condition`** from
      **`app/infrastructure/cache/marketsmith_provider`** so **`app/server.py`** imports most of this
      surface from one module.
@@ -96,7 +98,7 @@ Supporting modules unchanged in role: **`app/infrastructure/auth.py`** (Kite log
 External APIs (Kite REST/WS, NSE CSVs, yfinance, mfdata.in, MarketSmith)
           |
           v
-  app/infrastructure/cache/*_provider.py  +  model_cache_store / reference_cache_internal
+  app/infrastructure/cache/*_provider.py  +  model_cache_store
           |
           v
   app/domain/reference_snapshot.py (ReferenceSnapshot, warm_reference_snapshot, REFERENCE_PROVIDER_WARMUPS)
@@ -227,16 +229,14 @@ the on-disk token cache so both dashboard and CLI require a fresh Zerodha login.
 
 ## Sector data source and cache
 
-The dashboard's **Sector** column for equities (holdings, equity positions, and
-watch list) follows `app.domain.portfolio_model.resolve_equity_sector` in this order:
+The dashboard's **Sector** column for equities follows the hierarchy implemented
+in **`app.infrastructure.cache.equity_metadata_provider.resolve_metadata`**:
 
-1. **ETF override**: if the symbol or instrument/company name contains `ETF`,
-   sector is forced to `ETF`.
-2. **yfinance disk cache** (`.cache/model_cache.json`, `yfinance` section): prefer
-   cached `sector`, else cached `industry` for the same lookup keys.
-3. **Kite instruments `sector`** (instrument token, then exchange+symbol pair).
-4. **NSE CSV `Industry`** by symbol (also used when BSE symbol matches NSE).
-5. **ISIN → Industry** from merged NSE lists (including cross-exchange ISIN hints).
+1. **ETF override**: if the symbol or name indicates an ETF, sector is forced to `ETF`.
+2. **yfinance fallback**: Sector (or industry fallback) from the `yfinance` cache.
+3. **Kite instruments**: `sector` column from Kite Connect (token then symbol).
+4. **NSE CSV**: `Industry` column mapped by symbol from NSE archives.
+5. **ISIN mapping**: ISIN → Industry from merged NSE index constituent lists.
 
 Notes:
 - On cache miss, a **background yfinance refresh** may be queued (non-blocking
@@ -382,7 +382,6 @@ Section keys accepted by `--sections` / `--exclude-sections`:
 │   │   ├── cache/
 │   │   │   ├── REFERENCE_PROVIDERS.md
 │   │   │   ├── model_cache_store.py
-│   │   │   ├── reference_cache_internal.py
 │   │   │   ├── reference_provider.py
 │   │   │   ├── text_normalize.py
 │   │   │   ├── kite_provider.py
