@@ -165,7 +165,10 @@ async def dashboard_stock_history(
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     except KiteException as exc:
         logger.warning("stock-history Kite error: %s", exc)
-        return stock_history_json_error(str(exc), status_code=400)
+        return stock_history_json_error(
+            "Could not load historical candles from the broker.",
+            status_code=400,
+        )
     except Exception as exc:  # noqa: BLE001 - surface unexpected Kite/network issues
         logger.exception("stock-history failed: %s", exc)
         return stock_history_json_error(
