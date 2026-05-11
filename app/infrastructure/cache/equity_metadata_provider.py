@@ -150,6 +150,7 @@ def equity_metadata_reference_debug_snapshot(now: float) -> dict[str, Any]:
         "source": "resolved_aggregate",
         "expires_in_ms": max(0.0, (next_cutoff_epoch_ist(9) - now) * 1000.0),
         "refresh_in_progress": False,
+        "cache_day": current_effective_day_ist(9),
     }
 
 

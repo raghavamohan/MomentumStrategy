@@ -45,6 +45,7 @@ def get_reference_revision() -> int:
 
 @dataclass(frozen=True)
 class KiteCashEquitySnapshot:
+    cache_day: str
     token_to_name: dict[int, str]
     symbol_to_name: dict[tuple[str, str], str]
     token_to_kite_sector: dict[int, str]
@@ -56,6 +57,8 @@ class KiteCashEquitySnapshot:
 
 @dataclass(frozen=True)
 class NseReferenceSnapshot:
+    merged_cache_day: str
+    nifty_cache_day: str
     symbol_to_industry: dict[str, str]
     isin_to_industry: dict[str, str]
     nifty50_symbols: tuple[str, ...]
@@ -92,6 +95,7 @@ class ReferenceSnapshot:
 
 def _empty_kite_snapshot() -> KiteCashEquitySnapshot:
     return KiteCashEquitySnapshot(
+        cache_day="",
         token_to_name={},
         symbol_to_name={},
         token_to_kite_sector={},
@@ -120,7 +124,10 @@ def build_reference_snapshot(
         t_sec, s_sec = kite_provider.get_cash_equity_kite_sector_lookups(kite)
         t_isin, s_isin = kite_provider.get_cash_equity_isin_lookups(kite)
         nse_tok = kite_provider.get_nse_symbol_to_token_lookup(kite)
+
+        k_snap_data = kite_provider.kite_reference_debug_snapshot(0) # temp to get cache_day
         kite_snap = KiteCashEquitySnapshot(
+            cache_day=str(k_snap_data.get("cache_day") or ""),
             token_to_name=dict(t_name),
             symbol_to_name=dict(s_name),
             token_to_kite_sector=dict(t_sec),
@@ -132,7 +139,10 @@ def build_reference_snapshot(
     else:
         kite_snap = _empty_kite_snapshot()
 
+    nse_debug = nse_provider.nse_reference_debug_snapshot(0)
     nse_snap = NseReferenceSnapshot(
+        merged_cache_day=str(nse_debug.get("nse_merged_industry", {}).get("cache_day") or ""),
+        nifty_cache_day=str(nse_debug.get("nifty50_symbols", {}).get("cache_day") or ""),
         symbol_to_industry=dict(nse_provider.get_nse_symbol_to_industry()),
         isin_to_industry=dict(nse_provider.get_isin_to_industry()),
         nifty50_symbols=tuple(nse_provider.get_nifty50_symbols()),

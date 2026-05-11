@@ -22,6 +22,22 @@ _BACKGROUND_REFRESH_LOCK = threading.Lock()
 _BACKGROUND_REFRESH_RUNNING: set[str] = set()
 
 
+def get_source_label(
+    memory_warm: bool,
+    disk_day: str,
+    current_day: str,
+    refresh_in_progress: bool,
+) -> str:
+    """Standardized source label for provider debug snapshots."""
+    if memory_warm:
+        return "memory"
+    if not disk_day:
+        return "cold_start_bg_refresh" if refresh_in_progress else "cold"
+    if disk_day == current_day:
+        return "disk"
+    return "disk_stale_bg_refresh" if refresh_in_progress else "disk_stale"
+
+
 def current_effective_day_ist(cutoff_hour: int = REFERENCE_CUTOFF_HOUR) -> str:
     """Return effective IST cache day, rolling over at ``cutoff_hour``."""
     now = datetime.now(_IST)

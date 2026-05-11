@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
 from difflib import SequenceMatcher
@@ -14,25 +15,33 @@ from urllib.request import Request as URLRequest, urlopen
 from app.domain.reference_notifications import notify_reference_cache_refresh
 from app.infrastructure.cache.model_cache_store import (
     current_effective_day_ist,
+    get_source_label,
     next_cutoff_epoch_ist,
     read_section,
     update_section,
 )
 from app.domain.reference_context import WarmupContext
 
+logger = logging.getLogger(__name__)
+
 MFDATA_BASE_URL = "https://mfdata.in"
 MFDATA_HTTP_TIMEOUT_SECONDS = 20
 
-_MFDATA_CACHE_LOCK = threading.Lock()
-_MFDATA_SEARCH_CACHE: dict[str, list[dict[str, Any]]] = {}
-_MFDATA_HOLDINGS_CACHE: dict[int, dict[str, Any] | None] = {}
-_MFDATA_DISK_CACHE_LOADED = False
-_MFDATA_DISK_CACHE: dict[str, Any] = {"meta": {"cache_day": ""}, "search": {}, "holdings": {}}
-_MFDATA_DISK_CACHE_DIRTY = False
+# --- Provider State ---
+_CACHE_LOCK = threading.Lock()
+_CACHE_LOADED = False
+_CACHE_DIRTY = False
+
+_CACHE_DAY = ""
+_SOURCE_LABEL = "unknown"
+_EXPIRES_AT = 0.0
+
+_SEARCH_CACHE: dict[str, list[dict[str, Any]]] = {}
+_HOLDINGS_CACHE: dict[int, dict[str, Any] | None] = {}
 
 
 def normalize_match_text(value: str) -> str:
-    """Lowercase alphanumeric tokens for fuzzy scheme matching (shared with portfolio_model)."""
+    """Lowercase alphanumeric tokens for fuzzy scheme matching."""
     cleaned = re.sub(r"[^a-z0-9]+", " ", (value or "").lower())
     return " ".join(cleaned.split())
 
@@ -47,60 +56,66 @@ def canonicalize_mf_scheme_name(value: str) -> str:
     return " ".join(kept)
 
 
-def _current_cache_day_token() -> str:
-    return current_effective_day_ist(cutoff_hour=9)
-
-
-def _save_mfdata_disk_cache_locked() -> None:
-    update_section("mfdata", lambda _: dict(_MFDATA_DISK_CACHE))
-
-
-def _prepare_mfdata_cache_locked() -> None:
-    global _MFDATA_DISK_CACHE_LOADED, _MFDATA_DISK_CACHE, _MFDATA_DISK_CACHE_DIRTY
-    if not _MFDATA_DISK_CACHE_LOADED:
-        loaded = read_section("mfdata")
-        if isinstance(loaded, dict):
-            _MFDATA_DISK_CACHE = {
-                "meta": loaded.get("meta") if isinstance(loaded.get("meta"), dict) else {"cache_day": ""},
-                "search": loaded.get("search") if isinstance(loaded.get("search"), dict) else {},
-                "holdings": loaded.get("holdings") if isinstance(loaded.get("holdings"), dict) else {},
-            }
-        _MFDATA_DISK_CACHE_LOADED = True
-
-    current_day = _current_cache_day_token()
-    cached_day = str((_MFDATA_DISK_CACHE.get("meta") or {}).get("cache_day") or "")
-    if cached_day == current_day:
+def _load_cache_if_needed_unlocked() -> None:
+    global _CACHE_LOADED, _CACHE_DAY, _SOURCE_LABEL, _EXPIRES_AT
+    if _CACHE_LOADED:
         return
-    _MFDATA_DISK_CACHE["meta"] = {"cache_day": current_day}
-    _MFDATA_DISK_CACHE["search"] = {}
-    _MFDATA_DISK_CACHE["holdings"] = {}
-    _MFDATA_SEARCH_CACHE.clear()
-    _MFDATA_HOLDINGS_CACHE.clear()
-    _MFDATA_DISK_CACHE_DIRTY = True
-    try:
-        _save_mfdata_disk_cache_locked()
-        _MFDATA_DISK_CACHE_DIRTY = False
-    except Exception:
-        pass
+
+    payload = read_section("mfdata")
+    meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+    _CACHE_DAY = str(meta.get("cache_day") or "").strip()
+
+    search_data = payload.get("search")
+    if isinstance(search_data, dict):
+        for k, v in search_data.items():
+            if isinstance(v, list):
+                _SEARCH_CACHE[k] = [row for row in v if isinstance(row, dict)]
+
+    holdings_data = payload.get("holdings")
+    if isinstance(holdings_data, dict):
+        for k, v in holdings_data.items():
+            try:
+                fid = int(k)
+                _HOLDINGS_CACHE[fid] = v if isinstance(v, dict) else None
+            except (ValueError, TypeError):
+                continue
+
+    current_day = current_effective_day_ist(cutoff_hour=9)
+    if _CACHE_DAY != current_day:
+        # Day mismatch: keep memory but mark for eventual flush if new data comes in
+        _SEARCH_CACHE.clear()
+        _HOLDINGS_CACHE.clear()
+        _CACHE_DAY = current_day
+
+    _SOURCE_LABEL = "disk" if _CACHE_DAY else "cold"
+    _EXPIRES_AT = next_cutoff_epoch_ist(9)
+    _CACHE_LOADED = True
+
+
+def _persist_cache_unlocked() -> None:
+    global _CACHE_DIRTY
+    if not _CACHE_DIRTY:
+        return
+
+    def _updater(_: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "meta": {"cache_day": _CACHE_DAY},
+            "search": dict(_SEARCH_CACHE),
+            "holdings": {str(k): v for k, v in _HOLDINGS_CACHE.items()},
+        }
+
+    update_section("mfdata", _updater)
+    _CACHE_DIRTY = False
+    notify_reference_cache_refresh()
 
 
 def flush_mfdata_disk_cache() -> bool:
-    """Persist dirty mfdata section if needed; returns whether a write occurred."""
-    global _MFDATA_DISK_CACHE_DIRTY
-    wrote = False
-    with _MFDATA_CACHE_LOCK:
-        _prepare_mfdata_cache_locked()
-        if not _MFDATA_DISK_CACHE_DIRTY:
-            return False
-        try:
-            _save_mfdata_disk_cache_locked()
-            _MFDATA_DISK_CACHE_DIRTY = False
-            wrote = True
-        except Exception:
-            return False
-    if wrote:
-        notify_reference_cache_refresh()
-    return True
+    """External hook to persist dirty cache (e.g. after a series of fetches)."""
+    with _CACHE_LOCK:
+        if _CACHE_DIRTY:
+            _persist_cache_unlocked()
+            return True
+    return False
 
 
 def _mfdata_json_get(path: str, query: dict[str, Any] | None = None) -> Any:
@@ -117,114 +132,87 @@ def _mfdata_json_get(path: str, query: dict[str, Any] | None = None) -> Any:
 
 
 def mfdata_search_fund(fund_name: str) -> list[dict[str, Any]]:
+    global _CACHE_DIRTY
     key = normalize_match_text(fund_name)
     if not key:
         return []
-    with _MFDATA_CACHE_LOCK:
-        _prepare_mfdata_cache_locked()
-        cached_mem = _MFDATA_SEARCH_CACHE.get(key)
-        if cached_mem is not None:
-            return list(cached_mem)
-        cached_disk = (_MFDATA_DISK_CACHE.get("search") or {}).get(key)
-        if isinstance(cached_disk, list):
-            rows = [row for row in cached_disk if isinstance(row, dict)]
-            _MFDATA_SEARCH_CACHE[key] = rows
-            return list(rows)
+
+    with _CACHE_LOCK:
+        _load_cache_if_needed_unlocked()
+        if key in _SEARCH_CACHE:
+            return list(_SEARCH_CACHE[key])
+
     try:
         payload = _mfdata_json_get("/api/v1/search", {"q": fund_name})
     except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError):
         payload = {}
+
     rows = payload.get("data") if isinstance(payload, dict) else []
     rows = [row for row in (rows or []) if isinstance(row, dict)]
-    global _MFDATA_DISK_CACHE_DIRTY
-    with _MFDATA_CACHE_LOCK:
-        _prepare_mfdata_cache_locked()
-        _MFDATA_SEARCH_CACHE[key] = rows
-        (_MFDATA_DISK_CACHE.get("search") or {})[key] = rows
-        _MFDATA_DISK_CACHE_DIRTY = True
+
+    with _CACHE_LOCK:
+        _SEARCH_CACHE[key] = rows
+        _CACHE_DIRTY = True
+        # We don't auto-persist on every search to avoid heavy I/O
     return rows
 
 
 def mfdata_holdings_for_family(family_id: int) -> dict[str, Any] | None:
-    family_key = str(int(family_id))
-    with _MFDATA_CACHE_LOCK:
-        _prepare_mfdata_cache_locked()
-        if family_id in _MFDATA_HOLDINGS_CACHE:
-            return _MFDATA_HOLDINGS_CACHE[family_id]
-        holdings_disk = (_MFDATA_DISK_CACHE.get("holdings") or {})
-        if family_key in holdings_disk:
-            cached_disk = holdings_disk.get(family_key)
-            result = cached_disk if isinstance(cached_disk, dict) else None
-            _MFDATA_HOLDINGS_CACHE[family_id] = result
-            return result
+    global _CACHE_DIRTY
+    with _CACHE_LOCK:
+        _load_cache_if_needed_unlocked()
+        if family_id in _HOLDINGS_CACHE:
+            return _HOLDINGS_CACHE[family_id]
+
     try:
         payload = _mfdata_json_get(f"/api/v1/families/{family_id}/holdings")
     except HTTPError as exc:
-        if exc.code == 404:
-            payload = {}
-        else:
-            raise
+        payload = {} if exc.code == 404 else None
     except (URLError, TimeoutError, OSError, json.JSONDecodeError):
         payload = {}
+
+    if payload is None: return None # Network error
+
     data = payload.get("data") if isinstance(payload, dict) else None
     result = data if isinstance(data, dict) else None
-    global _MFDATA_DISK_CACHE_DIRTY
-    with _MFDATA_CACHE_LOCK:
-        _prepare_mfdata_cache_locked()
-        _MFDATA_HOLDINGS_CACHE[family_id] = result
-        (_MFDATA_DISK_CACHE.get("holdings") or {})[family_key] = result
-        _MFDATA_DISK_CACHE_DIRTY = True
+
+    with _CACHE_LOCK:
+        _HOLDINGS_CACHE[family_id] = result
+        _CACHE_DIRTY = True
     return result
 
 
 def mfdata_disk_table_snapshot() -> tuple[str, int, int]:
-    """Return ``(cache_day, search_key_count, holdings_family_count)`` from disk-backed cache."""
-    with _MFDATA_CACHE_LOCK:
-        _prepare_mfdata_cache_locked()
-        meta = _MFDATA_DISK_CACHE.get("meta") if isinstance(_MFDATA_DISK_CACHE.get("meta"), dict) else {}
-        day = str(meta.get("cache_day") or "")
-        search = _MFDATA_DISK_CACHE.get("search") if isinstance(_MFDATA_DISK_CACHE.get("search"), dict) else {}
-        holdings = _MFDATA_DISK_CACHE.get("holdings") if isinstance(_MFDATA_DISK_CACHE.get("holdings"), dict) else {}
-        return day, len(search), len(holdings)
+    with _CACHE_LOCK:
+        _load_cache_if_needed_unlocked()
+        return _CACHE_DAY, len(_SEARCH_CACHE), len(_HOLDINGS_CACHE)
 
 
 def warmup(_ctx: WarmupContext) -> None:
-    """Ensure mfdata disk section is loaded and aligned to the effective cache day."""
-    with _MFDATA_CACHE_LOCK:
-        _prepare_mfdata_cache_locked()
+    with _CACHE_LOCK:
+        _load_cache_if_needed_unlocked()
 
 
 def mfdata_reference_debug_snapshot(now: float) -> dict[str, Any]:
-    """Metadata row for :func:`app.domain.portfolio_model.get_reference_cache_debug_snapshot`."""
-    expires_ms = max(0.0, (next_cutoff_epoch_ist(9) - now) * 1000.0)
-    with _MFDATA_CACHE_LOCK:
-        _prepare_mfdata_cache_locked()
-        meta = (
-            _MFDATA_DISK_CACHE.get("meta")
-            if isinstance(_MFDATA_DISK_CACHE.get("meta"), dict)
-            else {}
+    with _CACHE_LOCK:
+        _load_cache_if_needed_unlocked()
+        cur_day = current_effective_day_ist(cutoff_hour=9)
+        src = get_source_label(
+            memory_warm=_CACHE_LOADED and bool(_SEARCH_CACHE or _HOLDINGS_CACHE),
+            disk_day=_CACHE_DAY,
+            current_day=cur_day,
+            refresh_in_progress=False
         )
-        cached_day = str(meta.get("cache_day") or "").strip()
-        cur = _current_cache_day_token()
-        dirty = _MFDATA_DISK_CACHE_DIRTY
-        search = (
-            _MFDATA_DISK_CACHE.get("search")
-            if isinstance(_MFDATA_DISK_CACHE.get("search"), dict)
-            else {}
-        )
-        holdings = (
-            _MFDATA_DISK_CACHE.get("holdings")
-            if isinstance(_MFDATA_DISK_CACHE.get("holdings"), dict)
-            else {}
-        )
-        prefix = "aligned" if cached_day == cur else "day_mismatch"
-        source = f"{prefix}_dirty" if dirty else prefix
+        if _CACHE_DIRTY:
+            src = f"{src}_dirty"
+
         return {
-            "source": source,
-            "expires_in_ms": expires_ms,
+            "source": src,
+            "expires_in_ms": max(0.0, (next_cutoff_epoch_ist(9) - now) * 1000.0),
             "refresh_in_progress": False,
-            "search_keys_cached": len(search),
-            "holdings_families_cached": len(holdings),
+            "search_keys_cached": len(_SEARCH_CACHE),
+            "holdings_families_cached": len(_HOLDINGS_CACHE),
+            "cache_day": _CACHE_DAY,
         }
 
 
