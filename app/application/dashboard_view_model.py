@@ -447,7 +447,6 @@ async def build_dashboard_view_model(
         "referenceCache": reference_cache_debug,
     }
     context = {
-        "request": request,
         "dashboard_name": DASHBOARD_DISPLAY_NAME,
         "equity_holdings": equity_holdings,
         "equity_totals": equity_totals,

@@ -119,7 +119,6 @@ async def dashboard_stock_chart(
         request,
         "stock_chart.html",
         {
-            "request": request,
             "dashboard_name": DASHBOARD_DISPLAY_NAME,
             "stock_title": display_label,
             "stock_chart_bootstrap_json": json.dumps(bootstrap),
