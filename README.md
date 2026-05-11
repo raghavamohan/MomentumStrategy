@@ -555,7 +555,7 @@ Method used in code:
 - Parse CSV using `csv.DictReader`
 - Merge selected files (for example Nifty 50/100/200/500 and mid/small-cap lists)
   into in-memory maps
-- Persist and reuse via `.cache/model_cache.json` (`reference_data` section); in-memory
+- Persist and reuse via `.cache/model_cache.json` (`nse` section); in-memory
   expiry uses the next **09:00 IST** boundary (see **`model_cache_store.next_cutoff_epoch_ist`**).
 
 ### mfdata.in (MF underlying aggregation)

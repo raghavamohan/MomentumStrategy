@@ -16,7 +16,7 @@ Optional but recommended:
 
 | Export | Purpose |
 |--------|---------|
-| `*_reference_debug_snapshot(now)` | Single row (`dict`) or multiple rows (`dict[str, dict]`) for observability — each row SHOULD include `source`, `expires_in_ms`, `refresh_in_progress` where applicable |
+| `*_reference_debug_snapshot(now)` | Single row (`dict`) or multiple rows (`dict[str, dict]`) for observability — each row SHOULD include `source`, `expires_in_ms`, `refresh_in_progress`, and `cache_day` where applicable. Use `get_source_label` from `model_cache_store.py` for `source`. |
 
 Orchestration: `app.domain.reference_snapshot.warm_reference_snapshot` invokes providers in a fixed order. New providers that participate in dashboard reference data SHOULD be wired there (see `REFERENCE_PROVIDER_WARMUPS` in that module).
 
@@ -56,7 +56,7 @@ After a **successful** update that should refresh the dashboard’s reference sn
 
 ## Source labels and debug rows
 
-- **Reference-disk keys** use `REFERENCE_CACHE_LAST_SOURCE` (and may be mirrored for model-cache providers — e.g. `yfinance` — for a unified debug view).
+- Use `get_source_label` from `model_cache_store.py` to determine the `source` string based on memory warmth, disk cache day, and refresh status.
 - Implement `*_reference_debug_snapshot` and register rows in `get_reference_cache_debug_snapshot` in `app/domain/portfolio_model.py`.
 
 ## Optional typing
