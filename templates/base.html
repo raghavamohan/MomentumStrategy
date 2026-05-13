@@ -121,6 +121,9 @@
       background: rgba(79, 140, 255, 0.08);
       border: 1px solid rgba(79, 140, 255, 0.22);
       border-radius: var(--radius-sm);
+      min-height: 40px;
+      display: flex;
+      align-items: center;
     }
     .topbar .index-quotes-marquee:hover .index-quotes-marquee-inner {
       animation-play-state: paused;
@@ -130,7 +133,6 @@
       flex-direction: row;
       flex-wrap: nowrap;
       width: max-content;
-      animation: index-quotes-marquee-scroll 60s linear infinite;
       will-change: transform;
     }
     .topbar .index-quotes-marquee-chunk {

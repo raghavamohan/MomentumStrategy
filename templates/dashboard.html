@@ -1180,14 +1180,14 @@
         }
         return;
       }
-      inner.style.animation = '';
       inner.style.transform = '';
       inner.style.justifyContent = '';
       if (second) {
         second.style.display = '';
       }
       const pxPerSec = 52;
-      inner.style.animationDuration = Math.max(28, (w * 2) / pxPerSec) + 's';
+      const duration = Math.max(28, (w * 2) / pxPerSec);
+      inner.style.animation = 'index-quotes-marquee-scroll ' + duration + 's linear infinite';
     }
 
     function syncIndexQuoteDom() {
@@ -3017,10 +3017,29 @@
         }
 
         currentRoot.innerHTML = nextRoot.innerHTML;
+        const oldQuotes = bootstrap.indexQuotes || [];
         bootstrap = readBootstrap();
+        
+        const newQuotes = bootstrap.indexQuotes || [];
+        let quotesChanged = oldQuotes.length !== newQuotes.length;
+        if (!quotesChanged) {
+          for (let i = 0; i < oldQuotes.length; i++) {
+            if (oldQuotes[i].token !== newQuotes[i].token || oldQuotes[i].label !== newQuotes[i].label) {
+              quotesChanged = true;
+              break;
+            }
+          }
+        }
+        
         updateGlobalCacheRefreshIndicator();
         syncBootstrapMfTotalsFromCachedPayload();
-        renderIndexQuotes();
+        
+        if (quotesChanged) {
+          renderIndexQuotes();
+        } else {
+          syncIndexQuoteDom();
+        }
+        
         bindSections();
         activateSection(selectedSection || requestedSection);
         bindTabs();
