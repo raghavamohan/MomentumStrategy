@@ -1,9 +1,10 @@
 {#
   Account dashboard with section navigation.
 
-  Rendered by `app/web.py` GET /dashboard once per request after the
-  view fetches Kite account data sets and overlays live LTPs (when
-  available) from the Kite WebSocket stream:
+  Rendered by ``GET /dashboard`` in ``app/presentation/http/routes/dashboard_routes.py``,
+  which calls ``app.application.dashboard_view_model.build_dashboard_view_model`` to
+  fetch Kite account data sets and overlay live LTPs (when available) from the
+  Kite WebSocket stream:
 
     * equity_holdings     <- KiteConnect.holdings()
         https://kite.trade/docs/connect/v3/portfolio/#holdings
@@ -20,7 +21,8 @@
   Additional data:
     * user_profile        <- KiteConnect.profile() best-effort fetch
     * watch_list          <- Nifty 50 symbols + KiteConnect.quote(...)
-    * market_condition    <- MarketSmith India gateway (model; see ``app.domain.portfolio_model``)
+    * market_condition    <- MarketSmith India gateway (``marketsmith_provider``;
+                             also re-exported from ``app.domain.portfolio_model``)
     * dashboard_bootstrap JSON includes ``marketCondition`` (camelCase) for client startup
 
   Layout:
@@ -31,11 +33,12 @@
   * One `<section class="panel">` per portfolio tab, one active at a time.
   * Per-panel summary cards (counts, totals) above each table.
 
-  Live LTP / derived P&amp;L updates arrive over ``WS /ws/live-prices``.
+  Live LTP / derived P&amp;L updates arrive over ``WS /ws/live-prices``
+  (``app/presentation/http/routes/ws_live_prices.py``; LTP batches via ``tick_hub``).
   A full REST snapshot (MF, cash, structure) runs every
-  ``snapshot_interval_ms`` from ``DASHBOARD_SNAPSHOT_SECONDS`` (see app.web).
+  ``snapshot_interval_ms`` from ``DASHBOARD_SNAPSHOT_SECONDS`` (see ``app.presentation.http.server_config``).
 
-  Custom Jinja2 filters used (registered in `app/web.py`):
+  Custom Jinja2 filters used (registered in ``app/presentation/http/jinja_env.py``):
     * `inr`        - format number as NN,NNN.NN
     * `units`      - format number with 4 decimals (MF units / NAV)
     * `pct`        - format number as NN.NN%

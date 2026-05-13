@@ -50,7 +50,7 @@ Use when data must be aggregated across multiple source providers.
 
 ## Dashboard revision
 
-After a **successful** update that should refresh the dashboard’s reference snapshot, call `notify_reference_cache_refresh` in `app/reference_notifications.py`.
+After a **successful** update that should refresh the dashboard’s reference snapshot, call `notify_reference_cache_refresh` in `app/domain/reference_notifications.py`.
 
 - **mfdata:** notifications are sent when the disk section is **flushed** after a successful persist (`flush_mfdata_disk_cache`), not on every in-memory search/holdings hit, to avoid excessive revision bumps.
 

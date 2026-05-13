@@ -13,7 +13,7 @@ Entry points
 ------------
 ``python -m app.server``
     Starts the local FastAPI server at http://127.0.0.1:5000/ (dashboard +
-    ``/api/v1`` JSON APIs). ``python -m app.web`` is a compatibility alias.
+    ``/api/v1`` JSON APIs).
 
 ``python -m app.cli_client``
     Command-line HTTP client; prints snapshot sections as ASCII tables. Requires

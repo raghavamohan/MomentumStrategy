@@ -21,7 +21,7 @@ username/password flow available to third-party apps. The sequence is:
 
 Integration paths
 -----------------
-* **Web dashboard** (:mod:`app.web`): OAuth via HTTP routes; uses the helpers
+* **Web dashboard** (:mod:`app.server`): OAuth via HTTP routes; uses the helpers
   exported here (:func:`load_credentials`, :func:`load_cached_access_token`,
   :func:`save_cached_access_token`, :func:`build_authenticated_client`,
   :func:`validate_kite_session`) and ``/callback`` instead of a terminal prompt.
@@ -302,7 +302,7 @@ def get_kite_client() -> KiteConnect:
        returned with the fresh token attached.
 
     The web dashboard does **not** use this function (it cannot prompt
-    on a terminal); see :mod:`app.web` for the HTTP equivalent.
+    on a terminal); see :mod:`app.server` for the HTTP equivalent.
 
     Raises
     ------

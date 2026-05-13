@@ -8,7 +8,7 @@ for market regime. MF metadata from mfdata.in is implemented in
 :mod:`app.infrastructure.cache.mfdata_provider`.
 
 Web code should import portfolio-facing helpers here (e.g. :mod:`app.server`) rather
-than pulling from :mod:`app.cache` ad hoc, unless implementing a new provider.
+than pulling from :mod:`app.infrastructure.cache` ad hoc, unless implementing a new provider.
 """
 
 from __future__ import annotations

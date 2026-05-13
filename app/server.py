@@ -36,7 +36,9 @@ Routes
 ``GET /dashboard``
     Authenticated. Fetches holdings, mutual funds (optional module),
     open positions, cash margins, profile data, and watch-list quote
-    data; then renders ``templates/dashboard.html``.
+    data; then renders ``templates/dashboard.html``. MF holdings and
+    underlying tables may finish loading asynchronously via
+    ``GET /dashboard/mf-holdings`` and ``GET /dashboard/mf-underlyings``.
 
     The page has three section views:
     * Profile
@@ -56,8 +58,9 @@ Routes
     * ``KiteConnect.quote`` (NSE indices) -> previous close and instrument tokens
       for header index tickers from ``KITE_DASHBOARD_INDICES`` (defaults to
       NIFTY 50, NIFTY BANK, NIFTY IT, NIFTY FIN SERVICE, NIFTY METAL).
-    * MarketSmith India ``getMarketHistory.json`` (once per calendar day;
-      memory + disk cache in :mod:`app.domain.portfolio_model`) -> current market
+    * MarketSmith India ``getMarketHistory.json`` (at most once per IST effective
+      cache day, 09:00 rollover; memory + disk via :mod:`app.infrastructure.cache.marketsmith_provider`,
+      also re-exported from :mod:`app.domain.portfolio_model`) -> current market
       regime banner and ``dashboard-bootstrap.marketCondition``.
 
     Live LTP updates are pushed to the browser over ``WS /ws/live-prices``
