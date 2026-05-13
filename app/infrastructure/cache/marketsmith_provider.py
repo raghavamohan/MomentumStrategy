@@ -15,11 +15,10 @@ from urllib.request import Request as URLRequest, urlopen
 
 from app.domain.reference_notifications import notify_reference_cache_refresh
 from app.infrastructure.cache.model_cache_store import (
+    BaseCache,
     current_effective_day_ist,
     next_cutoff_epoch_ist,
-    read_section,
     start_background_refresh_job,
-    update_section,
 )
 from app.domain.reference_context import WarmupContext
 
@@ -31,6 +30,7 @@ _MARKETSMITH_DEFAULT_MS_AUTH = "0000+MarketSmithINDUID-0000000000000+MarketSmith
 _MARKETSMITH_HTTP_TIMEOUT_SECONDS = 12
 
 # --- Provider State ---
+_MARKETSMITH_CACHE = BaseCache("marketsmith_provider")
 _CACHE_LOCK = threading.Lock()
 _CACHE_LOADED = False
 _REFRESH_IN_PROGRESS = False
@@ -51,7 +51,7 @@ def _load_cache_unlocked() -> None:
     global _CACHE_LOADED, _CACHE_DAY, _SOURCE_LABEL, _EXPIRES_AT, _MARKET_CONDITION
     if _CACHE_LOADED: return
 
-    payload = read_section("marketsmith")
+    payload = _MARKETSMITH_CACHE.read_section("marketsmith")
     meta = payload.get("meta") or {}
     _CACHE_DAY = str(meta.get("cached_day") or "").strip()
     _MARKET_CONDITION = payload.get("model")
@@ -64,7 +64,7 @@ def _load_cache_unlocked() -> None:
 
 
 def _persist_cache_unlocked() -> None:
-    update_section("marketsmith", lambda _: {
+    _MARKETSMITH_CACHE.update_section("marketsmith", lambda _: {
         "meta": {"cached_day": _CACHE_DAY},
         "model": _MARKET_CONDITION
     })

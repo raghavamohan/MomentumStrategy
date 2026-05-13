@@ -14,11 +14,10 @@ from app.domain.reference_context import WarmupContext
 from app.domain.reference_notifications import notify_reference_cache_refresh
 from app.infrastructure.cache.text_normalize import normalise_isin, normalise_name, normalise_symbol
 from app.infrastructure.cache.model_cache_store import (
+    BaseCache,
     current_effective_day_ist,
     next_cutoff_epoch_ist,
-    read_section,
     start_background_refresh_job,
-    update_section,
 )
 
 logger = logging.getLogger(__name__)
@@ -43,6 +42,7 @@ _NSE_HEADERS = {
 }
 
 # --- Provider State ---
+_NSE_CACHE = BaseCache("nse_provider")
 _CACHE_LOCK = threading.Lock()
 _CACHE_LOADED = False
 
@@ -65,7 +65,7 @@ def _load_cache_unlocked() -> None:
     if _CACHE_LOADED:
         return
 
-    payload = read_section("nse")
+    payload = _NSE_CACHE.read_section("nse")
 
     # Merged Industry
     m_entry = payload.get("nse_merged_industry")
@@ -90,7 +90,7 @@ def _load_cache_unlocked() -> None:
 
 
 def _persist_merged_unlocked() -> None:
-    update_section("nse", lambda root: {
+    _NSE_CACHE.update_section("nse", lambda root: {
         **root,
         "nse_merged_industry": {
             "cache_day": _MERGED_CACHE_DAY,
@@ -103,7 +103,7 @@ def _persist_merged_unlocked() -> None:
 
 
 def _persist_nifty_unlocked() -> None:
-    update_section("nse", lambda root: {
+    _NSE_CACHE.update_section("nse", lambda root: {
         **root,
         "nifty50_symbols": {
             "cache_day": _NIFTY_CACHE_DAY,

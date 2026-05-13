@@ -12,9 +12,7 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo
 from datetime import datetime, timedelta
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-MODEL_CACHE_FILE = PROJECT_ROOT / ".cache" / "model_cache.json"
-_MODEL_CACHE_LOCK = threading.Lock()
+from app.infrastructure.auth import PROJECT_ROOT
 _IST = ZoneInfo("Asia/Kolkata")
 REFERENCE_CUTOFF_HOUR = 9
 
@@ -55,42 +53,45 @@ def next_cutoff_epoch_ist(cutoff_hour: int = REFERENCE_CUTOFF_HOUR) -> float:
     return cutoff.timestamp()
 
 
-def load_model_cache() -> dict[str, Any]:
-    if not MODEL_CACHE_FILE.exists():
-        return {}
-    try:
-        loaded = json.loads(MODEL_CACHE_FILE.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return loaded if isinstance(loaded, dict) else {}
+class BaseCache:
+    """Base class for robust per-provider JSON file caching."""
+    def __init__(self, provider_name: str) -> None:
+        self.provider_name = provider_name
+        self.cache_file = PROJECT_ROOT / ".cache" / f"{provider_name}.json"
+        self._lock = threading.Lock()
 
+    def read_section(self, section: str) -> dict[str, Any]:
+        with self._lock:
+            value = self._load().get(section)
+            return value if isinstance(value, dict) else {}
 
-def save_model_cache(payload: dict[str, Any]) -> None:
-    MODEL_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = MODEL_CACHE_FILE.with_suffix(".tmp")
-    tmp.write_text(
-        json.dumps(payload, ensure_ascii=True, separators=(",", ":")) + "\n",
-        encoding="utf-8",
-    )
-    tmp.replace(MODEL_CACHE_FILE)
+    def update_section(self, section: str, updater: Callable[[dict[str, Any]], dict[str, Any]]) -> dict[str, Any]:
+        with self._lock:
+            root = self._load()
+            current = root.get(section)
+            base = current if isinstance(current, dict) else {}
+            next_section = updater(dict(base))
+            root[section] = next_section
+            self._save(root)
+            return next_section
 
+    def _load(self) -> dict[str, Any]:
+        if not self.cache_file.exists():
+            return {}
+        try:
+            loaded = json.loads(self.cache_file.read_text(encoding="utf-8"))
+            return loaded if isinstance(loaded, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
 
-def read_section(section: str) -> dict[str, Any]:
-    with _MODEL_CACHE_LOCK:
-        root = load_model_cache()
-    value = root.get(section)
-    return value if isinstance(value, dict) else {}
-
-
-def update_section(section: str, updater: Callable[[dict[str, Any]], dict[str, Any]]) -> dict[str, Any]:
-    with _MODEL_CACHE_LOCK:
-        root = load_model_cache()
-        current = root.get(section)
-        base = current if isinstance(current, dict) else {}
-        next_section = updater(dict(base))
-        root[section] = next_section
-        save_model_cache(root)
-    return next_section
+    def _save(self, payload: dict[str, Any]) -> None:
+        self.cache_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.cache_file.with_suffix(f".{threading.get_ident()}.tmp")
+        tmp.write_text(
+            json.dumps(payload, ensure_ascii=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        tmp.replace(self.cache_file)
 
 
 def start_background_refresh_job(name: str, job: Callable[[], None]) -> bool:

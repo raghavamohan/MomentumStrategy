@@ -14,11 +14,10 @@ from urllib.request import Request as URLRequest, urlopen
 
 from app.domain.reference_notifications import notify_reference_cache_refresh
 from app.infrastructure.cache.model_cache_store import (
+    BaseCache,
     current_effective_day_ist,
     get_source_label,
     next_cutoff_epoch_ist,
-    read_section,
-    update_section,
 )
 from app.domain.reference_context import WarmupContext
 
@@ -28,6 +27,7 @@ MFDATA_BASE_URL = "https://mfdata.in"
 MFDATA_HTTP_TIMEOUT_SECONDS = 20
 
 # --- Provider State ---
+_MFDATA_CACHE = BaseCache("mfdata_provider")
 _CACHE_LOCK = threading.Lock()
 _CACHE_LOADED = False
 _CACHE_DIRTY = False
@@ -61,7 +61,7 @@ def _load_cache_if_needed_unlocked() -> None:
     if _CACHE_LOADED:
         return
 
-    payload = read_section("mfdata")
+    payload = _MFDATA_CACHE.read_section("mfdata")
     meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
     _CACHE_DAY = str(meta.get("cache_day") or "").strip()
 
@@ -104,7 +104,7 @@ def _persist_cache_unlocked() -> None:
             "holdings": {str(k): v for k, v in _HOLDINGS_CACHE.items()},
         }
 
-    update_section("mfdata", _updater)
+    _MFDATA_CACHE.update_section("mfdata", _updater)
     _CACHE_DIRTY = False
     notify_reference_cache_refresh()
 

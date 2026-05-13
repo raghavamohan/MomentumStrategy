@@ -39,6 +39,7 @@ from app.presentation.http.server_config import (
     dashboard_timing_logger,
 )
 from app.infrastructure.services.dashboard_caches import get_cached_profile, get_cached_quotes
+from app.infrastructure.cache.nse_provider import get_nifty50_symbols
 
 logger = logging.getLogger(__name__)
 _DASHBOARD_TIMING_LOGGER = dashboard_timing_logger()
@@ -172,12 +173,19 @@ async def build_dashboard_view_model(
         return None, RedirectResponse("/", status_code=303)
     dashboard_timing_mark(timings, "kite_client", request_start)
 
+    index_quote_keys = [f"NSE:{ts}" for _, ts in DASHBOARD_INDEX_ENTRIES]
+    nifty50_symbols = list(get_nifty50_symbols())
+    watch_quote_keys = [f"NSE:{sym}" for sym in nifty50_symbols]
+    quote_keys = index_quote_keys + watch_quote_keys
+
     mf_error: str | None = None
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with ThreadPoolExecutor(max_workers=6) as pool:
         future_equity = pool.submit(kite.holdings)
         future_positions = pool.submit(kite.positions)
         future_margins = pool.submit(kite.margins, "equity")
         future_market_condition = pool.submit(get_marketsmith_market_condition)
+        future_profile = pool.submit(get_cached_profile, kite)
+        future_quotes = pool.submit(get_cached_quotes, kite, quote_keys)
 
         try:
             equity_raw = future_equity.result() or []
@@ -188,8 +196,9 @@ async def build_dashboard_view_model(
             live_price_stream.close()
             return None, RedirectResponse("/", status_code=303)
 
-        profile_raw = get_cached_profile(kite)
+        profile_raw = future_profile.result() or {}
         market_condition = future_market_condition.result()
+        quote_batch = future_quotes.result() or {}
     dashboard_timing_mark(timings, "kite_data_fetch_parallel", request_start)
 
     net_positions = positions_raw.get("net", []) or []
@@ -197,7 +206,6 @@ async def build_dashboard_view_model(
 
     live_ltp_by_token: dict[int, float] = {}
     access_token = load_cached_access_token()
-    index_quote_keys = [f"NSE:{ts}" for _, ts in DASHBOARD_INDEX_ENTRIES]
     index_tokens: set[int] = set()
     index_quotes_bootstrap: list[dict[str, Any]] = []
 
@@ -211,18 +219,14 @@ async def build_dashboard_view_model(
     nse_symbol_to_industry = ref_snap.nse.symbol_to_industry
     isin_to_industry = ref_snap.nse.isin_to_industry
     nse_symbol_to_token = ref_snap.kite.nse_symbol_to_token
-    nifty50_symbols = list(ref_snap.nse.nifty50_symbols)
     reference_cache_debug = get_reference_cache_debug_snapshot()
     dashboard_timing_mark(timings, "instrument_and_reference_lookups", request_start)
-    watch_quote_keys = [f"NSE:{sym}" for sym in nifty50_symbols]
     watch_tokens = {
         int(nse_symbol_to_token.get(sym) or 0)
         for sym in nifty50_symbols
         if int(nse_symbol_to_token.get(sym) or 0) > 0
     }
 
-    quote_keys = index_quote_keys + watch_quote_keys
-    quote_batch: dict[str, Any] = get_cached_quotes(kite, quote_keys)
     dashboard_timing_mark(timings, "quote_batch", request_start)
 
     for env_label, ts in DASHBOARD_INDEX_ENTRIES:

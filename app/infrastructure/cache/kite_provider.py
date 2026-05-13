@@ -10,16 +10,16 @@ from app.domain.reference_context import WarmupContext
 from app.domain.reference_notifications import notify_reference_cache_refresh
 from app.infrastructure.cache.text_normalize import normalise_isin, normalise_name, normalise_symbol
 from app.infrastructure.cache.model_cache_store import (
+    BaseCache,
     current_effective_day_ist,
     next_cutoff_epoch_ist,
-    read_section,
     start_background_refresh_job,
-    update_section,
 )
 
 logger = logging.getLogger(__name__)
 
 # --- Provider State ---
+_KITE_CACHE = BaseCache("kite_provider")
 _CACHE_LOCK = threading.Lock()
 _CACHE_LOADED = False
 _REFRESH_IN_PROGRESS = False
@@ -91,7 +91,7 @@ def _load_cache_unlocked() -> None:
     if _CACHE_LOADED:
         return
 
-    payload = read_section("kite")
+    payload = _KITE_CACHE.read_section("kite")
     entry = payload.get("cash_equity")
     if not isinstance(entry, dict):
         _CACHE_LOADED = True
@@ -129,7 +129,7 @@ def _persist_cache_unlocked() -> None:
         "token_to_isin": _encode_int_key_dict(_TOKEN_TO_ISIN),
         "symbol_to_isin": _encode_symbol_key_dict(_SYMBOL_TO_ISIN),
     }
-    update_section(
+    _KITE_CACHE.update_section(
         "kite",
         lambda root: {
             **root,

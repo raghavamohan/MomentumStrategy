@@ -109,6 +109,7 @@ from starlette.staticfiles import StaticFiles
 
 from app.events import subscribe_cache_refresh
 from app.infrastructure.live_prices import live_price_stream
+from app.infrastructure.indicator_worker import indicator_worker
 from app.presentation.http.routes.api_v1 import router as api_v1_router
 from app.presentation.http.routes.auth_pages import router as auth_pages_router
 from app.presentation.http.routes.dashboard_routes import router as dashboard_router
@@ -130,6 +131,7 @@ async def _lifespan(_: FastAPI):
     try:
         subscribe_cache_refresh(live_price_stream.notify_cache_refresh)
         run_startup_cache_warmup()
+        indicator_worker.start()
         logger.info(
             "Startup note: live dashboard prices require Kite WebSocket market data "
             "to be enabled for this API key in developers.kite.trade."
@@ -139,6 +141,7 @@ async def _lifespan(_: FastAPI):
         except asyncio.CancelledError:
             pass
     finally:
+        indicator_worker.stop()
         live_price_stream.close()
 
 

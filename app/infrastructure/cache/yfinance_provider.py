@@ -10,11 +10,10 @@ from app.domain.reference_context import WarmupContext
 from app.domain.reference_notifications import notify_reference_cache_refresh
 from app.infrastructure.cache.text_normalize import normalise_name, normalise_symbol
 from app.infrastructure.cache.model_cache_store import (
+    BaseCache,
     current_effective_day_ist,
     next_cutoff_epoch_ist,
-    read_section,
     start_background_refresh_job,
-    update_section,
 )
 
 logger = logging.getLogger(__name__)
@@ -27,6 +26,7 @@ except Exception:  # pragma: no cover
 _EQUITY_EXCHANGES = ("NSE", "BSE")
 
 # --- Provider State ---
+_YFINANCE_CACHE = BaseCache("yfinance_provider")
 _CACHE_LOCK = threading.Lock()
 _CACHE_LOADED = False
 _REFRESH_IN_PROGRESS = False
@@ -51,7 +51,7 @@ def _load_cache_unlocked() -> None:
         return
 
     try:
-        payload = read_section("yfinance")
+        payload = _YFINANCE_CACHE.read_section("yfinance")
         mapping = payload.get("mapping") if isinstance(payload, dict) else {}
         _CACHE_DAY = str(payload.get("cache_day") or "").strip() if isinstance(payload, dict) else ""
 
@@ -87,7 +87,7 @@ def _persist_cache_unlocked() -> None:
             "sector": _SECTOR_MAP.get((exch, sym), ""),
         }
 
-    update_section(
+    _YFINANCE_CACHE.update_section(
         "yfinance",
         lambda _: {
             "mapping": mapping,

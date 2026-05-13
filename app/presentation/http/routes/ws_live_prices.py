@@ -9,6 +9,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.env_util import log_dashboard_ws_debug_exception
 from app.infrastructure.live_prices import live_price_stream
+from app.infrastructure.tick_hub import tick_hub
 from app.presentation.http.server_auth import kite_for_request, restore_session_if_token_valid_session
 
 logger = logging.getLogger(__name__)
@@ -95,7 +96,7 @@ async def live_prices_websocket(websocket: WebSocket) -> None:
 
         loop.call_soon_threadsafe(_put)
 
-    live_price_stream.add_tick_listener(enqueue_updates)
+    tick_hub.subscribe(enqueue_updates)
     live_price_stream.add_cache_refresh_listener(notify_cache_refresh)
     try:
         while True:
@@ -123,7 +124,7 @@ async def live_prices_websocket(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         pass
     finally:
-        live_price_stream.remove_tick_listener(enqueue_updates)
+        tick_hub.unsubscribe(enqueue_updates)
         live_price_stream.remove_cache_refresh_listener(notify_cache_refresh)
         try:
             await websocket.close(code=1001)

@@ -435,6 +435,9 @@
                 <button type="button" class="th-sort" data-sort-type="inr">P&amp;L <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
               <th class="num sortable" scope="col">
+                <button type="button" class="th-sort" data-sort-type="pct">% P&amp;L <span class="sort-ind" aria-hidden="true"></span></button>
+              </th>
+              <th class="num sortable" scope="col">
                 <button type="button" class="th-sort" data-sort-type="pct">Day % <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
             </tr>
@@ -463,6 +466,9 @@
                 <td class="num">{{ h.invested|inr }}</td>
                 <td class="num js-holding-current">{{ h.current|inr }}</td>
                 <td class="num js-holding-pnl live-col-pnl {{ h.pnl|sign_class }}">{{ h.pnl|inr }}</td>
+                <td class="num js-holding-pnl-pct {{ h.pnl|sign_class }}">
+                  {{ ((h.pnl / h.invested) * 100.0)|pct if h.invested > 0 else "0.00%" }}
+                </td>
                 <td class="num js-holding-day {{ h.day_change_percentage|sign_class }}">
                   {{ h.day_change_percentage|pct }}
                 </td>
@@ -1325,12 +1331,14 @@
       }
       const current = ltp * qty;
       const pnl = (ltp - avg) * qty;
+      const pnlPct = avg > 0 ? ((ltp - avg) / avg) * 100 : 0;
       const dayPct =
         Number.isFinite(close) && close > 0 ? ((ltp - close) / close) * 100 : 0;
 
       const ltpEl = tr.querySelector('.js-holding-ltp');
       const curEl = tr.querySelector('.js-holding-current');
       const pnlEl = tr.querySelector('.js-holding-pnl');
+      const pnlPctEl = tr.querySelector('.js-holding-pnl-pct');
       const dayEl = tr.querySelector('.js-holding-day');
       if (ltpEl) {
         ltpEl.textContent = formatInr(ltp);
@@ -1342,6 +1350,11 @@
         pnlEl.textContent = formatInr(pnl);
         pnlEl.classList.remove('positive', 'negative', 'neutral');
         pnlEl.classList.add(signClass(pnl));
+      }
+      if (pnlPctEl) {
+        pnlPctEl.textContent = formatPct(pnlPct);
+        pnlPctEl.classList.remove('positive', 'negative', 'neutral');
+        pnlPctEl.classList.add(signClass(pnlPct));
       }
       if (dayEl) {
         dayEl.textContent = formatPct(dayPct);
@@ -2673,6 +2686,9 @@
             '<td class="num">' + formatInr(h.invested || 0) + '</td>' +
             '<td class="num">' + formatInr(h.current || 0) + '</td>' +
             '<td class="num js-mf-pnl ' + signClass(h.pnl || 0) + '">' + formatInr(h.pnl || 0) + '</td>' +
+            '<td class="num ' + signClass(h.pnl || 0) + '">' +
+            (h.invested > 0 ? (((h.pnl || 0) / h.invested) * 100).toFixed(2) + '%' : '0.00%') +
+            '</td>' +
             '</tr>'
           );
         })
@@ -2692,6 +2708,7 @@
         '<th class="num sortable" scope="col"><button type="button" class="th-sort" data-sort-type="inr">Invested <span class="sort-ind" aria-hidden="true"></span></button></th>' +
         '<th class="num sortable" scope="col"><button type="button" class="th-sort" data-sort-type="inr">Current <span class="sort-ind" aria-hidden="true"></span></button></th>' +
         '<th class="num sortable" scope="col"><button type="button" class="th-sort" data-sort-type="inr">P&L <span class="sort-ind" aria-hidden="true"></span></button></th>' +
+        '<th class="num sortable" scope="col"><button type="button" class="th-sort" data-sort-type="pct">% P&L <span class="sort-ind" aria-hidden="true"></span></button></th>' +
         '</tr></thead>' +
         '<tbody>' + tableRows + '</tbody>' +
         '</table>' +
