@@ -4,26 +4,32 @@ A small dual-interface app that reports the current state of a Zerodha
 account using the Kite Connect API:
 
 * Equity holdings (long-term stocks held in demat).
-* Mutual fund holdings (units held per folio, with NAV and P&L).
+* Mutual fund holdings (units held per folio with NAV and P&L).
 * Open net positions, separated into equity and F&O / derivatives.
 * Equity segment cash balance (available, live, utilised).
-* Overall portfolio summary totals in the CLI.
+* Overall portfolio summary totals.
 
 Entry points
 ------------
-``python -m app.main``
-    Command-line interface. Prints snapshot sections as ASCII tables.
-    See :mod:`app.main`.
+``python -m app.server``
+    Starts the local FastAPI server at http://127.0.0.1:5000/ (dashboard +
+    ``/api/v1`` JSON APIs).
 
-``python -m app.web``
-    Starts the local FastAPI dashboard at http://127.0.0.1:5000/. The
-    dashboard renders Profile / Portfolio / Watch List sections, with
-    portfolio tabs for holdings, positions, and cash. It also overlays
-    live equity/F&O LTP via Kite WebSocket. See :mod:`app.web`.
+``python -m app.cli_client``
+    Command-line HTTP client; prints snapshot sections as ASCII tables. Requires
+    the server to be running and a cached Kite token (log in via the browser once).
 
-Both entry points share the same authentication code (:mod:`app.auth`)
-and the same on-disk access-token cache, so logging in via either
-interface satisfies the other for the rest of the trading day.
+Both the CLI and dashboard share authentication via ``app.infrastructure.auth``
+and the same on-disk access-token cache after browser login.
+
+Package layout (approximate layers)
+-----------------------------------
+``app.domain`` — portfolio model and reference snapshots.
+``app.application`` — dashboard view-model assembly.
+``app.infrastructure`` — Kite auth, WebSocket prices, cache providers, orchestration.
+``app.presentation.http`` — FastAPI routers, Jinja environment, session config.
+Thin modules at the ``app`` package root (``server``, ``web``, ``cli_client``)
+wire these layers together.
 
 External dependencies / references
 ----------------------------------

@@ -2,8 +2,8 @@
   Login landing page.
 
   Rendered by:
-    * `app/web.py` GET /         when the visitor is not yet authenticated.
-    * `app/web.py` GET /callback when the OAuth-style exchange fails (the
+    * `app/presentation/http/routes/auth_pages.py` GET /         when the visitor is not yet authenticated.
+    * `app/presentation/http/routes/auth_pages.py` GET /callback when the OAuth-style exchange fails (the
                                  view passes an `error` string into the
                                  context for inline display).
 

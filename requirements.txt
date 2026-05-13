@@ -8,10 +8,10 @@
 # python-dotenv    - Loads KITE_API_KEY / KITE_API_SECRET from .env at startup.
 #                    Docs   : https://github.com/theskumar/python-dotenv
 #
-# tabulate         - Pretty ASCII tables for the CLI output (app/main.py).
+# tabulate         - Pretty ASCII tables for the CLI output (app/cli_client.py).
 #                    Docs   : https://github.com/astanin/python-tabulate
 #
-# fastapi          - Web framework for the local dashboard (app/web.py).
+# fastapi          - Web framework for the local dashboard (app/server.py).
 #                    Docs   : https://fastapi.tiangolo.com/
 #
 # uvicorn[standard]- ASGI server used to run FastAPI locally.

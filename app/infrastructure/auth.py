@@ -19,20 +19,20 @@ username/password flow available to third-party apps. The sequence is:
 4. The ``access_token`` is valid until approximately **6 AM IST the next
    trading day**, after which a fresh login is required.
 
-Two callers use this module
----------------------------
-* The CLI entry point (:mod:`app.main`) calls :func:`get_kite_client`,
-  which runs the full interactive flow on the terminal: prints the
-  login URL, asks the user to paste the ``request_token``.
-* The web dashboard (:mod:`app.web`) wires the same flow to HTTP
-  routes; it uses the lower-level helpers exported here
-  (:func:`load_credentials`, :func:`load_cached_access_token`,
+Integration paths
+-----------------
+* **Web dashboard** (:mod:`app.server`): OAuth via HTTP routes; uses the helpers
+  exported here (:func:`load_credentials`, :func:`load_cached_access_token`,
   :func:`save_cached_access_token`, :func:`build_authenticated_client`,
-  :func:`validate_kite_session`) and provides its own ``/callback``
-  handler instead of the terminal prompt.
+  :func:`validate_kite_session`) and ``/callback`` instead of a terminal prompt.
+* **HTTP CLI** (:mod:`app.cli_client`): calls the local server's REST API with
+  ``Authorization: Bearer`` from :func:`load_cached_access_token`; does not call
+  :func:`get_kite_client`. Log in via the browser once so the token exists on disk.
+* **Interactive terminal:** :func:`get_kite_client` runs a standalone flow (prints
+  the login URL, accepts a pasted ``request_token``) for scripts that use Kite
+  directly without the dashboard.
 
-Both callers share the same on-disk token cache so logging in via either
-interface satisfies both for the rest of the trading day.
+All paths share the same on-disk token cache when present.
 
 References
 ----------
@@ -73,7 +73,8 @@ from kiteconnect import KiteConnect
 from kiteconnect.exceptions import TokenException
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# Repo root (was ``app/`` when this file lived at ``app/auth.py``; now under ``app/infrastructure/``).
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 TOKEN_CACHE_PATH = PROJECT_ROOT / ".access_token.json"
 """On-disk cache for the daily Kite Connect access token.
 
@@ -234,7 +235,7 @@ def _interactive_login(kite: KiteConnect, api_secret: str) -> str:
                     )
                 done.set()
 
-            def log_message(self, format: str, *args) -> None:  # noqa: A003 - stdlib name
+            def log_message(self, _format: str, *args) -> None:
                 return
 
         try:
@@ -301,7 +302,7 @@ def get_kite_client() -> KiteConnect:
        returned with the fresh token attached.
 
     The web dashboard does **not** use this function (it cannot prompt
-    on a terminal); see :mod:`app.web` for the HTTP equivalent.
+    on a terminal); see :mod:`app.server` for the HTTP equivalent.
 
     Raises
     ------
