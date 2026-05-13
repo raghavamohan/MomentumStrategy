@@ -31,6 +31,16 @@
 #
 # starlette        - Session middleware used directly by app/web.py.
 #                    Docs   : https://www.starlette.io/
+#
+# yfinance         - Fetches sector/industry metadata for equity holdings from
+#                    Yahoo Finance (app/infrastructure/cache/yfinance_provider.py).
+#                    Docs   : https://ranaroussi.github.io/yfinance/
+#
+# markupsafe       - Markup helper used directly in app/presentation/http/jinja_env.py
+#                    to safely embed JSON blobs in HTML templates. Installed as a
+#                    Jinja2 transitive dep, but declared here because it is imported
+#                    directly by application code.
+#                    Docs   : https://markupsafe.palletsprojects.com/
 
 kiteconnect>=5.0,<6
 python-dotenv>=1.0
@@ -41,4 +51,5 @@ jinja2>=3.1
 itsdangerous>=2.1
 keyring>=25
 starlette>=0.37
-yfinance
+yfinance>=0.2
+markupsafe>=2.1
