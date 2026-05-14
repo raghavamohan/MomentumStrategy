@@ -366,10 +366,10 @@
                 <th class="sortable" scope="col">
                   <button type="button" class="th-sort" data-sort-type="text">Sector <span class="sort-ind" aria-hidden="true"></span></button>
                 </th>
-                <th class="num sortable" scope="col">
+                <th class="num sortable" scope="col" data-live-sort>
                   <button type="button" class="th-sort" data-sort-type="inr">Current Value <span class="sort-ind" aria-hidden="true"></span></button>
                 </th>
-                <th class="num sortable" scope="col">
+                <th class="num sortable" scope="col" data-live-sort>
                   <button type="button" class="th-sort" data-sort-type="pct">% <span class="sort-ind" aria-hidden="true"></span></button>
                 </th>
               </tr>
@@ -425,22 +425,22 @@
               <th class="num sortable" scope="col">
                 <button type="button" class="th-sort" data-sort-type="inr">Avg <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
-              <th class="num sortable live-col-ltp" scope="col">
+              <th class="num sortable live-col-ltp" scope="col" data-live-sort>
                 <button type="button" class="th-sort" data-sort-type="inr">LTP <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
               <th class="num sortable" scope="col">
                 <button type="button" class="th-sort" data-sort-type="inr">Invested <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
-              <th class="num sortable" scope="col">
+              <th class="num sortable" scope="col" data-live-sort>
                 <button type="button" class="th-sort" data-sort-type="inr">Current <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
-              <th class="num sortable live-col-pnl" scope="col">
+              <th class="num sortable live-col-pnl" scope="col" data-live-sort>
                 <button type="button" class="th-sort" data-sort-type="inr">P&amp;L <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
-              <th class="num sortable" scope="col">
+              <th class="num sortable" scope="col" data-live-sort>
                 <button type="button" class="th-sort" data-sort-type="pct">% P&amp;L <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
-              <th class="num sortable" scope="col">
+              <th class="num sortable" scope="col" data-live-sort>
                 <button type="button" class="th-sort" data-sort-type="pct">Day % <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
             </tr>
@@ -535,13 +535,13 @@
               <th class="num sortable" scope="col">
                 <button type="button" class="th-sort" data-sort-type="inr">Avg <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
-              <th class="num sortable live-col-ltp" scope="col">
+              <th class="num sortable live-col-ltp" scope="col" data-live-sort>
                 <button type="button" class="th-sort" data-sort-type="inr">LTP <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
-              <th class="num sortable live-col-pnl" scope="col">
+              <th class="num sortable live-col-pnl" scope="col" data-live-sort>
                 <button type="button" class="th-sort" data-sort-type="inr">P&amp;L <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
-              <th class="num sortable" scope="col">
+              <th class="num sortable" scope="col" data-live-sort>
                 <button type="button" class="th-sort" data-sort-type="inr">M2M <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
             </tr>
@@ -613,13 +613,13 @@
               <th class="num sortable" scope="col">
                 <button type="button" class="th-sort" data-sort-type="inr">Avg <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
-              <th class="num sortable live-col-ltp" scope="col">
+              <th class="num sortable live-col-ltp" scope="col" data-live-sort>
                 <button type="button" class="th-sort" data-sort-type="inr">LTP <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
-              <th class="num sortable live-col-pnl" scope="col">
+              <th class="num sortable live-col-pnl" scope="col" data-live-sort>
                 <button type="button" class="th-sort" data-sort-type="inr">P&amp;L <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
-              <th class="num sortable" scope="col">
+              <th class="num sortable" scope="col" data-live-sort>
                 <button type="button" class="th-sort" data-sort-type="inr">M2M <span class="sort-ind" aria-hidden="true"></span></button>
               </th>
             </tr>
@@ -690,13 +690,13 @@
                     <th class="sortable" scope="col">
                       <button type="button" class="th-sort" data-sort-type="text">Sector <span class="sort-ind" aria-hidden="true"></span></button>
                     </th>
-                    <th class="num sortable" scope="col">
+                    <th class="num sortable" scope="col" data-live-sort>
                       <button type="button" class="th-sort" data-sort-type="inr">Live Price <span class="sort-ind" aria-hidden="true"></span></button>
                     </th>
-                    <th class="num sortable" scope="col">
+                    <th class="num sortable" scope="col" data-live-sort>
                       <button type="button" class="th-sort" data-sort-type="inr">Change (Last Close) <span class="sort-ind" aria-hidden="true"></span></button>
                     </th>
-                    <th class="num sortable" scope="col">
+                    <th class="num sortable" scope="col" data-live-sort>
                       <button type="button" class="th-sort" data-sort-type="pct">% Change Today <span class="sort-ind" aria-hidden="true"></span></button>
                     </th>
                   </tr>
@@ -738,10 +738,15 @@
   (function () {
     const SNAPSHOT_MS = {{ snapshot_interval_ms }};
     const LIVE_PRICE_KPI_DEBOUNCE_MS = 48;
+    const LIVE_TABLE_RESORT_MS = 1000;
+    const SECTOR_SUMMARY_THROTTLE_MS = 750;
     const TABLE_SORT_STORAGE_PREFIX = 'momentumDashboard:tableSort:';
     const TABLE_DENSITY_STORAGE_KEY = 'momentumDashboard:tableDensity';
     let toastTimer = null;
     let livePriceKpiTimer = null;
+    let sectorSummaryThrottleTimer = null;
+    let sectorSummaryLastRun = 0;
+    const lastLiveTableResortAt = {};
     let isRefreshing = false;
     let cacheRefreshDebounceTimer = null;
     let selectedTab = 'equity';
@@ -1490,7 +1495,10 @@
       return direction === 'desc' ? -cmp : cmp;
     }
 
-    function sortDataTable(table, colIndex, sortType, direction) {
+    function sortDataTable(table, colIndex, sortType, direction, options) {
+      const opts = options || {};
+      const persistPreference = opts.persistPreference !== false;
+
       const tbody = table.querySelector('tbody');
       if (!tbody) {
         return;
@@ -1503,6 +1511,21 @@
         const tb = cb ? cb.textContent : '';
         return compareCellTexts(ta, tb, sortType, direction);
       });
+
+      const currentOrder = Array.prototype.slice.call(tbody.querySelectorAll('tr'));
+      let orderUnchanged = currentOrder.length === rows.length;
+      if (orderUnchanged) {
+        for (let i = 0; i < rows.length; i += 1) {
+          if (currentOrder[i] !== rows[i]) {
+            orderUnchanged = false;
+            break;
+          }
+        }
+      }
+      if (orderUnchanged && !persistPreference) {
+        return;
+      }
+
       rows.forEach(function (r) {
         tbody.appendChild(r);
       });
@@ -1535,7 +1558,49 @@
       table.dataset.sortCol = String(colIndex);
       table.dataset.sortType = sortType;
       table.dataset.sortDir = direction;
-      persistTableSortPreference(table);
+      if (persistPreference) {
+        persistTableSortPreference(table);
+      }
+    }
+
+    function isActiveSortColumnLive(table) {
+      const colRaw = table.dataset.sortCol;
+      if (colRaw === undefined || colRaw === '') {
+        return false;
+      }
+      const col = parseInt(colRaw, 10);
+      if (!Number.isFinite(col)) {
+        return false;
+      }
+      const ths = table.querySelectorAll('thead tr th');
+      const th = ths[col];
+      return Boolean(th && th.hasAttribute('data-live-sort'));
+    }
+
+    function tableSortThrottleKey(table) {
+      return String(table.dataset.tableSortKey || table.id || '_anon');
+    }
+
+    function scheduleSectorSummaryRefresh() {
+      const now = Date.now();
+      const since = sectorSummaryLastRun ? now - sectorSummaryLastRun : SECTOR_SUMMARY_THROTTLE_MS;
+      if (since >= SECTOR_SUMMARY_THROTTLE_MS) {
+        if (sectorSummaryThrottleTimer !== null) {
+          window.clearTimeout(sectorSummaryThrottleTimer);
+          sectorSummaryThrottleTimer = null;
+        }
+        sectorSummaryLastRun = now;
+        recalcEquitySectorSummary();
+        return;
+      }
+      if (sectorSummaryThrottleTimer !== null) {
+        return;
+      }
+      sectorSummaryThrottleTimer = window.setTimeout(function () {
+        sectorSummaryThrottleTimer = null;
+        sectorSummaryLastRun = Date.now();
+        recalcEquitySectorSummary();
+      }, SECTOR_SUMMARY_THROTTLE_MS - since);
     }
 
     function isElementVisible(el) {
@@ -1803,11 +1868,12 @@
         return false;
       }
       const sortType = btn.getAttribute('data-sort-type') || 'text';
-      sortDataTable(table, col, sortType, dir);
+        sortDataTable(table, col, sortType, dir, { persistPreference: true });
       return true;
     }
 
     function reapplyPersistedTableSorts() {
+      const now = Date.now();
       document.querySelectorAll('#dashboard-root table[data-sort-col]').forEach(function (table) {
         const col = table.dataset.sortCol;
         const dir = table.dataset.sortDir || 'asc';
@@ -1815,7 +1881,17 @@
         if (col === undefined || col === '') {
           return;
         }
-        sortDataTable(table, parseInt(col, 10), typ, dir);
+        if (isActiveSortColumnLive(table)) {
+          const key = tableSortThrottleKey(table);
+          if (Object.prototype.hasOwnProperty.call(lastLiveTableResortAt, key)) {
+            const last = lastLiveTableResortAt[key];
+            if (now - last < LIVE_TABLE_RESORT_MS) {
+              return;
+            }
+          }
+          lastLiveTableResortAt[key] = now;
+        }
+        sortDataTable(table, parseInt(col, 10), typ, dir, { persistPreference: false });
       });
       syncCsvActionState();
     }
@@ -1834,7 +1910,7 @@
           const col = parseInt(defCol, 10);
           const typ = table.dataset.defaultSortType || 'inr';
           if (Number.isFinite(col)) {
-            sortDataTable(table, col, typ, 'desc');
+            sortDataTable(table, col, typ, 'desc', { persistPreference: true });
           }
         }
       });
@@ -1852,7 +1928,8 @@
       if (table.dataset.sortCol === String(colIndex)) {
         direction = table.dataset.sortDir === 'asc' ? 'desc' : 'asc';
       }
-      sortDataTable(table, colIndex, sortType, direction);
+      sortDataTable(table, colIndex, sortType, direction, { persistPreference: true });
+      lastLiveTableResortAt[tableSortThrottleKey(table)] = Date.now();
     }
 
     const dashboardRootEl = document.getElementById('dashboard-root');
@@ -1957,6 +2034,7 @@
         livePriceKpiTimer = null;
         recalcSummaries();
         reapplyPersistedTableSorts();
+        applyHoldingFilters();
       }, LIVE_PRICE_KPI_DEBOUNCE_MS);
     }
 
@@ -1985,7 +2063,6 @@
         }
       });
       syncIndexQuoteDom();
-      applyHoldingFilters();
       scheduleLivePriceKpiRefresh();
     }
 
@@ -2088,7 +2165,7 @@
       setSignStat('equity-pos-panel-m2m', eqPosM2m);
       setSignStat('fno-pos-panel-pnl', fnoPosPnl);
       setSignStat('fno-pos-panel-m2m', fnoPosM2m);
-      recalcEquitySectorSummary();
+      scheduleSectorSummaryRefresh();
     }
 
     function collectSectorStats() {
