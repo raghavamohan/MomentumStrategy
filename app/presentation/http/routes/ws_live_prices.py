@@ -1,4 +1,9 @@
-"""WebSocket stream for live LTP updates."""
+"""WebSocket stream for live LTP updates (dashboard).
+
+Receives full MODE_FULL tick dicts from tick_hub, extracts only the LTP values,
+and pushes { "ltp": { "TOKEN": price, ... } } to the dashboard browser exactly
+as before — the dashboard only needs LTP for its price displays.
+"""
 
 from __future__ import annotations
 
@@ -67,12 +72,22 @@ async def live_prices_websocket(websocket: WebSocket) -> None:
         coalesce.pending.clear()
         try_put_to_queue(batch)
 
-    def enqueue_updates(updates: dict[int, float]) -> None:
+    def enqueue_updates(updates: dict[int, dict]) -> None:
+        """Extract LTP from full tick dicts and coalesce for dashboard delivery."""
         if not updates:
             return
 
+        # Extract only last_price for the dashboard — it only needs LTP
+        ltp_updates = {
+            token: float(tick["last_price"])
+            for token, tick in updates.items()
+            if tick.get("last_price") is not None
+        }
+        if not ltp_updates:
+            return
+
         def merge_on_loop() -> None:
-            coalesce.pending.update(updates)
+            coalesce.pending.update(ltp_updates)
             if coalesce.flush_scheduled:
                 return
             coalesce.flush_scheduled = True

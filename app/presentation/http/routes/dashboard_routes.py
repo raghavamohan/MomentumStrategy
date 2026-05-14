@@ -10,7 +10,12 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from kiteconnect.exceptions import KiteException, TokenException
 
-from app.application.dashboard_view_model import build_dashboard_view_model, historical_candles_for_stock
+from app.application.dashboard_view_model import (
+    build_dashboard_view_model,
+    historical_candles_for_stock,
+    ALLOWED_KITE_INTERVALS,
+    _INTERVAL_MAX_DAYS,
+)
 from app.presentation.http.jinja_env import KITE_STOCK_HISTORY_HELP_URLS, stock_history_json_error, templates
 from app.infrastructure.live_prices import live_price_stream
 from app.domain.portfolio_model import EQUITY_EXCHANGES
@@ -88,8 +93,9 @@ async def dashboard_stock_chart(
     label: str = Query(""),
     days: int = Query(3650, ge=1, le=3650),
     ref: str = Query(""),
+    interval: str = Query("day"),
 ):
-    """Full-page candlestick + volume chart for one cash equity instrument."""
+    """Full-page live candlestick chart for one cash equity instrument."""
     if not authorized_browser_or_api(request):
         return RedirectResponse("/", status_code=303)
 
@@ -101,13 +107,21 @@ async def dashboard_stock_chart(
     if ex not in EQUITY_EXCHANGES:
         return RedirectResponse("/dashboard", status_code=303)
 
-    days_clamped = max(365, min(int(days), 365 * 10))
+    # Validate and clamp interval
+    kite_interval = interval.strip() if interval.strip() in ALLOWED_KITE_INTERVALS else "day"
+    # Also accept UI aliases week/month — chart page handles aggregation client-side
+    if interval.strip() in ("week", "month"):
+        kite_interval = interval.strip()
+    max_days = _INTERVAL_MAX_DAYS.get(kite_interval, 3650)
+    days_clamped = max(1, min(int(days), max_days))
+
     display_label = (label or "").strip() or f"{ex} #{instrument_token}"
     bootstrap = {
         "instrumentToken": instrument_token,
         "exchange": ex,
         "label": display_label,
         "days": days_clamped,
+        "interval": kite_interval,
     }
     ref_clean = (ref or "").strip().lower()
     if ref_clean == "watchlist":
@@ -130,11 +144,12 @@ async def dashboard_stock_chart(
 @router.get("/dashboard/stock-history")
 async def dashboard_stock_history(
     request: Request,
-    instrument_token: int,
-    exchange: str = "NSE",
-    days: int = 3650,
+    instrument_token: int = Query(..., ge=1),
+    exchange: str = Query("NSE"),
+    days: int = Query(3650, ge=1, le=3650),
+    interval: str = Query("day"),
 ) -> JSONResponse:
-    """Return daily historical candles for one equity instrument (OHLCV)."""
+    """Return OHLCV candles for one equity instrument at the requested interval."""
     if not authorized_browser_or_api(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
 
@@ -150,7 +165,15 @@ async def dashboard_stock_history(
     if ex not in EQUITY_EXCHANGES:
         return stock_history_json_error("invalid exchange", status_code=400)
 
-    days_clamped = max(365, min(int(days), 365 * 10))
+    # Validate interval — week/month are handled client-side from day data
+    kite_interval = interval.strip()
+    if kite_interval in ("week", "month"):
+        kite_interval = "day"  # fetch day data; browser aggregates
+    elif kite_interval not in ALLOWED_KITE_INTERVALS:
+        kite_interval = "day"
+
+    max_days = _INTERVAL_MAX_DAYS.get(kite_interval, 3650)
+    days_clamped = max(1, min(int(days), max_days))
 
     try:
         candles = await asyncio.to_thread(
@@ -158,6 +181,7 @@ async def dashboard_stock_history(
             kite,
             instrument_token,
             days_clamped,
+            kite_interval,
         )
     except TokenException:
         request.session.clear()
@@ -180,7 +204,7 @@ async def dashboard_stock_history(
         {
             "instrument_token": instrument_token,
             "exchange": ex,
-            "interval": "day",
+            "interval": kite_interval,
             "days": days_clamped,
             "candles": candles,
         }

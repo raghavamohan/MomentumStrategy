@@ -1,994 +1,154 @@
 {#
-  Full-page stock chart: daily candlesticks + volume from GET /dashboard/stock-history.
-  Scripts load from /static/js (bundled Chart.js, Luxon adapter, chartjs-chart-financial).
+  Live stock chart: TradingView Lightweight Charts with multi-interval support,
+  live Kite WebSocket ticks, indicators (MA/RSI), trendlines, and price levels.
 #}
 {% extends "base.html" %}
-
 {% block title %}{{ stock_title }} · Chart · {{ dashboard_name }}{% endblock %}
 
 {% block content %}
-  <style>
-    .stock-chart-page {
-      max-width: 1120px;
-      margin: 0 auto;
-    }
-    .stock-chart-page .page-toolbar {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      margin-bottom: var(--space-4);
-    }
-    .stock-chart-page .page-toolbar h1 {
-      margin: 0;
-      font-size: 22px;
-      font-weight: 700;
-      letter-spacing: -0.02em;
-      flex: 1 1 200px;
-      min-width: 0;
-    }
-    .stock-chart-page .page-toolbar-actions {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 10px;
-      flex-shrink: 0;
-    }
-    .stock-chart-controls {
-      display: flex;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 12px;
-      margin: 0 0 var(--space-4);
-      padding-bottom: var(--space-3);
-      border-bottom: 1px solid var(--border);
-    }
-    .stock-chart-page .volume-toggle {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 14px;
-      font-weight: 500;
-      color: var(--text);
-      cursor: pointer;
-      user-select: none;
-      flex-shrink: 0;
-    }
-    .stock-chart-page .volume-toggle input {
-      width: 18px;
-      height: 18px;
-      accent-color: var(--accent);
-      cursor: pointer;
-      flex-shrink: 0;
-    }
-    .stock-chart-page .meta-line {
-      margin: 0 0 var(--space-4);
-      font-size: 13px;
-      color: var(--muted);
-      font-weight: 500;
-      line-height: 1.5;
-    }
-    .stock-chart-panel {
-      padding: var(--space-4);
-    }
-    .stock-chart-wrap {
-      position: relative;
-      height: min(480px, 58vh);
-      min-height: 320px;
-      margin-top: var(--space-2);
-    }
-    .stock-chart-wrap canvas {
-      max-height: 100%;
-    }
-    .stock-chart-pan-hint {
-      margin: var(--space-2) 0 0;
-      font-size: 13px;
-      color: var(--muted);
-      font-weight: 500;
-    }
-    .stock-chart-loading {
-      margin: var(--space-3) 0;
-      font-size: 14px;
-      color: var(--muted);
-    }
-    .stock-chart-error {
-      margin: var(--space-3) 0;
-      padding: var(--space-3);
-      border-radius: var(--radius-md);
-      border: 1px solid var(--border);
-      background: var(--surface-2);
-      color: var(--negative);
-      font-size: 14px;
-    }
-    .stock-chart-error .help-links-label {
-      margin: 12px 0 6px;
-      font-size: 13px;
-      color: var(--muted);
-    }
-    .stock-chart-error .help-links {
-      margin: 0;
-      padding-left: 1.2em;
-      color: var(--muted);
-      font-size: 13px;
-    }
-    .stock-chart-error .help-links a {
-      word-break: break-all;
-    }
-    .stock-chart-empty {
-      margin: var(--space-3) 0;
-      color: var(--muted);
-      font-size: 14px;
-    }
-  </style>
+<style>
+.sc-page{max-width:1280px;margin:0 auto;padding:0 var(--space-3)}
+.sc-toolbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:var(--space-3)}
+.sc-toolbar h1{margin:0;font-size:20px;font-weight:700;letter-spacing:-0.02em}
+.sc-toolbar-right{display:flex;gap:8px;align-items:center}
+.sc-interval-bar{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:var(--space-3)}
+.sc-intervals{display:flex;gap:4px}
+.sc-ivbtn{padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--muted);font-size:13px;font-weight:600;cursor:pointer;transition:all .15s}
+.sc-ivbtn:hover{background:var(--surface-2);color:var(--text)}
+.sc-ivbtn.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.sc-controls{display:flex;gap:8px;margin-left:auto;flex-wrap:wrap}
+.sc-control-btn{padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:13px;cursor:pointer;transition:all .15s}
+.sc-control-btn:hover{background:var(--surface-2)}
+.sc-control-btn.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.sc-indicator-chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:var(--space-2);min-height:28px}
+.sc-chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:600;border:1px solid var(--border);background:var(--surface-2);color:var(--text)}
+.sc-chip-remove{cursor:pointer;opacity:.6;font-size:14px;line-height:1;margin-left:2px}
+.sc-chip-remove:hover{opacity:1}
+.sc-card{border-radius:var(--radius-lg);border:1px solid var(--border);background:var(--surface);overflow:hidden}
+.sc-chart-area{display:flex;flex-direction:column}
+.sc-main-wrap{position:relative;height:min(460px,55vh);min-height:280px}
+.sc-rsi-wrap{position:relative;height:120px;border-top:1px solid var(--border)}
+.sc-trendline-canvas{position:absolute;inset:0;pointer-events:none;z-index:10}
+.sc-trendline-canvas.draw-mode{pointer-events:all;cursor:crosshair}
+.sc-status{padding:var(--space-3);color:var(--muted);font-size:14px}
+.sc-panel{position:absolute;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-3);box-shadow:0 8px 24px rgba(0,0,0,.3);min-width:220px}
+.sc-panel h3{margin:0 0 10px;font-size:13px;font-weight:700}
+.sc-panel-row{display:flex;flex-direction:column;gap:6px;margin-bottom:10px}
+.sc-panel label{font-size:12px;color:var(--muted);font-weight:500}
+.sc-panel select,.sc-panel input[type=text],.sc-panel input[type=number]{width:100%;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);font-size:13px}
+.sc-panel-btns{display:flex;gap:8px;margin-top:4px}
+.sc-btn-primary{flex:1;padding:6px;background:var(--accent);color:#fff;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer}
+.sc-btn-secondary{flex:1;padding:6px;background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:13px;cursor:pointer}
+.sc-tooltip{position:absolute;z-index:30;background:rgba(15,23,42,.95);border:1px solid rgba(148,163,184,.25);border-radius:8px;padding:8px 12px;font-size:12px;font-weight:500;color:#e2e8f0;pointer-events:none;white-space:nowrap;box-shadow:0 4px 16px rgba(0,0,0,.4)}
+.sc-tooltip-row{display:flex;justify-content:space-between;gap:16px;line-height:1.7}
+.sc-tooltip-lbl{color:#94a3b8}
+.sc-tooltip-val{font-weight:700}
+.sc-depth{margin-top:6px;padding-top:6px;border-top:1px solid rgba(148,163,184,.2)}
+.sc-depth-row{display:grid;grid-template-columns:1fr auto 1fr;gap:4px;font-size:11px;line-height:1.5}
+.sc-bid{color:#22c55e;text-align:right}.sc-ask{color:#ef4444}
+</style>
 
-  <div class="stock-chart-page">
-    <div class="page-toolbar">
-      <h1 id="stock-chart-heading">{{ stock_title }}</h1>
-      <div class="page-toolbar-actions">
-        <a id="stock-chart-back-dashboard" class="button secondary" href="/dashboard">← Dashboard</a>
-        <a class="button secondary" href="/logout">Logout</a>
-      </div>
+<div class="sc-page">
+  <div class="sc-toolbar">
+    <h1 id="sc-title">{{ stock_title }}</h1>
+    <div class="sc-toolbar-right">
+      <a id="sc-back" class="button secondary" href="/dashboard">← Dashboard</a>
+      <a class="button secondary" href="/logout">Logout</a>
     </div>
-    <p class="meta-line">
-      Up to <strong>ten years</strong> of <strong>daily</strong> candles (OHLC) and volume when available, via Kite Connect historical API.
-      Green candlesticks indicate close above open; red indicates close below open.
-    </p>
+  </div>
 
-    <div class="card stock-chart-panel">
-      <div class="stock-chart-controls">
-        <label class="volume-toggle" for="stock-chart-show-volume">
-          <input type="checkbox" id="stock-chart-show-volume" checked autocomplete="off" />
-          Show volume
-        </label>
+  <div class="sc-interval-bar">
+    <div class="sc-intervals">
+      <button class="sc-ivbtn" data-iv="minute">1m</button>
+      <button class="sc-ivbtn" data-iv="5minute">5m</button>
+      <button class="sc-ivbtn" data-iv="15minute">15m</button>
+      <button class="sc-ivbtn" data-iv="60minute">1hr</button>
+      <button class="sc-ivbtn active" data-iv="day">1D</button>
+      <button class="sc-ivbtn" data-iv="week">1W</button>
+      <button class="sc-ivbtn" data-iv="month">1M</button>
+    </div>
+    <div class="sc-controls">
+      <button class="sc-control-btn" id="sc-add-ind">+ Indicator</button>
+      <button class="sc-control-btn" id="sc-add-lvl">+ Level</button>
+      <button class="sc-control-btn" id="sc-trendline-btn">✎ Trendline</button>
+      <button class="sc-control-btn" id="sc-clear-tl">Clear Lines</button>
+      <label class="sc-control-btn" style="cursor:pointer">
+        <input type="checkbox" id="sc-show-vol" checked style="margin-right:4px">Vol
+      </label>
+    </div>
+  </div>
+
+  <div id="sc-chips" class="sc-indicator-chips"></div>
+
+  <div class="sc-card">
+    <div id="sc-status" class="sc-status">Loading chart…</div>
+    <div id="sc-chart-area" class="sc-chart-area" hidden>
+      <div class="sc-main-wrap" id="sc-main-wrap">
+        <div id="sc-main-chart" style="width:100%;height:100%"></div>
+        <canvas id="sc-tl-canvas" class="sc-trendline-canvas"></canvas>
+        <div id="sc-tooltip" class="sc-tooltip" hidden></div>
       </div>
-      <div id="stock-chart-loading" class="stock-chart-loading" aria-live="polite">Loading chart…</div>
-      <div id="stock-chart-error" class="stock-chart-error" hidden></div>
-      <div id="stock-chart-empty" class="stock-chart-empty" hidden>No candle data in this range.</div>
-      <p id="stock-chart-pan-hint" class="stock-chart-pan-hint" hidden>
-        Drag or swipe horizontally to move through time (not vertically). Use the mouse wheel or pinch to zoom the time axis. Price and volume axes match the visible window.
-      </p>
-      <div id="stock-chart-wrap" class="stock-chart-wrap" hidden>
-        <canvas id="stock-chart-canvas" aria-label="Candlestick and volume chart"></canvas>
+      <div class="sc-rsi-wrap" id="sc-rsi-wrap">
+        <div id="sc-rsi-chart" style="width:100%;height:100%"></div>
       </div>
     </div>
   </div>
 
-  <textarea id="stock-chart-bootstrap" hidden readonly>{{ stock_chart_bootstrap_json }}</textarea>
+  <!-- Indicator panel -->
+  <div id="sc-ind-panel" class="sc-panel" hidden style="top:120px;right:20px">
+    <h3>Add Indicator</h3>
+    <div class="sc-panel-row">
+      <label>Type</label>
+      <select id="sc-ind-type"><option value="SMA">SMA</option><option value="EMA">EMA</option></select>
+    </div>
+    <div class="sc-panel-row">
+      <label>Period</label>
+      <input type="number" id="sc-ind-period" value="20" min="2" max="200">
+    </div>
+    <div class="sc-panel-row">
+      <label>Color</label>
+      <input type="color" id="sc-ind-color" value="#f59e0b" style="width:100%;height:32px;border-radius:6px;border:1px solid var(--border);cursor:pointer;background:transparent">
+    </div>
+    <div class="sc-panel-btns">
+      <button class="sc-btn-primary" id="sc-ind-add-btn">Add</button>
+      <button class="sc-btn-secondary" id="sc-ind-cancel">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Level panel -->
+  <div id="sc-lvl-panel" class="sc-panel" hidden style="top:120px;right:20px">
+    <h3>Add Horizontal Level</h3>
+    <div class="sc-panel-row">
+      <label>Price</label>
+      <input type="number" id="sc-lvl-price" step="0.05" placeholder="e.g. 23500">
+    </div>
+    <div class="sc-panel-row">
+      <label>Label</label>
+      <input type="text" id="sc-lvl-label" placeholder="Support / Resistance">
+    </div>
+    <div class="sc-panel-row">
+      <label>Color</label>
+      <input type="color" id="sc-lvl-color" value="#22c55e" style="width:100%;height:32px;border-radius:6px;border:1px solid var(--border);cursor:pointer;background:transparent">
+    </div>
+    <div class="sc-panel-row">
+      <label>Line style</label>
+      <select id="sc-lvl-style">
+        <option value="solid">Solid</option>
+        <option value="dashed" selected>Dashed</option>
+        <option value="dotted">Dotted</option>
+      </select>
+    </div>
+    <div class="sc-panel-btns">
+      <button class="sc-btn-primary" id="sc-lvl-add-btn">Add</button>
+      <button class="sc-btn-secondary" id="sc-lvl-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<textarea id="sc-bootstrap" hidden readonly>{{ stock_chart_bootstrap_json }}</textarea>
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/js/chart.umd.min.js"></script>
-<script src="/static/js/luxon.min.js"></script>
-<script src="/static/js/chartjs-adapter-luxon.umd.min.js"></script>
-<script src="/static/js/hammer.min.js"></script>
-<script src="/static/js/chartjs-chart-financial.min.js"></script>
-<script src="/static/js/chartjs-plugin-zoom.min.js"></script>
-<script>
-  (function () {
-    const DEFAULT_HELP_URLS = {{ kite_help_urls | tojson }};
-
-    function readBootstrap() {
-      const el = document.getElementById('stock-chart-bootstrap');
-      if (!el || !el.value) {
-        return {};
-      }
-      try {
-        return JSON.parse(el.value);
-      } catch (_e) {
-        return {};
-      }
-    }
-
-    function syncDashboardBackLink() {
-      const el = document.getElementById('stock-chart-back-dashboard');
-      if (!el) {
-        return;
-      }
-      const boot = readBootstrap();
-      const token = Number(boot.instrumentToken || 0);
-      if (token > 0) {
-        let href = '/dashboard?focus_token=' + encodeURIComponent(String(token));
-        const fc = boot.focusContext || '';
-        if (fc === 'watchlist') {
-          href += '&focus_context=' + encodeURIComponent('watchlist');
-          el.textContent = '← Watchlist';
-        } else if (fc === 'equity_holding') {
-          href += '&focus_context=' + encodeURIComponent('equity_holding');
-          el.textContent = '← Holdings';
-        } else {
-          el.textContent = '← Dashboard';
-        }
-        el.setAttribute('href', href);
-      }
-    }
-
-    syncDashboardBackLink();
-
-    function formatVolumeTick(val) {
-      const v = Number(val);
-      if (v >= 1e7) {
-        return (v / 1e7).toFixed(1).replace(/\.0$/, '') + ' Cr';
-      }
-      if (v >= 1e5) {
-        return (v / 1e5).toFixed(1).replace(/\.0$/, '') + ' L';
-      }
-      if (v >= 1e3) {
-        return (v / 1e3).toFixed(1).replace(/\.0$/, '') + ' K';
-      }
-      return String(Math.round(v));
-    }
-
-    function showError(message, helpUrls) {
-      const box = document.getElementById('stock-chart-error');
-      const load = document.getElementById('stock-chart-loading');
-      const wrap = document.getElementById('stock-chart-wrap');
-      const empty = document.getElementById('stock-chart-empty');
-      const panHint = document.getElementById('stock-chart-pan-hint');
-      if (load) {
-        load.hidden = true;
-      }
-      if (wrap) {
-        wrap.hidden = true;
-      }
-      if (panHint) {
-        panHint.hidden = true;
-      }
-      if (empty) {
-        empty.hidden = true;
-      }
-      if (!box) {
-        return;
-      }
-      const urls = Array.isArray(helpUrls) && helpUrls.length ? helpUrls : DEFAULT_HELP_URLS;
-      function escAttr(s) {
-        return String(s)
-          .replace(/&/g, '&amp;')
-          .replace(/"/g, '&quot;')
-          .replace(/</g, '&lt;');
-      }
-      let linksHtml = '<ul class="help-links">';
-      urls.forEach(function (u) {
-        const uStr = String(u);
-        linksHtml +=
-          '<li><a href="' +
-          escAttr(uStr) +
-          '" target="_blank" rel="noopener">' +
-          escAttr(uStr) +
-          '</a></li>';
-      });
-      linksHtml += '</ul>';
-      box.innerHTML =
-        '<div class="msg">' +
-        String(message || 'Something went wrong.').replace(/</g, '&lt;') +
-        '</div>' +
-        '<div class="help-links-label">Kite documentation &amp; developer console:</div>' +
-        linksHtml;
-      box.hidden = false;
-    }
-
-    function run() {
-      function showEmptyCandlesMessage() {
-        const el = document.getElementById('stock-chart-empty');
-        const panHint = document.getElementById('stock-chart-pan-hint');
-        if (el) {
-          el.hidden = false;
-        }
-        if (panHint) {
-          panHint.hidden = true;
-        }
-      }
-
-      const boot = readBootstrap();
-      const token = Number(boot.instrumentToken || 0);
-      const exchange = String(boot.exchange || 'NSE').trim();
-      const MAX_STOCK_HISTORY_DAYS = 3650;
-      const days = Math.min(
-        Math.max(Number(boot.days) || MAX_STOCK_HISTORY_DAYS, 1),
-        MAX_STOCK_HISTORY_DAYS
-      );
-
-      if (!token) {
-        showError('Missing instrument.', DEFAULT_HELP_URLS);
-        return;
-      }
-
-      const params = new URLSearchParams({
-        instrument_token: String(token),
-        exchange: exchange,
-        days: String(days),
-      });
-
-      fetch('/dashboard/stock-history?' + params.toString(), {
-        credentials: 'same-origin',
-        headers: { Accept: 'application/json' },
-      })
-        .then(function (res) {
-          return res.json().then(function (body) {
-            return { ok: res.ok, status: res.status, body: body };
-          });
-        })
-        .then(function (result) {
-          const load = document.getElementById('stock-chart-loading');
-          if (load) {
-            load.hidden = true;
-          }
-
-          if (!result.ok) {
-            const msg = (result.body && result.body.error) || 'Request failed';
-            const urls = result.body && result.body.kite_help_urls;
-            showError(msg, urls);
-            return;
-          }
-
-          const candles = (result.body && result.body.candles) || [];
-          if (!candles.length) {
-            showEmptyCandlesMessage();
-            return;
-          }
-
-          function utcDayMs(dateStr) {
-            const p = String(dateStr || '')
-              .trim()
-              .split('-');
-            if (p.length !== 3) {
-              return NaN;
-            }
-            const y = parseInt(p[0], 10);
-            const m = parseInt(p[1], 10);
-            const d = parseInt(p[2], 10);
-            return Date.UTC(y, m - 1, d);
-          }
-
-          const candlesOk = candles.filter(function (c) {
-            return !isNaN(utcDayMs(c.date));
-          });
-          if (!candlesOk.length) {
-            showEmptyCandlesMessage();
-            return;
-          }
-
-          const candlePoints = candlesOk.map(function (c) {
-            return {
-              x: utcDayMs(c.date),
-              o: Number(c.open),
-              h: Number(c.high),
-              l: Number(c.low),
-              c: Number(c.close),
-            };
-          });
-          const candleTimesUtc = candlePoints
-            .map(function (c) {
-              return c.x;
-            })
-            .sort(function (a, b) {
-              return a - b;
-            });
-          const volPoints = candlesOk.map(function (c) {
-            return { x: utcDayMs(c.date), y: Number(c.volume) };
-          });
-
-          if (typeof ChartZoom !== 'undefined') {
-            Chart.register(ChartZoom);
-          }
-
-          const rangeFirstMs = candleTimesUtc[0];
-          const rangeLastMs = candleTimesUtc[candleTimesUtc.length - 1];
-          const DAY_MS = 24 * 60 * 60 * 1000;
-          /* ~2 weeks past last bar so the latest candle is not glued to the right edge. */
-          const RIGHT_PAD_MS = 14 * DAY_MS;
-          const rangeXMax = rangeLastMs + RIGHT_PAD_MS;
-          const ONE_YEAR_MS = 365 * DAY_MS;
-          const dataSpanMs = rangeLastMs - rangeFirstMs;
-          const initialXMax = rangeXMax;
-          const initialXMin =
-            dataSpanMs <= ONE_YEAR_MS
-              ? rangeFirstMs
-              : Math.max(rangeFirstMs, initialXMax - ONE_YEAR_MS);
-
-          const wrap = document.getElementById('stock-chart-wrap');
-          const canvas = document.getElementById('stock-chart-canvas');
-          const panHintEl = document.getElementById('stock-chart-pan-hint');
-          if (!wrap || !canvas || typeof Chart === 'undefined') {
-            showError('Chart could not be initialized.', DEFAULT_HELP_URLS);
-            return;
-          }
-          wrap.hidden = false;
-          if (panHintEl) {
-            panHintEl.hidden = false;
-          }
-
-          const gridMuted = 'rgba(148, 163, 184, 0.22)';
-          /*
-           * chartjs-chart-financial compares open/close as *pixel* Y values (not raw prices).
-           * Higher price → smaller Y, so bullish (close > open in ₹) yields close_pixel < open_pixel → uses `up`.
-           */
-          const bearish = 'rgba(239, 68, 68, 0.55)';
-          const bullish = 'rgba(34, 197, 94, 0.55)';
-          /* Volume bars stay in the dataset (transparent when off) so x-axis grouping is stable; checkbox rebuilds the chart because Chart.js v4 option proxies often ignore live edits. */
-          const VOL_BG_ON = 'rgba(148, 163, 184, 0.32)';
-          const VOL_BG_OFF = 'rgba(0, 0, 0, 0)';
-          /* Tallest volume bar uses this fraction of chart height (linear scale 0..max). */
-          const VOL_BAR_MAX_HEIGHT_FRAC = 0.25;
-          const Y1_LEFT_FALLBACK_PX = 52;
-          const volumeEl = document.getElementById('stock-chart-show-volume');
-          const volumeUi = { on: !volumeEl || volumeEl.checked };
-          let y1MeasuredLeftPx = 0;
-          const stockChartRef = { chart: null };
-
-          function syncYAxesToVisibleWindow(chart) {
-            if (!chart || chart.$syncingYAxes) {
-              return;
-            }
-            const xScale = chart.scales.x;
-            const yScale = chart.scales.y;
-            const y1Scale = chart.scales.y1;
-            if (!xScale || !yScale) {
-              return;
-            }
-
-            function toMs(v) {
-              if (v == null) {
-                return NaN;
-              }
-              if (typeof v === 'number') {
-                return v;
-              }
-              if (typeof v.valueOf === 'function') {
-                const n = v.valueOf();
-                return typeof n === 'number' ? n : NaN;
-              }
-              return NaN;
-            }
-
-            const tMin = toMs(xScale.min);
-            const tMax = toMs(xScale.max);
-            if (!isFinite(tMin) || !isFinite(tMax)) {
-              return;
-            }
-
-            /* OHLC only on real bars (not in empty right padding). */
-            const dataRightMs = Math.min(tMax, rangeLastMs);
-            let hi = -Infinity;
-            let lo = Infinity;
-            let vmax = 0;
-            let focusClose = NaN;
-            let bestX = -Infinity;
-            for (let i = 0; i < candlePoints.length; i++) {
-              const p = candlePoints[i];
-              const vp = volPoints[i];
-              if (p.x >= tMin && p.x <= dataRightMs) {
-                lo = Math.min(lo, p.l, p.o, p.c);
-                hi = Math.max(hi, p.h, p.o, p.c);
-                if (p.x >= bestX) {
-                  bestX = p.x;
-                  focusClose = p.c;
-                }
-                if (vp && volumeUi.on) {
-                  vmax = Math.max(vmax, vp.y);
-                }
-              }
-            }
-            if (!isFinite(lo) || !isFinite(hi)) {
-              return;
-            }
-
-            /* Center Y on the last visible bar's close; expand symmetrically to fit OHLC. */
-            const span = hi - lo;
-            const focus = isFinite(focusClose) ? focusClose : (lo + hi) / 2;
-            const needBelow = focus - lo;
-            const needAbove = hi - focus;
-            let half =
-              Math.max(needBelow, needAbove, span * 0.08, Math.abs(focus) * 0.015) * 1.06;
-            if (!(half > 0) || !isFinite(half)) {
-              half = Math.abs(hi) * 0.02 || 1;
-            }
-            const newYMin = focus - half;
-            const newYMax = focus + half;
-
-            let changed = false;
-            const eps = Math.max(half * 0.002, span * 1e-6, 1e-6);
-            const curMin = yScale.min;
-            const curMax = yScale.max;
-            if (
-              !isFinite(curMin) ||
-              !isFinite(curMax) ||
-              Math.abs(curMin - newYMin) > eps ||
-              Math.abs(curMax - newYMax) > eps
-            ) {
-              chart.options.scales.y.min = newYMin;
-              chart.options.scales.y.max = newYMax;
-              changed = true;
-            }
-
-            if (volumeUi.on && y1Scale && y1Scale.display) {
-              const newY1Max =
-                vmax > 0 ? vmax / VOL_BAR_MAX_HEIGHT_FRAC : 1;
-              const cur1 = y1Scale.max;
-              const tol =
-                vmax > 0 ? Math.max(vmax * 0.02, 1) : 0.5;
-              if (!isFinite(cur1) || Math.abs(cur1 - newY1Max) > tol) {
-                chart.options.scales.y1.max = newY1Max;
-                chart.options.scales.y1.min = 0;
-                changed = true;
-              }
-            }
-
-            if (changed) {
-              chart.$syncingYAxes = true;
-              try {
-                chart.update('none');
-              } finally {
-                chart.$syncingYAxes = false;
-              }
-            }
-          }
-
-          var zoomPluginOpts =
-            typeof ChartZoom !== 'undefined'
-              ? {
-                  limits: {
-                    x: { min: rangeFirstMs, max: rangeXMax },
-                  },
-                  pan: {
-                    enabled: true,
-                    mode: 'x',
-                    threshold: 6,
-                    onPanComplete: function (ctx) {
-                      syncYAxesToVisibleWindow(ctx.chart);
-                    },
-                  },
-                  zoom: {
-                    mode: 'x',
-                    drag: {
-                      enabled: false,
-                    },
-                    wheel: {
-                      enabled: true,
-                    },
-                    pinch: {
-                      enabled: true,
-                    },
-                    onZoomComplete: function (ctx) {
-                      syncYAxesToVisibleWindow(ctx.chart);
-                    },
-                  },
-                }
-              : null;
-
-          function createStockCrosshairPlugin(getVolumeOn, candlePoints, volPoints) {
-            const lineColor = 'rgba(148, 163, 184, 0.92)';
-            const pillBg = 'rgba(15, 23, 42, 0.92)';
-            const labelFont = '600 11px system-ui, -apple-system, "Segoe UI", sans-serif';
-
-            function rawTimeToMs(v) {
-              if (v == null) {
-                return NaN;
-              }
-              if (typeof v === 'number') {
-                return v;
-              }
-              if (typeof v.valueOf === 'function') {
-                const n = v.valueOf();
-                return typeof n === 'number' ? n : NaN;
-              }
-              return NaN;
-            }
-
-            /**
-             * Map cursor x to the daily bar under it: last bar with bar.x <= time-at-cursor.
-             * Nearest-pixel snapping skewed toward the next candle on time scales; this matches OHLC to the bar you are over.
-             */
-            function snapBarFromPixel(ix, chart) {
-              const xScale = chart.scales.x;
-              if (!xScale || !candlePoints.length) {
-                return null;
-              }
-              const t = rawTimeToMs(xScale.getValueForPixel(ix));
-              if (!isFinite(t)) {
-                return null;
-              }
-              let bestIdx = -1;
-              let bestX = -Infinity;
-              for (let i = 0; i < candlePoints.length; i++) {
-                const bx = candlePoints[i].x;
-                if (bx <= t && bx > bestX) {
-                  bestX = bx;
-                  bestIdx = i;
-                }
-              }
-              if (bestIdx < 0) {
-                let mi = 0;
-                for (let j = 1; j < candlePoints.length; j++) {
-                  if (candlePoints[j].x < candlePoints[mi].x) {
-                    mi = j;
-                  }
-                }
-                return {
-                  snapMs: candlePoints[mi].x,
-                  hit: { bar: candlePoints[mi], vol: volPoints[mi] },
-                };
-              }
-              return {
-                snapMs: candlePoints[bestIdx].x,
-                hit: { bar: candlePoints[bestIdx], vol: volPoints[bestIdx] },
-              };
-            }
-
-            return {
-              id: 'stockCrosshair',
-              afterInit: function (chart) {
-                const canvasEl = chart.canvas;
-                const state = { active: false, x: 0, y: 0 };
-                chart.$crosshairState = state;
-                let moveRaf = null;
-
-                function pointer(evt) {
-                  return Chart.helpers.getRelativePosition(evt, chart);
-                }
-
-                function requestRedraw() {
-                  if (moveRaf === null) {
-                    moveRaf = window.requestAnimationFrame(function () {
-                      moveRaf = null;
-                      chart.draw();
-                    });
-                  }
-                }
-
-                function onMove(evt) {
-                  const p = pointer(evt);
-                  state.x = p.x;
-                  state.y = p.y;
-                  state.active = true;
-                  requestRedraw();
-                }
-
-                function onLeave() {
-                  state.active = false;
-                  canvasEl.style.cursor = '';
-                  if (moveRaf !== null) {
-                    window.cancelAnimationFrame(moveRaf);
-                    moveRaf = null;
-                  }
-                  chart.draw();
-                }
-
-                canvasEl.addEventListener('mousemove', onMove);
-                canvasEl.addEventListener('mouseleave', onLeave);
-                chart.$crosshairCleanup = function () {
-                  canvasEl.removeEventListener('mousemove', onMove);
-                  canvasEl.removeEventListener('mouseleave', onLeave);
-                  if (moveRaf !== null) {
-                    window.cancelAnimationFrame(moveRaf);
-                    moveRaf = null;
-                  }
-                  delete chart.$crosshairState;
-                  delete chart.$crosshairCleanup;
-                };
-              },
-              beforeDestroy: function (chart) {
-                if (chart.$crosshairCleanup) {
-                  chart.$crosshairCleanup();
-                }
-              },
-              afterDraw: function (chart) {
-                const state = chart.$crosshairState;
-                if (!state || !state.active) {
-                  return;
-                }
-                const ca = chart.chartArea;
-                if (!ca || ca.width <= 0 || ca.height <= 0) {
-                  return;
-                }
-                const xScale = chart.scales.x;
-                const yScale = chart.scales.y;
-                const y1Scale = chart.scales.y1;
-                if (!xScale || !yScale) {
-                  return;
-                }
-
-                const mx = state.x;
-                const my = state.y;
-                const ix = Math.min(Math.max(mx, ca.left), ca.right);
-                const iy = Math.min(Math.max(my, ca.top), ca.bottom);
-                const ctx = chart.ctx;
-                const canvasEl = chart.canvas;
-
-                const snap = snapBarFromPixel(ix, chart);
-                const snapMs = snap ? snap.snapMs : null;
-                const hit = snap ? snap.hit : null;
-                const vx =
-                  snapMs != null ? xScale.getPixelForValue(snapMs) : null;
-
-                ctx.save();
-                ctx.strokeStyle = lineColor;
-                ctx.lineWidth = 1;
-                ctx.setLineDash([5, 4]);
-                ctx.beginPath();
-                if (vx != null && typeof vx === 'number' && !isNaN(vx)) {
-                  ctx.moveTo(vx, ca.top);
-                  ctx.lineTo(vx, ca.bottom);
-                }
-                ctx.moveTo(ca.left, iy);
-                ctx.lineTo(ca.right, iy);
-                ctx.stroke();
-                ctx.setLineDash([]);
-
-                const pad = 6;
-                const lineSkip = 13;
-                ctx.font = labelFont;
-
-                if (hit && vx != null && typeof vx === 'number' && !isNaN(vx)) {
-                  const b = hit.bar;
-                  const lines = [
-                    'O  ₹' + Number(b.o).toFixed(2),
-                    'H  ₹' + Number(b.h).toFixed(2),
-                    'L  ₹' + Number(b.l).toFixed(2),
-                    'C  ₹' + Number(b.c).toFixed(2),
-                  ];
-                  if (getVolumeOn() && hit.vol && y1Scale && y1Scale.display) {
-                    lines.push('Vol ' + formatVolumeTick(hit.vol.y));
-                  }
-                  let maxW = 0;
-                  for (let li = 0; li < lines.length; li++) {
-                    maxW = Math.max(maxW, ctx.measureText(lines[li]).width);
-                  }
-                  const boxW = maxW + pad * 2;
-                  const boxH = lines.length * lineSkip + pad * 2 - 3;
-                  let bx = mx + 14;
-                  let by = my - boxH - 12;
-                  if (bx + boxW > ca.right - 4) {
-                    bx = mx - boxW - 14;
-                  }
-                  if (bx < ca.left + 4) {
-                    bx = ca.left + 4;
-                  }
-                  if (by < ca.top + 4) {
-                    by = my + 14;
-                  }
-                  if (by + boxH > ca.bottom - 4) {
-                    by = ca.bottom - boxH - 4;
-                  }
-                  ctx.fillStyle = pillBg;
-                  ctx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
-                  ctx.lineWidth = 1;
-                  ctx.fillRect(bx, by, boxW, boxH);
-                  ctx.strokeRect(bx, by, boxW, boxH);
-                  ctx.textAlign = 'left';
-                  ctx.textBaseline = 'top';
-                  ctx.fillStyle = '#e2e8f0';
-                  for (let li = 0; li < lines.length; li++) {
-                    ctx.fillText(lines[li], bx + pad, by + pad + li * lineSkip);
-                  }
-                }
-
-                const axisPad = 4;
-                let dateStr = '';
-                if (snapMs != null && !isNaN(Number(snapMs))) {
-                  dateStr = luxon.DateTime.fromMillis(Number(snapMs), { zone: 'utc' }).toFormat(
-                    'dd LLL yyyy'
-                  );
-                }
-                const priceRaw = yScale.getValueForPixel(iy);
-                const priceStr =
-                  priceRaw != null && isFinite(Number(priceRaw))
-                    ? '₹' + Number(priceRaw).toFixed(2)
-                    : '';
-
-                if (dateStr && vx != null && typeof vx === 'number' && !isNaN(vx)) {
-                  const tw = ctx.measureText(dateStr).width;
-                  const tx = Math.min(
-                    Math.max(vx, ca.left + tw / 2 + axisPad),
-                    ca.right - tw / 2 - axisPad
-                  );
-                  const ty = ca.bottom + 5;
-                  ctx.textAlign = 'center';
-                  ctx.textBaseline = 'top';
-                  ctx.fillStyle = pillBg;
-                  ctx.fillRect(tx - tw / 2 - axisPad, ty - 1, tw + axisPad * 2, 17);
-                  ctx.fillStyle = '#e2e8f0';
-                  ctx.fillText(dateStr, tx, ty);
-                }
-
-                if (priceStr) {
-                  ctx.textAlign = 'left';
-                  ctx.textBaseline = 'middle';
-                  const pw = ctx.measureText(priceStr).width;
-                  const lx = ca.right + 6;
-                  ctx.fillStyle = pillBg;
-                  ctx.fillRect(lx - 3, iy - 9, pw + axisPad * 2 + 3, 18);
-                  ctx.fillStyle = '#e2e8f0';
-                  ctx.fillText(priceStr, lx, iy);
-                }
-
-                ctx.restore();
-
-                const inside =
-                  mx >= ca.left && mx <= ca.right && my >= ca.top && my <= ca.bottom;
-                canvasEl.style.cursor = inside ? 'crosshair' : '';
-              },
-            };
-          }
-
-          function buildChart() {
-            try {
-              var pluginOpts = {
-                legend: {
-                  display: false,
-                },
-                tooltip: {
-                  enabled: false,
-                },
-              };
-              if (zoomPluginOpts) {
-                pluginOpts.zoom = zoomPluginOpts;
-              }
-              return new Chart(canvas.getContext('2d'), {
-                plugins: [
-                  createStockCrosshairPlugin(
-                    function () {
-                      return volumeUi.on;
-                    },
-                    candlePoints,
-                    volPoints
-                  ),
-                ],
-                data: {
-                  datasets: [
-                    {
-                      type: 'bar',
-                      label: 'Volume',
-                      data: volPoints,
-                      yAxisID: 'y1',
-                      parsing: { xAxisKey: 'x', yAxisKey: 'y' },
-                      backgroundColor: volumeUi.on ? VOL_BG_ON : VOL_BG_OFF,
-                      borderWidth: 0,
-                      order: 1,
-                    },
-                    {
-                      type: 'candlestick',
-                      label: 'OHLC',
-                      data: candlePoints,
-                      yAxisID: 'y',
-                      parsing: false,
-                      order: 2,
-                    },
-                  ],
-                },
-                options: {
-                  layout: {
-                    padding: {
-                      top: 0,
-                      right: 0,
-                      bottom: 0,
-                      left: volumeUi.on ? 0 : y1MeasuredLeftPx || Y1_LEFT_FALLBACK_PX,
-                    },
-                  },
-                  responsive: true,
-                  maintainAspectRatio: false,
-                  interaction: { mode: 'index', intersect: false },
-                  plugins: pluginOpts,
-                  elements: {
-                    candlestick: {
-                      backgroundColors: {
-                        up: bullish,
-                        down: bearish,
-                        unchanged: 'rgba(148, 163, 184, 0.45)',
-                      },
-                      borderColors: {
-                        up: '#22c55e',
-                        down: '#ef4444',
-                        unchanged: '#94a3b8',
-                      },
-                    },
-                  },
-                  scales: {
-                    x: {
-                      type: 'time',
-                      min: initialXMin,
-                      max: initialXMax,
-                      time: {
-                        unit: 'month',
-                        displayFormats: { month: 'MMM yyyy' },
-                      },
-                      ticks: {
-                        color: '#94a3b8',
-                        maxRotation: 0,
-                        autoSkip: true,
-                        maxTicksLimit: 14,
-                      },
-                      grid: { color: gridMuted },
-                    },
-                    y: {
-                      position: 'right',
-                      beginAtZero: false,
-                      ticks: {
-                        color: '#94a3b8',
-                        callback: function (val) {
-                          return '₹' + val;
-                        },
-                      },
-                      grid: { color: gridMuted },
-                    },
-                    y1: {
-                      position: 'left',
-                      beginAtZero: true,
-                      display: volumeUi.on,
-                      grid: { drawOnChartArea: false },
-                      ticks: {
-                        color: '#94a3b8',
-                        callback: function (val) {
-                          return formatVolumeTick(val);
-                        },
-                      },
-                    },
-                  },
-                },
-              });
-            } catch (err) {
-              showError(
-                err && err.message ? String(err.message) : 'Chart rendering failed.',
-                DEFAULT_HELP_URLS
-              );
-              return null;
-            }
-          }
-
-          function captureVolumeAxisWidth(chart) {
-            window.requestAnimationFrame(function () {
-              if (!chart) {
-                return;
-              }
-              const y1 = chart.scales && chart.scales.y1;
-              if (volumeUi.on && y1 && typeof y1.width === 'number' && y1.width > 0) {
-                y1MeasuredLeftPx = Math.ceil(y1.width);
-              }
-            });
-          }
-
-          function rebuildChartFromVolumeCheckbox() {
-            const cb = document.getElementById('stock-chart-show-volume');
-            volumeUi.on = !cb || cb.checked;
-            if (stockChartRef.chart) {
-              stockChartRef.chart.destroy();
-              stockChartRef.chart = null;
-            }
-            stockChartRef.chart = buildChart();
-            if (stockChartRef.chart) {
-              stockChartRef.chart.resize();
-              syncYAxesToVisibleWindow(stockChartRef.chart);
-              captureVolumeAxisWidth(stockChartRef.chart);
-            }
-          }
-
-          function onVolumeCheckboxChange(ev) {
-            const el = ev.target;
-            if (!el || el.id !== 'stock-chart-show-volume') {
-              return;
-            }
-            rebuildChartFromVolumeCheckbox();
-          }
-
-          /* Double rAF: canvas layout after stock-chart-wrap is un-hidden. */
-          window.requestAnimationFrame(function () {
-            window.requestAnimationFrame(function () {
-              stockChartRef.chart = buildChart();
-              if (stockChartRef.chart) {
-                stockChartRef.chart.resize();
-                syncYAxesToVisibleWindow(stockChartRef.chart);
-                captureVolumeAxisWidth(stockChartRef.chart);
-              }
-              document.addEventListener('change', onVolumeCheckboxChange);
-            });
-          });
-        })
-        .catch(function () {
-          showError('Network error while loading historical data.', DEFAULT_HELP_URLS);
-        });
-    }
-
-    run();
-  })();
-</script>
+<script src="/static/js/lightweight-charts.standalone.production.js"></script>
+<script src="/static/js/stock_chart.js"></script>
 {% endblock %}

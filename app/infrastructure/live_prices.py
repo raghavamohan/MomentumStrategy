@@ -1,10 +1,15 @@
-"""Live market prices via Kite WebSocket (KiteTicker).
+"""Live market prices via Kite WebSocket (KiteTicker) — MODE_FULL.
 
 This module keeps a single websocket connection per process and exposes a
 thread-safe interface to:
 
-* subscribe to instrument tokens shown on the dashboard, and
+* subscribe to instrument tokens shown on the dashboard / chart pages, and
 * read the latest streamed LTP for those tokens.
+
+MODE_FULL provides: LTP, last_quantity, average_price, volume, buy_quantity,
+sell_quantity, today's OHLC, change, last_trade_time, market depth (5 levels),
+and OI (for F&O). Full tick dicts are published to tick_hub so all subscribers
+(state_store, ws_live_prices, ws_chart_ticks) receive the complete payload.
 
 Reference:
 https://kite.trade/docs/connect/v3/websocket/
@@ -57,7 +62,7 @@ def _kite_ws_auth_failure(code: object, reason: object) -> bool:
 
 
 class LivePriceStream:
-    """Process-wide websocket manager for streaming LTPs."""
+    """Process-wide websocket manager for streaming full tick data (MODE_FULL)."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -121,7 +126,7 @@ class LivePriceStream:
             self._ticker.connect(threaded=True)
 
     def subscribe(self, instrument_tokens: set[int]) -> None:
-        """Subscribe websocket for additional instrument tokens."""
+        """Subscribe websocket for additional instrument tokens (MODE_FULL)."""
         if not instrument_tokens:
             return
 
@@ -134,10 +139,10 @@ class LivePriceStream:
             self._subscribed_tokens.update(fresh)
             if self._connected:
                 self._ticker.subscribe(list(fresh))
-                self._ticker.set_mode(self._ticker.MODE_LTP, list(fresh))
+                self._ticker.set_mode(self._ticker.MODE_FULL, list(fresh))
 
     def set_subscriptions(self, desired_tokens: set[int]) -> None:
-        """Reconcile subscriptions, adding missing and removing stale tokens."""
+        """Reconcile subscriptions, adding missing and removing stale tokens (MODE_FULL)."""
         wanted = _positive_instrument_tokens(desired_tokens)
         with self._lock:
             if self._ticker is None:
@@ -149,19 +154,15 @@ class LivePriceStream:
                 self._subscribed_tokens.update(to_add)
                 if self._connected:
                     self._ticker.subscribe(list(to_add))
-                    self._ticker.set_mode(self._ticker.MODE_LTP, list(to_add))
-            
+                    self._ticker.set_mode(self._ticker.MODE_FULL, list(to_add))
+
             if to_remove:
                 self._subscribed_tokens.difference_update(to_remove)
                 if self._connected:
                     self._ticker.unsubscribe(list(to_remove))
 
     def snapshot_ltp(self, instrument_tokens: set[int], wait_seconds: float = 0.6) -> dict[int, float]:
-        """Return latest known LTP values for tokens.
-
-        Waits briefly for at least one tick update when needed so first-load
-        dashboard requests can receive streamed prices.
-        """
+        """Return latest known LTP values for tokens."""
         wanted = _positive_instrument_tokens(instrument_tokens)
         if not wanted:
             return {}
@@ -180,18 +181,18 @@ class LivePriceStream:
                 tokens = list(self._subscribed_tokens)
             if tokens:
                 ws.subscribe(tokens)
-                ws.set_mode(ws.MODE_LTP, tokens)
+                # Upgrade all subscribed tokens to MODE_FULL
+                ws.set_mode(ws.MODE_FULL, tokens)
 
         def _on_ticks(_ws, ticks):
             if not ticks:
                 return
-            updates: dict[int, float] = {}
+            # Publish full tick dicts — each tick is the complete KiteTicker payload
+            updates: dict[int, dict] = {}
             for tick in ticks:
                 token = int(tick.get("instrument_token") or 0)
-                ltp = tick.get("last_price")
-                if token > 0 and ltp is not None:
-                    fv = float(ltp)
-                    updates[token] = fv
+                if token > 0 and tick.get("last_price") is not None:
+                    updates[token] = tick
             if updates:
                 tick_hub.publish(updates)
 

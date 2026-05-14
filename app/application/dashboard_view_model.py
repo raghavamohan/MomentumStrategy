@@ -106,22 +106,59 @@ def decorate_position(
     return model.to_dict()
 
 
+# Maximum chunk sizes (days) per Kite historical API interval
+_INTERVAL_CHUNK_DAYS: dict[str, int] = {
+    "minute": 60,
+    "3minute": 60,
+    "5minute": 100,
+    "10minute": 100,
+    "15minute": 200,
+    "30minute": 200,
+    "60minute": 400,
+    "day": 2000,
+}
+
+# Allowed Kite interval strings
+ALLOWED_KITE_INTERVALS = frozenset(_INTERVAL_CHUNK_DAYS.keys())
+
+# Default max history days per interval (clamped at request time)
+_INTERVAL_MAX_DAYS: dict[str, int] = {
+    "minute": 60,
+    "3minute": 60,
+    "5minute": 100,
+    "10minute": 100,
+    "15minute": 200,
+    "30minute": 200,
+    "60minute": 400,
+    "day": 3650,
+}
+
+
 def historical_candles_for_stock(
     kite: KiteConnect,
     instrument_token: int,
     days: int,
+    interval: str = "day",
 ) -> list[dict[str, Any]]:
-    """Daily candles via ``KiteConnect.historical_data`` (OHLCV only)."""
+    """OHLCV candles via ``KiteConnect.historical_data``.
+
+    Supports all Kite intervals (minute, 5minute, 15minute, 60minute, day).
+    Chunks requests correctly per Kite's per-interval date range limits.
+    Returns ISO-8601 datetime strings (with time for intraday, date-only for daily).
+    """
     if days <= 0:
         return []
 
+    kite_interval = interval if interval in ALLOWED_KITE_INTERVALS else "day"
+    chunk_days = _INTERVAL_CHUNK_DAYS.get(kite_interval, 2000)
+    is_intraday = kite_interval != "day"
+
     end = datetime.now()
     overall_start = end - timedelta(days=days)
-    chunk_days = 365
-    merged_by_date: dict[str, dict[str, Any]] = {}
+    merged: dict[str, dict[str, Any]] = {}
 
     cursor_end = end
-    max_iters = (days // chunk_days) + 20
+    max_iters = (days // max(chunk_days, 1)) + 20
     iters = 0
     while cursor_end > overall_start and iters < max_iters:
         iters += 1
@@ -130,15 +167,23 @@ def historical_candles_for_stock(
             instrument_token,
             cursor_start,
             cursor_end,
-            "day",
+            kite_interval,
             continuous=False,
             oi=False,
         )
         for row in rows or []:
             dt = row["date"]
-            date_str = dt.strftime("%Y-%m-%d") if hasattr(dt, "strftime") else str(dt)[:10]
-            merged_by_date[date_str] = {
-                "date": date_str,
+            if hasattr(dt, "strftime"):
+                if is_intraday:
+                    # Return full IST ISO-8601 string for intraday bars
+                    date_key = dt.strftime("%Y-%m-%dT%H:%M:%S+05:30")
+                else:
+                    date_key = dt.strftime("%Y-%m-%d")
+            else:
+                date_key = str(dt)[:19] if is_intraday else str(dt)[:10]
+
+            merged[date_key] = {
+                "date": date_key,
                 "open": float(row["open"]),
                 "high": float(row["high"]),
                 "low": float(row["low"]),
@@ -147,7 +192,7 @@ def historical_candles_for_stock(
             }
         cursor_end = cursor_start
 
-    return sorted(merged_by_date.values(), key=lambda r: r["date"])
+    return sorted(merged.values(), key=lambda r: r["date"])
 
 
 async def build_dashboard_view_model(

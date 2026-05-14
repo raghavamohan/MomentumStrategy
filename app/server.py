@@ -74,12 +74,24 @@ Routes
     cleared and the user is bounced back to ``/`` to log in again.
 
 ``GET /dashboard/stock-history``
-    Authenticated JSON. Daily OHLCV candles from
-    ``KiteConnect.historical_data`` for the stock chart page.
+    Authenticated JSON. OHLCV candles from ``KiteConnect.historical_data``
+    for the live stock chart page. Supports interval param (minute, 5minute,
+    15minute, 60minute, day) and client-aggregated week/month views.
 
 ``GET /dashboard/stock-chart``
-    Authenticated HTML page with candlestick + volume chart (static Chart.js
-    under ``/static/``). Opened from Equity Holdings / Watch List links.
+    Authenticated HTML page with live candlestick chart (TradingView
+    Lightweight Charts). Supports multi-interval, indicators (MA, RSI),
+    trendlines, and horizontal levels.
+
+``GET /dashboard/chart-annotations``
+``POST /dashboard/chart-annotations``
+``DELETE /dashboard/chart-annotations``
+    Authenticated JSON. Persist and retrieve per-stock chart annotations
+    (trendlines + horizontal price levels).
+
+``WS /ws/chart-ticks``
+    Authenticated WebSocket. Streams full MODE_FULL Kite tick data
+    (LTP, OHLC, volume, market depth) for the live chart page.
 
 ``GET /logout``
     Clears the session cookie, deletes the on-disk Kite access token
@@ -115,7 +127,9 @@ from app.infrastructure.live_prices import live_price_stream
 from app.infrastructure.indicator_worker import indicator_worker
 from app.presentation.http.routes.api_v1 import router as api_v1_router
 from app.presentation.http.routes.auth_pages import router as auth_pages_router
+from app.presentation.http.routes.chart_routes import router as chart_router
 from app.presentation.http.routes.dashboard_routes import router as dashboard_router
+from app.presentation.http.routes.ws_chart_ticks import router as ws_chart_ticks_router
 from app.presentation.http.routes.ws_live_prices import router as ws_live_prices_router
 from app.presentation.http.server_config import (
     DASHBOARD_DISPLAY_NAME,
@@ -168,7 +182,9 @@ if STATIC_DIR.is_dir():
 app.include_router(auth_pages_router)
 app.include_router(api_v1_router)
 app.include_router(dashboard_router)
+app.include_router(chart_router)
 app.include_router(ws_live_prices_router)
+app.include_router(ws_chart_ticks_router)
 
 
 def main() -> None:

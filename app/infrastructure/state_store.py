@@ -1,4 +1,4 @@
-"""Live state storage for LTP, rolling buffers, and indicators."""
+"""Live state storage for LTP, full ticks, rolling buffers, and indicators."""
 
 from __future__ import annotations
 
@@ -14,6 +14,9 @@ class LiveStateStore:
     """Interface for querying and updating live dashboard state."""
 
     def get_ltp(self, tokens: set[int]) -> dict[int, float]:
+        raise NotImplementedError
+
+    def get_full_tick(self, token: int) -> dict | None:
         raise NotImplementedError
 
     def get_indicators(self, tokens: set[int]) -> dict[int, dict[str, Any]]:
@@ -33,27 +36,43 @@ class LiveStateStore:
 
 
 class InMemoryLiveStateStore(LiveStateStore):
-    """In-memory implementation with 1000-price ring buffers."""
+    """In-memory implementation with 1000-price ring buffers.
+
+    Receives full MODE_FULL tick dicts from tick_hub.
+    Extracts LTP for backward-compatible access; also stores full tick for
+    chart / market depth consumers.
+    """
 
     def __init__(self, buffer_size: int = 1000) -> None:
         self._lock = threading.Lock()
         self._buffer_size = buffer_size
         self._ltp_by_token: dict[int, float] = {}
+        self._full_ticks: dict[int, dict] = {}
         self._indicators: dict[int, dict[str, Any]] = {}
         self._ring_buffers: dict[int, collections.deque[float]] = {}
-        
-        # Subscribe to tick hub to keep LTPs instantly up-to-date
-        # (Rolling buffers are updated separately by the indicator worker using latest-wins)
+
+        # Subscribe to tick hub to keep LTPs and full ticks instantly up-to-date
         tick_hub.subscribe(self._on_ticks)
 
-    def _on_ticks(self, updates: dict[int, float]) -> None:
-        if updates:
-            with self._lock:
-                self._ltp_by_token.update(updates)
+    def _on_ticks(self, updates: dict[int, dict]) -> None:
+        """Handle full tick dicts from tick_hub."""
+        if not updates:
+            return
+        with self._lock:
+            for token, tick in updates.items():
+                ltp = tick.get("last_price")
+                if ltp is not None:
+                    self._ltp_by_token[token] = float(ltp)
+            self._full_ticks.update(updates)
 
     def get_ltp(self, tokens: set[int]) -> dict[int, float]:
         with self._lock:
             return {t: self._ltp_by_token[t] for t in tokens if t in self._ltp_by_token}
+
+    def get_full_tick(self, token: int) -> dict | None:
+        """Return the latest full MODE_FULL tick dict for a token, or None."""
+        with self._lock:
+            return self._full_ticks.get(token)
 
     def get_indicators(self, tokens: set[int]) -> dict[int, dict[str, Any]]:
         with self._lock:
