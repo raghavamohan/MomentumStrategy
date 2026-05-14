@@ -1,0 +1,13 @@
+{
+  "name": "momentum-strategy",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:chart": "vite build",
+    "watch:chart": "vite build --watch",
+    "assemble:chart-app": "node scripts/assemble-stock-chart-app.mjs"
+  },
+  "devDependencies": {
+    "vite": "^6.3.5"
+  }
+}

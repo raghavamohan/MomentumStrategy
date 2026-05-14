@@ -15,6 +15,9 @@ venv/
 .session_secret
 .cache/
 
+# Node (stock chart bundle)
+node_modules/
+
 # Editor / OS
 .vscode/
 .idea/

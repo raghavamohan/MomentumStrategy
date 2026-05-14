@@ -71,7 +71,7 @@ External APIs (Kite REST/WS, NSE, yfinance, mfdata.in, MarketSmith)
   app/cli_client.py (CLI)
 ```
 
-Front-end assets for the stock chart live under `static/js/` (`lightweight-charts*.js`, `stock_chart.js`); templates under `templates/`.
+Front-end assets for the stock chart: templates under `templates/`; TradingView `lightweight-charts*.js` and the built bundle `static/js/stock_chart.js` under `static/js/`. Chart logic is authored as ES modules under `static/js/src/stock_chart/` and compiled with Vite (`npm install`, then `npm run build:chart`). Use `npm run watch:chart` while iterating on the chart.
 
 **Data Sources Used**:
 - **Zerodha Kite Connect**: Core account data, holdings, positions, and live WebSocket prices.
