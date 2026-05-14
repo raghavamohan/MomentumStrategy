@@ -1129,7 +1129,8 @@
         }
         const wrap = document.createElement('span');
         wrap.className = 'index-quote-item';
-        const tok = item.token != null && item.token !== '' ? String(item.token) : '';
+        const rawTok = item.token;
+        const tok = rawTok != null && rawTok !== '' ? String(rawTok) : '';
         if (tok) {
           wrap.setAttribute('data-index-token', tok);
         }
@@ -1164,6 +1165,18 @@
       if (!inner || !chunks.length) {
         return;
       }
+      try {
+        if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+          inner.style.animation = '';
+          inner.style.transform = '';
+          inner.style.justifyContent = '';
+          const secondRm = chunks[1];
+          if (secondRm) {
+            secondRm.style.display = '';
+          }
+          return;
+        }
+      } catch (_e) {}
       const chunk = chunks[0];
       const second = chunks[1];
       const w = chunk.offsetWidth;
@@ -1186,8 +1199,29 @@
         second.style.display = '';
       }
       const pxPerSec = 52;
-      const duration = Math.max(28, (w * 2) / pxPerSec);
+      const duration = Math.max(28, w / pxPerSec);
       inner.style.animation = 'index-quotes-marquee-scroll ' + duration + 's linear infinite';
+    }
+
+    function scheduleMarqueeLayoutTweak() {
+      let n = 0;
+      function attempt() {
+        tweakMarqueeDuration();
+        const inner = indexQuotesBar && indexQuotesBar.querySelector('.index-quotes-marquee-inner');
+        const chunk = inner && inner.querySelector('.index-quotes-marquee-chunk');
+        const w = chunk ? chunk.offsetWidth : 0;
+        n += 1;
+        if (inner && chunk && !(w > 0) && n < 32) {
+          window.requestAnimationFrame(attempt);
+          return;
+        }
+        if (inner && chunk && !(w > 0) && n < 48) {
+          window.setTimeout(attempt, 40);
+        }
+      }
+      window.requestAnimationFrame(function () {
+        window.requestAnimationFrame(attempt);
+      });
     }
 
     function syncIndexQuoteDom() {
@@ -1196,7 +1230,8 @@
       }
       const idx = bootstrap.indexQuotes || [];
       idx.forEach(function (item) {
-        const tok = String(item.token || '');
+        const rawTok = item.token;
+        const tok = rawTok != null && rawTok !== '' ? String(rawTok) : '';
         if (!tok) {
           return;
         }
@@ -1209,6 +1244,7 @@
           renderOneIndexQuote(title, chg, label, ltp, prev);
         });
       });
+      tweakMarqueeDuration();
     }
 
     function renderIndexQuotes() {
@@ -1228,9 +1264,7 @@
       inner.appendChild(chunkA);
       inner.appendChild(chunkB);
       indexQuotesBar.appendChild(inner);
-      requestAnimationFrame(function () {
-        requestAnimationFrame(tweakMarqueeDuration);
-      });
+      scheduleMarqueeLayoutTweak();
     }
 
     function stampUpdatedNow() {
@@ -1944,7 +1978,8 @@
       });
       const idx = bootstrap.indexQuotes || [];
       idx.forEach(function (item) {
-        const tok = String(item.token || '');
+        const rawTok = item.token;
+        const tok = rawTok != null && rawTok !== '' ? String(rawTok) : '';
         if (tok && Object.prototype.hasOwnProperty.call(ltpMap, tok)) {
           item.ltp = Number(ltpMap[tok]);
         }
@@ -3067,6 +3102,23 @@
     }
 
     let marqueeResizeTimer = null;
+    let marqueeObserverTimer = null;
+    let indexQuotesResizeObserver = null;
+    function ensureIndexQuotesResizeObserver() {
+      if (!indexQuotesBar || indexQuotesResizeObserver != null || typeof ResizeObserver === 'undefined') {
+        return;
+      }
+      indexQuotesResizeObserver = new ResizeObserver(function () {
+        if (marqueeObserverTimer != null) {
+          window.clearTimeout(marqueeObserverTimer);
+        }
+        marqueeObserverTimer = window.setTimeout(function () {
+          marqueeObserverTimer = null;
+          tweakMarqueeDuration();
+        }, 80);
+      });
+      indexQuotesResizeObserver.observe(indexQuotesBar);
+    }
     window.addEventListener('resize', function () {
       if (marqueeResizeTimer != null) {
         window.clearTimeout(marqueeResizeTimer);
@@ -3076,6 +3128,16 @@
         tweakMarqueeDuration();
       }, 120);
     });
+    window.addEventListener('load', function () {
+      tweakMarqueeDuration();
+    });
+    try {
+      if (document.fonts && document.fonts.ready) {
+        document.fonts.ready.then(function () {
+          tweakMarqueeDuration();
+        });
+      }
+    } catch (_e) {}
 
     bindSections();
     selectedSection = getActiveSection();
@@ -3099,6 +3161,7 @@
     applyDashboardRowFocusFromQuery();
     stampUpdatedNow();
     renderIndexQuotes();
+    ensureIndexQuotesResizeObserver();
     if (selectedTab === 'mf') {
       loadMfHoldings();
     } else {
