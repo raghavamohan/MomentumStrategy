@@ -76,6 +76,16 @@
   var saveTimer = null;
   var tlMode = false;
   var tlAnchors = [];
+  var tlPreviewPx = null;
+  var tlDraftMoveBound = null;
+  var tlSelectMode = false;
+  var selectedTlId = null;
+  var TL_HIT_PX = 10;
+  var tlRmbDrag = null;
+  var tlSuppressSelectClick = false;
+  var tlRedrawRaf = null;
+  var tlAnchorPulse = null;
+  var tlPulseTimer = null;
 
   var LW = window.LightweightCharts;
   var mainChart, rsiChart, candleSeries, volSeries, rsiLineSeries;
@@ -277,7 +287,101 @@
     return Math.floor(new Date(t + 'T12:00:00+05:30').getTime() / 1000);
   }
 
-  // ── Status ───────────────────────────────────────────────────────────────
+  /** Unix seconds for any chart / trendline time (LW UTCTimestamp, daily string, etc.). */
+  function chartTimeToUnixSec(t) {
+    if (t == null) return NaN;
+    if (typeof t === 'number' && isFinite(t)) return t;
+    if (typeof t === 'string' && t.length === 10 && /^\d{4}-\d{2}-\d{2}$/.test(t)) {
+      return Math.floor(new Date(t + 'T12:00:00+05:30').getTime() / 1000);
+    }
+    var ms = new Date(t).getTime();
+    return isFinite(ms) ? Math.floor(ms / 1000) : NaN;
+  }
+
+  /** Match stored time shape to the reference bar (daily string vs unix seconds). */
+  function unixSecToChartTime(sec, refBar) {
+    var t = refBar && refBar.time;
+    if (typeof t === 'string' && t.length === 10 && /^\d{4}-\d{2}-\d{2}$/.test(t)) {
+      return istDayString(sec * 1000);
+    }
+    return Math.floor(sec);
+  }
+
+  function getTimeScaleExtrapolationBasis() {
+    if (!mainChart || !allBars.length) return null;
+    var ts = mainChart.timeScale();
+    var bR = allBars[allBars.length - 1];
+    var xR = ts.timeToCoordinate(bR.time);
+    var secR = chartTimeToUnixSec(bR.time);
+    if (xR == null || !isFinite(secR)) return null;
+    var xL = null;
+    var secL = null;
+    for (var k = allBars.length - 2; k >= 0; k--) {
+      var bx = ts.timeToCoordinate(allBars[k].time);
+      if (bx != null && Math.abs(bx - xR) > 0.5) {
+        xL = bx;
+        secL = chartTimeToUnixSec(allBars[k].time);
+        break;
+      }
+    }
+    if (xL == null || secL == null || !isFinite(secL)) {
+      var ivCfg = IV_CFG[currentIv] || IV_CFG.day;
+      var step = barStepSec(ivCfg.kite);
+      if (!step) step = 86400;
+      secL = secR - step;
+      xL = xR - 24;
+    }
+    if (Math.abs(xR - xL) < 1e-6 || Math.abs(secR - secL) < 1e-6) return null;
+    return { xL: xL, secL: secL, xR: xR, secR: secR };
+  }
+
+  function coordinateToTimeExtrapolated(canvasX) {
+    if (!mainChart) return null;
+    var ts = mainChart.timeScale();
+    var t = ts.coordinateToTime(canvasX);
+    if (t != null) return t;
+    var basis = getTimeScaleExtrapolationBasis();
+    if (!basis) return null;
+    var secEx = basis.secR + ((canvasX - basis.xR) / (basis.xR - basis.xL)) * (basis.secR - basis.secL);
+    if (!isFinite(secEx)) return null;
+    return unixSecToChartTime(secEx, allBars[allBars.length - 1]);
+  }
+
+  function timeToCoordinateExtrapolated(time) {
+    if (!mainChart) return null;
+    var ts = mainChart.timeScale();
+    var x = ts.timeToCoordinate(time);
+    if (x != null) return x;
+    var sec = chartTimeToUnixSec(time);
+    if (!isFinite(sec)) return null;
+    var basis = getTimeScaleExtrapolationBasis();
+    if (!basis) return null;
+    var xEx = basis.xR + (sec - basis.secR) / (basis.secR - basis.secL) * (basis.xR - basis.xL);
+    return xEx;
+  }
+
+  /** LW often returns null for Y outside the pane; linear map from visible top/bottom anchors. */
+  function coordinateToPriceExtrapolated(y) {
+    if (!candleSeries) return null;
+    var p = candleSeries.coordinateToPrice(y);
+    if (p != null && isFinite(Number(p))) return p;
+    var wrap = document.getElementById('sc-main-wrap');
+    var h = wrap ? Math.max(wrap.clientHeight, 120) : 400;
+    var yTop = 0;
+    var yBot = h;
+    var pTop = candleSeries.coordinateToPrice(yTop);
+    var pBot = candleSeries.coordinateToPrice(yBot);
+    if (pTop == null || pBot == null || !isFinite(pTop) || !isFinite(pBot)) {
+      if (allBars.length) {
+        var b = allBars[allBars.length - 1];
+        return (Number(b.high) + Number(b.low)) / 2;
+      }
+      return null;
+    }
+    if (Math.abs(yBot - yTop) < 1e-6) return pTop;
+    return pTop + ((y - yTop) / (yBot - yTop)) * (pBot - pTop);
+  }
+
   function showStatus(msg) {
     var el = document.getElementById('sc-status');
     if (el) { el.hidden = false; el.textContent = msg; }
@@ -312,10 +416,51 @@
     } catch (_) {}
   }
 
+  function detachTlDraftPreviewListeners() {
+    if (tlDraftMoveBound) {
+      window.removeEventListener('mousemove', tlDraftMoveBound);
+      tlDraftMoveBound = null;
+    }
+    tlPreviewPx = null;
+  }
+
+  function attachTlDraftPreviewListeners() {
+    if (tlDraftMoveBound) return;
+    tlDraftMoveBound = function (ev) {
+      if (!tlMode || tlAnchors.length !== 1 || !mainChart) return;
+      var p = canvasPixelFromClient(ev.clientX, ev.clientY);
+      if (!p) return;
+      tlPreviewPx = p;
+      scheduleDrawTrendlines();
+    };
+    window.addEventListener('mousemove', tlDraftMoveBound);
+  }
+
+  function endTlRmbDrag() {
+    var had = !!tlRmbDrag;
+    var pid = tlRmbDrag && tlRmbDrag.pointerId;
+    var canvasEl = getTlCanvas();
+    if (pid != null && canvasEl && typeof canvasEl.releasePointerCapture === 'function') {
+      try { canvasEl.releasePointerCapture(pid); } catch (_) {}
+    }
+    tlRmbDrag = null;
+    if (had) scheduleSaveAnnotations();
+  }
+
   function exitTrendlineMode() {
     if (!tlMode) return;
     tlMode = false;
     tlAnchors = [];
+    detachTlDraftPreviewListeners();
+    if (tlRedrawRaf != null) {
+      cancelAnimationFrame(tlRedrawRaf);
+      tlRedrawRaf = null;
+    }
+    if (tlPulseTimer) {
+      clearTimeout(tlPulseTimer);
+      tlPulseTimer = null;
+    }
+    tlAnchorPulse = null;
     var tlBtn = document.getElementById('sc-trendline-btn');
     var canvas = getTlCanvas();
     if (tlBtn) {
@@ -323,6 +468,72 @@
       tlBtn.setAttribute('aria-pressed', 'false');
     }
     if (canvas) canvas.classList.remove('draw-mode');
+    drawTrendlines();
+  }
+
+  function updateDeleteSelectedTlButton() {
+    var delBtn = document.getElementById('sc-delete-selected-tl');
+    if (delBtn) delBtn.disabled = !selectedTlId;
+  }
+
+  function setSelectedTrendline(id) {
+    selectedTlId = id || null;
+    updateDeleteSelectedTlButton();
+    drawTrendlines();
+    renderChips();
+  }
+
+  function exitTlSelectMode() {
+    if (!tlSelectMode) return;
+    tlSelectMode = false;
+    endTlRmbDrag();
+    selectedTlId = null;
+    updateDeleteSelectedTlButton();
+    var selBtn = document.getElementById('sc-tl-select-btn');
+    var canvas = getTlCanvas();
+    if (selBtn) {
+      selBtn.classList.remove('active');
+      selBtn.setAttribute('aria-pressed', 'false');
+    }
+    if (canvas) canvas.classList.remove('select-mode');
+    drawTrendlines();
+    renderChips();
+  }
+
+  function setTlSelectMode(on) {
+    var canvas = getTlCanvas();
+    if (on) {
+      exitTrendlineMode();
+      tlSelectMode = true;
+      var selBtn = document.getElementById('sc-tl-select-btn');
+      if (selBtn) {
+        selBtn.classList.add('active');
+        selBtn.setAttribute('aria-pressed', 'true');
+      }
+      if (canvas) canvas.classList.add('select-mode');
+    } else {
+      exitTlSelectMode();
+    }
+  }
+
+  function deleteSelectedTrendline() {
+    if (!selectedTlId) return;
+    endTlRmbDrag();
+    var id = selectedTlId;
+    trendlines = trendlines.filter(function (x) { return x.id !== id; });
+    selectedTlId = null;
+    updateDeleteSelectedTlButton();
+    scheduleSaveAnnotations();
+    drawTrendlines();
+    renderChips();
+  }
+
+  function isTypingTarget(el) {
+    if (!el || !el.tagName) return false;
+    var t = el.tagName.toLowerCase();
+    if (t === 'input' || t === 'textarea' || t === 'select') return true;
+    if (el.isContentEditable) return true;
+    return false;
   }
 
   function setLvlError(msg) {
@@ -473,6 +684,17 @@
   // ── Charts lifecycle ─────────────────────────────────────────────────────
   function destroyCharts() {
     clearStaleCheck();
+    endTlRmbDrag();
+    detachTlDraftPreviewListeners();
+    if (tlPulseTimer) {
+      clearTimeout(tlPulseTimer);
+      tlPulseTimer = null;
+    }
+    tlAnchorPulse = null;
+    if (tlRedrawRaf != null) {
+      cancelAnimationFrame(tlRedrawRaf);
+      tlRedrawRaf = null;
+    }
     if (chartResizeDebounceTimer) {
       clearTimeout(chartResizeDebounceTimer);
       chartResizeDebounceTimer = null;
@@ -607,6 +829,7 @@
         levels = Array.isArray(body.levels) ? body.levels.slice() : [];
         trendlines.forEach(function (tl) {
           if (tl.extended === undefined) tl.extended = false;
+          if (!tl.id) tl.id = uid();
         });
       })
       .catch(function () {
@@ -786,6 +1009,103 @@
     return document.getElementById('sc-tl-canvas');
   }
 
+  function findTrendlineById(id) {
+    for (var i = 0; i < trendlines.length; i++) {
+      if (trendlines[i].id === id) return trendlines[i];
+    }
+    return null;
+  }
+
+  function scheduleDrawTrendlines() {
+    if (tlRedrawRaf != null) return;
+    tlRedrawRaf = requestAnimationFrame(function () {
+      tlRedrawRaf = null;
+      drawTrendlines();
+    });
+  }
+
+  function canvasPixelFromClient(clientX, clientY) {
+    var canvas = getTlCanvas();
+    if (!canvas) return null;
+    var rect = canvas.getBoundingClientRect();
+    return { x: clientX - rect.left, y: clientY - rect.top };
+  }
+
+  function drawAnchorMarker(ctx, x, y) {
+    if (x == null || y == null || isNaN(x) || isNaN(y)) return;
+    var r = 5;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(15,23,42,.85)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(250,250,250,.95)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  function getTrendlinePixelEndpoints(tl, w) {
+    if (!mainChart || !candleSeries) return null;
+    var x1 = timeToCoordinateExtrapolated(tl.time1);
+    var y1 = candleSeries.priceToCoordinate(tl.price1);
+    var x2 = timeToCoordinateExtrapolated(tl.time2);
+    var y2 = candleSeries.priceToCoordinate(tl.price2);
+    if (x1 == null || y1 == null || x2 == null || y2 == null) return null;
+    if (tl.extended && x1 !== x2) {
+      var dx = x2 - x1, dy = y2 - y1;
+      var t0 = (-x1) / dx;
+      var t1 = (w - x1) / dx;
+      var ta = Math.min(t0, t1);
+      var tb = Math.max(t0, t1);
+      return {
+        x1: x1 + ta * dx,
+        y1: y1 + ta * dy,
+        x2: x1 + tb * dx,
+        y2: y1 + tb * dy
+      };
+    }
+    return { x1: x1, y1: y1, x2: x2, y2: y2 };
+  }
+
+  function distPointToSegment(px, py, x1, y1, x2, y2) {
+    var dx = x2 - x1, dy = y2 - y1;
+    var len2 = dx * dx + dy * dy;
+    if (len2 < 1e-12) {
+      var ux = px - x1, uy = py - y1;
+      return Math.sqrt(ux * ux + uy * uy);
+    }
+    var t = ((px - x1) * dx + (py - y1) * dy) / len2;
+    t = Math.max(0, Math.min(1, t));
+    var qx = x1 + t * dx, qy = y1 + t * dy;
+    var qdx = px - qx, qdy = py - qy;
+    return Math.sqrt(qdx * qdx + qdy * qdy);
+  }
+
+  /** Closest point on segment (x1,y1)—(x2,y2) to (px,py); t in [0,1]. */
+  function projectPointToSegment(px, py, x1, y1, x2, y2) {
+    var dx = x2 - x1, dy = y2 - y1;
+    var len2 = dx * dx + dy * dy;
+    if (len2 < 1e-12) return { x: x1, y: y1, t: 0 };
+    var t = ((px - x1) * dx + (py - y1) * dy) / len2;
+    t = Math.max(0, Math.min(1, t));
+    return { x: x1 + t * dx, y: y1 + t * dy, t: t };
+  }
+
+  function hitTestTrendlineIds(px, py, w) {
+    var best = null;
+    var bestD = TL_HIT_PX + 1;
+    for (var i = 0; i < trendlines.length; i++) {
+      var tl = trendlines[i];
+      var ep = getTrendlinePixelEndpoints(tl, w);
+      if (!ep) continue;
+      var d = distPointToSegment(px, py, ep.x1, ep.y1, ep.x2, ep.y2);
+      if (d <= TL_HIT_PX && d < bestD) {
+        bestD = d;
+        best = tl.id;
+      }
+    }
+    return best;
+  }
+
   function drawTrendlines() {
     var canvas = getTlCanvas();
     var wrap = document.getElementById('sc-main-wrap');
@@ -799,41 +1119,54 @@
     if (!ctx) return;
     ctx.clearRect(0, 0, w, h);
 
-    var ts = mainChart.timeScale();
-
     trendlines.forEach(function (tl) {
-      var x1 = ts.timeToCoordinate(tl.time1);
-      var y1 = candleSeries.priceToCoordinate(tl.price1);
-      var x2 = ts.timeToCoordinate(tl.time2);
-      var y2 = candleSeries.priceToCoordinate(tl.price2);
-      if (x1 == null || y1 == null || x2 == null || y2 == null) return;
-
-      ctx.strokeStyle = tl.color || '#f59e0b';
-      ctx.lineWidth = Math.max(1, Number(tl.width) || 1);
-      ctx.setLineDash(tl.style === 'dashed' ? [6, 4] : []);
-
-      if (tl.extended && x1 !== x2) {
-        var dx = x2 - x1, dy = y2 - y1;
-        var t0 = (-x1) / dx;
-        var t1 = (w - x1) / dx;
-        var ta = Math.min(t0, t1);
-        var tb = Math.max(t0, t1);
-        var xa = x1 + ta * dx;
-        var ya = y1 + ta * dy;
-        var xb = x1 + tb * dx;
-        var yb = y1 + tb * dy;
+      var ep = getTrendlinePixelEndpoints(tl, w);
+      if (!ep) return;
+      var lw = Math.max(1, Number(tl.width) || 1);
+      var sel = tl.id === selectedTlId;
+      if (sel) {
+        ctx.strokeStyle = 'rgba(255,255,255,.4)';
+        ctx.lineWidth = lw + 8;
+        ctx.setLineDash([]);
         ctx.beginPath();
-        ctx.moveTo(xa, ya);
-        ctx.lineTo(xb, yb);
-        ctx.stroke();
-      } else {
-        ctx.beginPath();
-        ctx.moveTo(x1, y1);
-        ctx.lineTo(x2, y2);
+        ctx.moveTo(ep.x1, ep.y1);
+        ctx.lineTo(ep.x2, ep.y2);
         ctx.stroke();
       }
+      ctx.strokeStyle = tl.color || '#f59e0b';
+      ctx.lineWidth = sel ? lw + 2 : lw;
+      ctx.setLineDash(tl.style === 'dashed' ? [6, 4] : []);
+      ctx.beginPath();
+      ctx.moveTo(ep.x1, ep.y1);
+      ctx.lineTo(ep.x2, ep.y2);
+      ctx.stroke();
       ctx.setLineDash([]);
     });
+
+    if (tlMode && tlAnchors.length === 1 && mainChart && candleSeries) {
+      var a0 = tlAnchors[0];
+      var ax = timeToCoordinateExtrapolated(a0.time);
+      var ay = candleSeries.priceToCoordinate(a0.price);
+      if (ax != null && ay != null) {
+        drawAnchorMarker(ctx, ax, ay);
+        if (tlPreviewPx) {
+          ctx.strokeStyle = 'rgba(250,204,21,.75)';
+          ctx.lineWidth = 2;
+          ctx.setLineDash([4, 4]);
+          ctx.beginPath();
+          ctx.moveTo(ax, ay);
+          ctx.lineTo(tlPreviewPx.x, tlPreviewPx.y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+      }
+    }
+
+    if (tlAnchorPulse) {
+      for (var pi = 0; pi < tlAnchorPulse.length; pi++) {
+        drawAnchorMarker(ctx, tlAnchorPulse[pi].x, tlAnchorPulse[pi].y);
+      }
+    }
   }
 
   function canvasPointToChart(ev) {
@@ -842,26 +1175,147 @@
     var rect = canvas.getBoundingClientRect();
     var x = ev.clientX - rect.left;
     var y = ev.clientY - rect.top;
-    var time = mainChart.timeScale().coordinateToTime(x);
-    var price = candleSeries.coordinateToPrice(y);
+    var time = coordinateToTimeExtrapolated(x);
+    var price = coordinateToPriceExtrapolated(y);
     if (time == null || price == null) return null;
     return { time: time, price: price };
+  }
+
+  function onTlRmbDragMove(ev) {
+    if (!tlRmbDrag || !mainChart || !candleSeries) return;
+    var tlx = findTrendlineById(tlRmbDrag.tlId);
+    if (!tlx) {
+      endTlRmbDrag();
+      return;
+    }
+    var p = canvasPixelFromClient(ev.clientX, ev.clientY);
+    if (!p) return;
+    var ddx = p.x - tlRmbDrag.gx;
+    var ddy = p.y - tlRmbDrag.gy;
+    var ep = tlRmbDrag.ep0;
+    var t1 = coordinateToTimeExtrapolated(ep.x1 + ddx);
+    var pr1 = coordinateToPriceExtrapolated(ep.y1 + ddy);
+    var t2 = coordinateToTimeExtrapolated(ep.x2 + ddx);
+    var pr2 = coordinateToPriceExtrapolated(ep.y2 + ddy);
+    if (t1 == null || pr1 == null || t2 == null || pr2 == null) return;
+    tlx.time1 = t1;
+    tlx.price1 = pr1;
+    tlx.time2 = t2;
+    tlx.price2 = pr2;
+    scheduleDrawTrendlines();
   }
 
   function bindTrendlineCanvas() {
     var canvas = getTlCanvas();
     if (!canvas || canvas.dataset.scTlBound === '1') return;
     canvas.dataset.scTlBound = '1';
+
+    canvas.addEventListener('contextmenu', function (ev) {
+      if (!tlSelectMode || !mainChart || !selectedTlId) return;
+      var rect = canvas.getBoundingClientRect();
+      var px = ev.clientX - rect.left;
+      var py = ev.clientY - rect.top;
+      var wrap = document.getElementById('sc-main-wrap');
+      var wid = wrap ? wrap.clientWidth : 0;
+      var hit = hitTestTrendlineIds(px, py, wid);
+      if (hit === selectedTlId || !!tlRmbDrag) ev.preventDefault();
+    });
+
+    var onTlDragPointerMove = function (ev) {
+      if (!tlRmbDrag || ev.pointerId !== tlRmbDrag.pointerId) return;
+      var p = canvasPixelFromClient(ev.clientX, ev.clientY);
+      if (p && (Math.abs(p.x - tlRmbDrag.downPx) > 1.5 || Math.abs(p.y - tlRmbDrag.downPy) > 1.5)) {
+        tlRmbDrag.didMove = true;
+      }
+      onTlRmbDragMove(ev);
+    };
+    var onTlDragPointerEnd = function (ev) {
+      if (!tlRmbDrag || ev.pointerId !== tlRmbDrag.pointerId) return;
+      if (tlRmbDrag.didMove && tlRmbDrag.button === 0) tlSuppressSelectClick = true;
+      endTlRmbDrag();
+    };
+    canvas.addEventListener('pointermove', onTlDragPointerMove);
+    canvas.addEventListener('pointerup', onTlDragPointerEnd);
+    canvas.addEventListener('pointercancel', onTlDragPointerEnd);
+
+    canvas.addEventListener('pointerdown', function (ev) {
+      if (!tlSelectMode || !mainChart || !candleSeries || !selectedTlId) return;
+      if (ev.pointerType !== 'mouse' || !ev.isPrimary) return;
+      if (ev.button !== 0 && ev.button !== 2) return;
+      if (tlRmbDrag) return;
+      var rect = canvas.getBoundingClientRect();
+      var px = ev.clientX - rect.left;
+      var py = ev.clientY - rect.top;
+      var wrap = document.getElementById('sc-main-wrap');
+      var wid = wrap ? wrap.clientWidth : 0;
+      var hit = hitTestTrendlineIds(px, py, wid);
+      if (hit !== selectedTlId) return;
+      var tl = findTrendlineById(selectedTlId);
+      if (!tl) return;
+      var ep = getTrendlinePixelEndpoints(tl, wid);
+      if (!ep) return;
+      ev.preventDefault();
+      var grab = projectPointToSegment(px, py, ep.x1, ep.y1, ep.x2, ep.y2);
+      tlRmbDrag = {
+        tlId: selectedTlId,
+        ep0: { x1: ep.x1, y1: ep.y1, x2: ep.x2, y2: ep.y2 },
+        gx: grab.x,
+        gy: grab.y,
+        pointerId: ev.pointerId,
+        button: ev.button,
+        didMove: false,
+        downPx: px,
+        downPy: py
+      };
+      try {
+        if (typeof canvas.setPointerCapture === 'function') {
+          canvas.setPointerCapture(ev.pointerId);
+        }
+      } catch (_) {}
+    });
+
     canvas.addEventListener('click', function (ev) {
+      if (tlSelectMode && mainChart) {
+        if (tlSuppressSelectClick) {
+          tlSuppressSelectClick = false;
+          ev.stopPropagation();
+          return;
+        }
+        var rect = canvas.getBoundingClientRect();
+        var px = ev.clientX - rect.left;
+        var py = ev.clientY - rect.top;
+        var wrap = document.getElementById('sc-main-wrap');
+        var wid = wrap ? wrap.clientWidth : 0;
+        var hit = hitTestTrendlineIds(px, py, wid);
+        setSelectedTrendline(hit);
+        ev.stopPropagation();
+        return;
+      }
       if (!tlMode || !mainChart) return;
       var pt = canvasPointToChart(ev);
       if (!pt) return;
       if (tlAnchors.length === 0) {
         tlAnchors.push(pt);
+        var prim = canvasPixelFromClient(ev.clientX, ev.clientY);
+        if (prim) tlPreviewPx = prim;
+        attachTlDraftPreviewListeners();
+        scheduleDrawTrendlines();
         return;
       }
       var a0 = tlAnchors[0];
+      var ax = timeToCoordinateExtrapolated(a0.time);
+      var ay = candleSeries.priceToCoordinate(a0.price);
+      var bx = timeToCoordinateExtrapolated(pt.time);
+      var by = candleSeries.priceToCoordinate(pt.price);
+      if (tlPulseTimer) {
+        clearTimeout(tlPulseTimer);
+        tlPulseTimer = null;
+      }
+      tlAnchorPulse = (ax != null && ay != null && bx != null && by != null)
+        ? [{ x: ax, y: ay }, { x: bx, y: by }]
+        : null;
       tlAnchors = [];
+      detachTlDraftPreviewListeners();
       trendlines.push({
         id: uid(),
         time1: a0.time,
@@ -876,6 +1330,13 @@
       scheduleSaveAnnotations();
       drawTrendlines();
       renderChips();
+      if (tlAnchorPulse) {
+        tlPulseTimer = setTimeout(function () {
+          tlPulseTimer = null;
+          tlAnchorPulse = null;
+          drawTrendlines();
+        }, 450);
+      }
     });
   }
 
@@ -1158,11 +1619,20 @@
       var chip = document.createElement('span');
       chip.className = 'sc-chip';
       chip.style.opacity = '0.9';
+      if (tl.id === selectedTlId) chip.classList.add('sc-tl-selected');
       chip.innerHTML = 'TL ' + (idx + 1) +
-        '<span class="sc-chip-remove" data-tlid="' + (tl.id || idx) + '">\u00d7</span>';
+        '<span class="sc-chip-remove" data-tlid="' + tl.id + '">\u00d7</span>';
+      chip.addEventListener('click', function (e) {
+        if (e.target.closest && e.target.closest('.sc-chip-remove')) return;
+        setSelectedTrendline(tl.id === selectedTlId ? null : tl.id);
+      });
       chip.querySelector('.sc-chip-remove').addEventListener('click', function (e) {
         e.stopPropagation();
         var id = tl.id;
+        if (selectedTlId === id) {
+          selectedTlId = null;
+          updateDeleteSelectedTlButton();
+        }
         trendlines = trendlines.filter(function (x) { return x.id !== id; });
         scheduleSaveAnnotations();
         drawTrendlines();
@@ -1283,9 +1753,17 @@
 
   function setupGlobalUiHandlers() {
     document.addEventListener('keydown', function (ev) {
-      if (ev.key !== 'Escape') return;
-      closeAllPanels(null);
-      exitTrendlineMode();
+      if (ev.key === 'Escape') {
+        closeAllPanels(null);
+        exitTrendlineMode();
+        exitTlSelectMode();
+        return;
+      }
+      if ((ev.key === 'Delete' || ev.key === 'Backspace') && selectedTlId) {
+        if (isTypingTarget(ev.target)) return;
+        ev.preventDefault();
+        deleteSelectedTrendline();
+      }
     });
 
     document.addEventListener('mousedown', function (ev) {
@@ -1382,18 +1860,47 @@
     if (tlBtn && canvas) {
       tlBtn.addEventListener('click', function (ev) {
         ev.stopPropagation();
-        tlMode = !tlMode;
-        tlBtn.classList.toggle('active', tlMode);
-        tlBtn.setAttribute('aria-pressed', tlMode ? 'true' : 'false');
-        canvas.classList.toggle('draw-mode', tlMode);
+        if (tlMode) {
+          exitTrendlineMode();
+          return;
+        }
+        exitTlSelectMode();
+        if (selectedTlId) {
+          selectedTlId = null;
+          updateDeleteSelectedTlButton();
+          drawTrendlines();
+          renderChips();
+        }
+        tlMode = true;
+        tlBtn.classList.add('active');
+        tlBtn.setAttribute('aria-pressed', 'true');
+        canvas.classList.add('draw-mode');
         tlAnchors = [];
-        if (tlMode) closeAllPanels(null);
+        closeAllPanels(null);
+      });
+    }
+
+    var selTlBtn = document.getElementById('sc-tl-select-btn');
+    if (selTlBtn && canvas) {
+      selTlBtn.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        setTlSelectMode(!tlSelectMode);
+      });
+    }
+
+    var delSelBtn = document.getElementById('sc-delete-selected-tl');
+    if (delSelBtn) {
+      delSelBtn.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        deleteSelectedTrendline();
       });
     }
 
     document.getElementById('sc-clear-tl') && document.getElementById('sc-clear-tl').addEventListener('click', function () {
       trendlines = [];
       tlAnchors = [];
+      selectedTlId = null;
+      updateDeleteSelectedTlButton();
       scheduleSaveAnnotations();
       drawTrendlines();
       renderChips();
@@ -1533,6 +2040,7 @@
     });
     setupUI();
     renderChips();
+    updateDeleteSelectedTlButton();
   };
 
   if (document.readyState === 'loading') {

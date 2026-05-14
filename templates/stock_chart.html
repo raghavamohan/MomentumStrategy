@@ -48,6 +48,9 @@
 .sc-rsi-wrap{position:relative;height:120px;border-top:1px solid var(--border)}
 .sc-trendline-canvas{position:absolute;inset:0;pointer-events:none;z-index:10}
 .sc-trendline-canvas.draw-mode{pointer-events:all;cursor:crosshair}
+.sc-trendline-canvas.select-mode{pointer-events:all;cursor:pointer}
+.sc-chip.sc-tl-selected{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.sc-control-btn:disabled{opacity:.45;cursor:not-allowed}
 .sc-status{padding:var(--space-3);color:var(--muted);font-size:14px}
 .sc-panel{position:absolute;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-3);box-shadow:0 8px 24px rgba(0,0,0,.3);min-width:220px}
 .sc-panel h3{margin:0 0 10px;font-size:13px;font-weight:700}
@@ -88,7 +91,9 @@
     <div class="sc-controls">
       <button type="button" class="sc-control-btn" id="sc-add-ind">+ Indicator</button>
       <button type="button" class="sc-control-btn" id="sc-add-lvl">+ Level</button>
-      <button type="button" class="sc-control-btn" id="sc-trendline-btn" aria-pressed="false" title="Draw trendlines; hold Shift on second click to extend">✎ Trendline</button>
+      <button type="button" class="sc-control-btn" id="sc-trendline-btn" aria-pressed="false" title="Draw trendlines: first click anchors a point; move to preview; second click finishes. Shift+second click extends">✎ Trendline</button>
+      <button type="button" class="sc-control-btn" id="sc-tl-select-btn" aria-pressed="false" title="Select a trendline; drag on the line (left or right button) — the grab point stays under the cursor">Select TL</button>
+      <button type="button" class="sc-control-btn" id="sc-delete-selected-tl" disabled title="Remove the selected trendline">Remove selected</button>
       <button type="button" class="sc-control-btn" id="sc-clear-tl" title="Remove all trendlines (horizontal levels unchanged)">Clear trendlines</button>
       <label class="sc-control-btn" style="cursor:pointer">
         <input type="checkbox" id="sc-show-vol" checked style="margin-right:4px">Vol
@@ -101,7 +106,8 @@
 
   <p class="sc-help" id="sc-help">
     <strong>Chart:</strong> drag to pan; scroll or pinch to zoom.
-    <strong>Trendline:</strong> click two points on the chart; hold <kbd style="font-size:11px;padding:1px 4px;border-radius:4px;border:1px solid var(--border)">Shift</kbd> on the second click to extend the line.
+    <strong>Trendline:</strong> turn on <em>Trendline</em>, click the first point (marked), move the pointer to preview the line, click again to finish; hold <kbd style="font-size:11px;padding:1px 4px;border-radius:4px;border:1px solid var(--border)">Shift</kbd> on the second click to extend.
+    <strong>Select:</strong> turn on <em>Select TL</em>, click a line (or its chip), then <kbd style="font-size:11px;padding:1px 4px;border-radius:4px;border:1px solid var(--border)">Delete</kbd> or <em>Remove selected</em>. <strong>Move:</strong> with a line selected, drag on the line with the <strong>left or right</strong> mouse button — the point you grabbed stays under the cursor while the whole line moves parallel (same slope).
   </p>
 
   <div id="sc-chips" class="sc-indicator-chips"></div>
