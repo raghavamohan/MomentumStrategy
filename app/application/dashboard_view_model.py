@@ -320,7 +320,7 @@ async def build_dashboard_view_model(
             tokens |= watch_tokens
             tokens = {t for t in tokens if t > 0}
             live_price_stream.subscribe(tokens)
-            live_ltp_by_token = live_price_stream.snapshot_ltp(tokens, wait_seconds=0.0)
+            live_ltp_by_token = live_price_stream.snapshot_ltp(tokens)
         except Exception:
             live_ltp_by_token = {}
     dashboard_timing_mark(timings, "live_price_stream_bootstrap", request_start)

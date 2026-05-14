@@ -32,7 +32,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
@@ -90,11 +92,9 @@ def _ts_ms(last_trade_time: object) -> int:
     if isinstance(last_trade_time, datetime):
         # Make timezone-aware if naive (Kite returns IST aware or naive)
         if last_trade_time.tzinfo is None:
-            from zoneinfo import ZoneInfo
             last_trade_time = last_trade_time.replace(tzinfo=ZoneInfo("Asia/Kolkata"))
         return int(last_trade_time.astimezone(timezone.utc).timestamp() * 1000)
     # Fallback: current time
-    import time
     return int(time.time() * 1000)
 
 

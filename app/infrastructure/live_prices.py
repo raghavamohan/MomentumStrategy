@@ -24,6 +24,7 @@ from collections.abc import Callable
 from kiteconnect import KiteTicker
 
 from app.env_util import dashboard_ws_debug_enabled, log_dashboard_ws_debug_exception
+from app.events import emit_cache_refresh
 from app.infrastructure.state_store import state_store
 from app.infrastructure.tick_hub import tick_hub
 
@@ -161,8 +162,8 @@ class LivePriceStream:
                 if self._connected:
                     self._ticker.unsubscribe(list(to_remove))
 
-    def snapshot_ltp(self, instrument_tokens: set[int], wait_seconds: float = 0.6) -> dict[int, float]:
-        """Return latest known LTP values for tokens."""
+    def snapshot_ltp(self, instrument_tokens: set[int]) -> dict[int, float]:
+        """Return latest known LTP values for tokens (from the live tick store)."""
         wanted = _positive_instrument_tokens(instrument_tokens)
         if not wanted:
             return {}
@@ -220,8 +221,6 @@ class LivePriceStream:
         self._connected = False
         self._subscribed_tokens.clear()
 
-
-
     def add_cache_refresh_listener(self, callback: CacheRefreshListener) -> None:
         """Register a callback invoked when on-disk / reference caches finish refreshing."""
         with self._lock:
@@ -250,6 +249,4 @@ live_price_stream = LivePriceStream()
 
 def notify_dashboard_cache_refresh() -> None:
     """Backward-compatible alias for cache refresh emission."""
-    from app.events import emit_cache_refresh
-
     emit_cache_refresh()

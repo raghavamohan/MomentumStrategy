@@ -5,12 +5,14 @@ A Python application that provides a local web dashboard and CLI to visualize yo
 ## Features
 
 - **Consolidated Portfolio**: View equity holdings, mutual funds (with P&L), open positions (Equity & F&O), and cash balances in one place.
-- **Live Updates**: Equity and F&O prices are updated live via Kite WebSocket (`KiteTicker`).
+- **Live Updates**: Equity and F&O prices are updated live via Kite WebSocket (`KiteTicker`), pushed to the browser on `WS /ws/live-prices`. Your Kite app must have **WebSocket market data** enabled in the [developer console](https://developers.kite.trade) for live quotes to stream.
+- **Live Stock Chart**: Full-page candlesticks from Kite historical data ([TradingView Lightweight Charts](https://www.tradingview.com/lightweight-charts/)), with multi-interval views, optional indicators, trendlines and price levels. Live ticks and depth use `WS /ws/chart-ticks` (MODE_FULL). Annotations persist under the project `.cache/` directory (see `GET`/`POST`/`DELETE /dashboard/chart-annotations`).
 - **Rich Insights**: 
   - Resolves equity sectors using NSE archives and yfinance.
   - Enriches Mutual Funds with underlying stock and sector composition via `mfdata.in`.
   - Displays the current India market regime via MarketSmith India.
 - **Dual Interfaces**: Choose between a visual, tabbed local web dashboard or a fast CLI report.
+- **JSON API**: `GET /api/v1/portfolio/snapshot` returns the same dashboard payload as JSON (Bearer token auth for scripts); `GET /api/v1/health` for a simple probe.
 
 ## Prerequisites & Setup
 
@@ -25,12 +27,7 @@ pip install -r requirements.txt
 ```
 
 **Configuration**:
-Copy `.env.example` to `.env` and configure your credentials:
-```env
-KITE_API_KEY=your_api_key_here
-KITE_API_SECRET=your_api_secret_here
-KITE_DASHBOARD_NAME=My Portfolio
-```
+Copy `.env.example` to `.env` and set at least `KITE_API_KEY` and `KITE_API_SECRET`. Optional variables (snapshot interval, header indices, session secret, cache warmup, etc.) are documented inline in `.env.example`.
 
 ## Running the App
 
@@ -41,6 +38,12 @@ Provides a rich, live-updating tabbed UI.
 python -m app.server
 ```
 The server binds to `127.0.0.1:5000` and automatically opens your default browser. Click **Login with Zerodha** to authenticate. The session and access token are cached locally for the trading day.
+
+Same ASGI app is also importable as `app.server:app`. Equivalently you can run `python -m app.web` (shim) or, for example:
+
+```powershell
+uvicorn app.server:app --host 127.0.0.1 --port 5000
+```
 
 ### CLI
 Best for quick terminal checks or scripting.
@@ -60,8 +63,15 @@ External APIs (Kite REST/WS, NSE, yfinance, mfdata.in, MarketSmith)
           |
   app/domain/portfolio_model.py (Normalization, sector resolution, aggregates)
           |
-  app/server.py (Web) & app/cli_client.py (CLI)
+  app/application/dashboard_view_model.py (Dashboard + stock history context)
+          |
+  app/server.py (FastAPI app, static files, route wiring)
+          + app/presentation/http/routes/*.py (HTML, JSON, WebSockets)
+          |
+  app/cli_client.py (CLI)
 ```
+
+Front-end assets for the stock chart live under `static/js/` (`lightweight-charts*.js`, `stock_chart.js`); templates under `templates/`.
 
 **Data Sources Used**:
 - **Zerodha Kite Connect**: Core account data, holdings, positions, and live WebSocket prices.
@@ -75,3 +85,4 @@ External APIs (Kite REST/WS, NSE, yfinance, mfdata.in, MarketSmith)
 - **Read-Only**: The app only reads data. It **does not** place, modify, or cancel orders.
 - **Local Network**: The dashboard runs exclusively on `localhost` (`127.0.0.1`) by default for security.
 - **Mutual Funds Module**: Your Kite Connect app must have the Mutual Funds module enabled to view MF holdings. If disabled, the app will gracefully skip the section.
+- **Chart annotations**: Saved annotations are written to `.cache/chart_annotations.json` (single file, not coordinated across multiple browser tabs or processes).

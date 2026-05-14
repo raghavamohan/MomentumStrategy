@@ -1,7 +1,7 @@
 """Neutral cache-refresh notifications (decoupled from WebSocket / dashboard).
 
 Lower layers emit :func:`emit_cache_refresh`; the server lifespan wires subscribers
-(e.g. :meth:`app.live_prices.LivePriceStream.notify_cache_refresh`).
+(e.g. :meth:`app.infrastructure.live_prices.LivePriceStream.notify_cache_refresh`).
 """
 
 from __future__ import annotations
