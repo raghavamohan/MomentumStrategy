@@ -94,10 +94,7 @@
     if (typeof rsiChart.timeScale().setVisibleLogicalRange !== 'function') return;
     paneRangeSyncing = true;
     try {
-      rsiChart.timeScale().setVisibleLogicalRange({
-        from: lr.from - RSI_PERIOD,
-        to: lr.to - RSI_PERIOD
-      });
+      rsiChart.timeScale().setVisibleLogicalRange({ from: lr.from, to: lr.to });
     } catch (_) {}
     paneRangeSyncing = false;
   }
@@ -152,9 +149,19 @@
     return out;
   }
 
+  /**
+   * RSI(period) with leading whitespace so the RSI series has one slot per
+   * candle bar. Same logical bar count + same `rightOffset` lets the two
+   * charts share a 1:1 visible-logical-range mirror with no clamping.
+   */
   function calcRSI(bars, period) {
-    if (bars.length < period + 1) return [];
-    var gains = 0, losses = 0, out = [];
+    var out = [];
+    var prefixCount = Math.min(period, bars.length);
+    for (var k = 0; k < prefixCount; k++) {
+      out.push({ time: bars[k].time });
+    }
+    if (bars.length < period + 1) return out;
+    var gains = 0, losses = 0;
     for (var i = 1; i <= period; i++) {
       var d = bars[i].close - bars[i - 1].close;
       if (d >= 0) gains += d; else losses -= d;
@@ -249,6 +256,20 @@
     return new Intl.DateTimeFormat('en-CA', {
       timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit'
     }).format(new Date(tsMs));
+  }
+
+  /** IST YYYY-MM-DD for a bar `time` (daily string, unix sec, or parseable datetime). */
+  function istDayKeyForBar(b) {
+    if (!b || b.time == null) return '';
+    var t = b.time;
+    if (typeof t === 'string' && t.length === 10 && /^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
+    if (typeof t === 'number' && isFinite(t)) return istDayString(t * 1000);
+    if (typeof t === 'string') {
+      var ms = new Date(t).getTime();
+      if (isFinite(ms)) return istDayString(ms);
+    }
+    var utc = barToUtcMs(b);
+    return utc ? istDayString(utc) : '';
   }
 
   function liveBarTimeToSec(t) {
@@ -389,7 +410,7 @@
    * infer height from CSS alone; ResizeObserver previously updated width only,
    * which left the RSI pane at 0 height after the chart area became visible.
    * Do not call alignRsiTimeScaleToMain here — that fights user zoom/pan; range
-   * sync is handled by subscribeVisibleLogicalRangeChange.
+   * sync is handled by main → RSI subscribeVisibleLogicalRangeChange.
    */
   function syncChartPaneSizes() {
     var area = document.getElementById('sc-chart-area');
@@ -537,33 +558,18 @@
       price: 50, color: 'rgba(148,163,184,.3)', lineWidth: 1, lineStyle: 3, axisLabelVisible: false
     });
 
-    // Sync by *visible logical range*. We can't use time-range sync (which the
-    // earlier implementation did): Lightweight Charts' getVisibleRange() clamps
-    // `to` to the last data bar, which strips the rightOffset gutter — the
-    // back-sync from RSI then overwrites main's range and pins the latest candle
-    // to the right edge. getVisibleLogicalRange() returns the unclamped range,
-    // gutter and all. RSI starts RSI_PERIOD bars later than the candle series,
-    // so logical index N on main maps to N - RSI_PERIOD on RSI (and vice versa)
-    // to keep calendar times aligned at every x position.
+    // Sync main → RSI by *visible logical range*, 1:1 (no offset).
+    // RSI is padded with whitespace prefix in calcRSI, so both series have the
+    // same logical bar count and identical times. Mirroring with no offset
+    // means Lightweight Charts has nothing to clamp on the RSI side, which
+    // previously destabilized the layout and let the live candle drift out of
+    // view after enough ticks/resizes. RSI → main is intentionally omitted to
+    // keep the main viewport authoritative.
     mainChart.timeScale().subscribeVisibleLogicalRangeChange(function (r) {
       if (paneRangeSyncing || !rsiChart || !r || r.from == null || r.to == null) return;
       paneRangeSyncing = true;
       try {
-        rsiChart.timeScale().setVisibleLogicalRange({
-          from: r.from - RSI_PERIOD,
-          to: r.to - RSI_PERIOD
-        });
-      } catch (_) {}
-      paneRangeSyncing = false;
-    });
-    rsiChart.timeScale().subscribeVisibleLogicalRangeChange(function (r) {
-      if (paneRangeSyncing || !mainChart || !r || r.from == null || r.to == null) return;
-      paneRangeSyncing = true;
-      try {
-        mainChart.timeScale().setVisibleLogicalRange({
-          from: r.from + RSI_PERIOD,
-          to: r.to + RSI_PERIOD
-        });
+        rsiChart.timeScale().setVisibleLogicalRange({ from: r.from, to: r.to });
       } catch (_) {}
       paneRangeSyncing = false;
     });
@@ -938,9 +944,12 @@
 
   function onTick(tick) {
     if (!candleSeries || !allBars.length || !liveBar) return;
+
+    var ltp = Number(tick.ltp);
+    if (!isFinite(ltp) || ltp <= 0) return;
+
     lastTick = tick;
 
-    var ltp = Number(tick.ltp) || 0;
     var tsMs = Number(tick.ts) || Date.now();
     var tsSec = Math.floor(tsMs / 1000);
     var ivCfg = IV_CFG[currentIv] || IV_CFG.day;
@@ -950,7 +959,15 @@
     var newBar = false;
     if (kiteIv === 'day') {
       var dStr = istDayString(tsMs);
-      if (dStr !== liveBar.time) {
+      var lastDayKey = istDayKeyForBar(liveBar);
+      if (lastDayKey) {
+        if (dStr < lastDayKey) return;
+        if (dStr > lastDayKey) {
+          newBar = true;
+          allBars.push({ time: dStr, open: ltp, high: ltp, low: ltp, close: ltp, volume: Number(tick.ltq) || 0 });
+          liveBar = allBars[allBars.length - 1];
+        }
+      } else if (dStr !== liveBar.time) {
         newBar = true;
         allBars.push({ time: dStr, open: ltp, high: ltp, low: ltp, close: ltp, volume: Number(tick.ltq) || 0 });
         liveBar = allBars[allBars.length - 1];
@@ -1470,12 +1487,12 @@
         hideStatus();
         showArea();
         syncChartPaneSizes();
-        // Suppress main<->RSI range sync while we seed every series with setData.
-        // Each setData triggers its chart's auto-fit (including the rightOffset
-        // gutter on its own series). With sync live, RSI's auto-fit to its
-        // shorter series gets back-propagated to main and shifts main's left
-        // edge by RSI_PERIOD bars. We re-sync explicitly via
-        // alignRsiTimeScaleToMain() once all data is in place.
+        // Suppress main → RSI range sync while we seed every series with
+        // setData. Each setData triggers its chart's auto-fit (including the
+        // rightOffset gutter). Letting the sync mirror those intermediate
+        // states drives multiple competing time-scale fits and can leave the
+        // live candle drifting out of view across subsequent ticks/resizes.
+        // We re-sync once explicitly via alignRsiTimeScaleToMain() below.
         paneRangeSyncing = true;
         try {
           candleSeries.setData(bars);
