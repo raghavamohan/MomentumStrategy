@@ -9,6 +9,7 @@
   var SAVE_DEBOUNCE_MS = 500;
   var WS_RECONNECT_MS = 4000;
   var STALE_TICK_MS = 90000;
+  var RIGHT_OFFSET_BARS = 30;
 
   // ── Bootstrap ────────────────────────────────────────────────────────────
   var boot = {};
@@ -43,7 +44,7 @@
     grid: { vertLines: { color: 'rgba(148,163,184,.08)' }, horzLines: { color: 'rgba(148,163,184,.08)' } },
     crosshair: { mode: 1 },
     rightPriceScale: { borderColor: 'rgba(148,163,184,.15)' },
-    timeScale: { borderColor: 'rgba(148,163,184,.15)', fixLeftEdge: true }
+    timeScale: { borderColor: 'rgba(148,163,184,.15)', fixLeftEdge: true, rightOffset: RIGHT_OFFSET_BARS }
   };
 
   // ── State ────────────────────────────────────────────────────────────────
@@ -83,19 +84,22 @@
   /** 0 idle, 1 syncing from main crosshair, 2 from RSI — prevents feedback loops */
   var crosshairSyncGuard = 0;
 
-  /** Prevents ping-pong when mirroring visible *time* between main and RSI charts. */
-  var tsTimeSyncing = false;
+  /** Prevents ping-pong when mirroring visible *logical range* between main and RSI charts. */
+  var paneRangeSyncing = false;
 
   function alignRsiTimeScaleToMain() {
     if (!mainChart || !rsiChart) return;
-    var vr = mainChart.timeScale().getVisibleRange();
-    if (!vr || vr.from == null || vr.to == null) return;
-    if (typeof rsiChart.timeScale().setVisibleRange !== 'function') return;
-    tsTimeSyncing = true;
+    var lr = mainChart.timeScale().getVisibleLogicalRange();
+    if (!lr || lr.from == null || lr.to == null) return;
+    if (typeof rsiChart.timeScale().setVisibleLogicalRange !== 'function') return;
+    paneRangeSyncing = true;
     try {
-      rsiChart.timeScale().setVisibleRange(vr);
+      rsiChart.timeScale().setVisibleLogicalRange({
+        from: lr.from - RSI_PERIOD,
+        to: lr.to - RSI_PERIOD
+      });
     } catch (_) {}
-    tsTimeSyncing = false;
+    paneRangeSyncing = false;
   }
 
   function uid() { return Math.random().toString(36).slice(2); }
@@ -384,8 +388,8 @@
    * Apply measured width/height to Lightweight Charts panes. The library does not
    * infer height from CSS alone; ResizeObserver previously updated width only,
    * which left the RSI pane at 0 height after the chart area became visible.
-   * Do not call alignRsiTimeScaleToMain here — that fights user zoom/pan; time
-   * sync is handled by subscribeVisibleTimeRangeChange.
+   * Do not call alignRsiTimeScaleToMain here — that fights user zoom/pan; range
+   * sync is handled by subscribeVisibleLogicalRangeChange.
    */
   function syncChartPaneSizes() {
     var area = document.getElementById('sc-chart-area');
@@ -533,39 +537,36 @@
       price: 50, color: 'rgba(148,163,184,.3)', lineWidth: 1, lineStyle: 3, axisLabelVisible: false
     });
 
-    var syncing = false;
-    // Sync by *visible time* — RSI has fewer points than candles, so logical indices never match.
-    if (typeof mainChart.timeScale().subscribeVisibleTimeRangeChange === 'function') {
-      mainChart.timeScale().subscribeVisibleTimeRangeChange(function (range) {
-        if (tsTimeSyncing || !rsiChart || !range || range.from == null || range.to == null) return;
-        tsTimeSyncing = true;
-        try {
-          rsiChart.timeScale().setVisibleRange(range);
-        } catch (_) {}
-        tsTimeSyncing = false;
-      });
-      rsiChart.timeScale().subscribeVisibleTimeRangeChange(function (range) {
-        if (tsTimeSyncing || !mainChart || !range || range.from == null || range.to == null) return;
-        tsTimeSyncing = true;
-        try {
-          mainChart.timeScale().setVisibleRange(range);
-        } catch (_) {}
-        tsTimeSyncing = false;
-      });
-    } else {
-      mainChart.timeScale().subscribeVisibleLogicalRangeChange(function (r) {
-        if (syncing || !r) return;
-        syncing = true;
-        rsiChart.timeScale().setVisibleLogicalRange(r);
-        syncing = false;
-      });
-      rsiChart.timeScale().subscribeVisibleLogicalRangeChange(function (r) {
-        if (syncing || !r) return;
-        syncing = true;
-        mainChart.timeScale().setVisibleLogicalRange(r);
-        syncing = false;
-      });
-    }
+    // Sync by *visible logical range*. We can't use time-range sync (which the
+    // earlier implementation did): Lightweight Charts' getVisibleRange() clamps
+    // `to` to the last data bar, which strips the rightOffset gutter — the
+    // back-sync from RSI then overwrites main's range and pins the latest candle
+    // to the right edge. getVisibleLogicalRange() returns the unclamped range,
+    // gutter and all. RSI starts RSI_PERIOD bars later than the candle series,
+    // so logical index N on main maps to N - RSI_PERIOD on RSI (and vice versa)
+    // to keep calendar times aligned at every x position.
+    mainChart.timeScale().subscribeVisibleLogicalRangeChange(function (r) {
+      if (paneRangeSyncing || !rsiChart || !r || r.from == null || r.to == null) return;
+      paneRangeSyncing = true;
+      try {
+        rsiChart.timeScale().setVisibleLogicalRange({
+          from: r.from - RSI_PERIOD,
+          to: r.to - RSI_PERIOD
+        });
+      } catch (_) {}
+      paneRangeSyncing = false;
+    });
+    rsiChart.timeScale().subscribeVisibleLogicalRangeChange(function (r) {
+      if (paneRangeSyncing || !mainChart || !r || r.from == null || r.to == null) return;
+      paneRangeSyncing = true;
+      try {
+        mainChart.timeScale().setVisibleLogicalRange({
+          from: r.from + RSI_PERIOD,
+          to: r.to + RSI_PERIOD
+        });
+      } catch (_) {}
+      paneRangeSyncing = false;
+    });
 
     mainChart.subscribeCrosshairMove(function (param) {
       syncRsiCrosshairFromMain(param);
@@ -1469,19 +1470,30 @@
         hideStatus();
         showArea();
         syncChartPaneSizes();
-        candleSeries.setData(bars);
-        volSeries.setData(bars.map(function (b) {
-          return {
-            time: b.time,
-            value: b.volume,
-            color: b.close >= b.open ? 'rgba(34,197,94,.35)' : 'rgba(239,68,68,.35)'
-          };
-        }));
-        volSeries.applyOptions({ visible: showVolume });
-        liveBar = Object.assign({}, bars[bars.length - 1]);
-        allBars[allBars.length - 1] = liveBar;
-        refreshIndicators();
-        restoreLevels();
+        // Suppress main<->RSI range sync while we seed every series with setData.
+        // Each setData triggers its chart's auto-fit (including the rightOffset
+        // gutter on its own series). With sync live, RSI's auto-fit to its
+        // shorter series gets back-propagated to main and shifts main's left
+        // edge by RSI_PERIOD bars. We re-sync explicitly via
+        // alignRsiTimeScaleToMain() once all data is in place.
+        paneRangeSyncing = true;
+        try {
+          candleSeries.setData(bars);
+          volSeries.setData(bars.map(function (b) {
+            return {
+              time: b.time,
+              value: b.volume,
+              color: b.close >= b.open ? 'rgba(34,197,94,.35)' : 'rgba(239,68,68,.35)'
+            };
+          }));
+          volSeries.applyOptions({ visible: showVolume });
+          liveBar = Object.assign({}, bars[bars.length - 1]);
+          allBars[allBars.length - 1] = liveBar;
+          refreshIndicators();
+          restoreLevels();
+        } finally {
+          paneRangeSyncing = false;
+        }
         renderChips();
         drawTrendlines();
         alignRsiTimeScaleToMain();
