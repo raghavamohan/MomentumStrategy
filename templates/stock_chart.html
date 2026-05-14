@@ -92,7 +92,7 @@
       <button type="button" class="sc-control-btn" id="sc-add-ind">+ Indicator</button>
       <button type="button" class="sc-control-btn" id="sc-add-lvl">+ Level</button>
       <button type="button" class="sc-control-btn" id="sc-trendline-btn" aria-pressed="false" title="Draw trendlines: first click anchors a point; move to preview; second click finishes. Shift+second click extends">✎ Trendline</button>
-      <button type="button" class="sc-control-btn" id="sc-tl-select-btn" aria-pressed="false" title="Select a trendline; drag on the line (left or right button) — the grab point stays under the cursor">Select TL</button>
+      <button type="button" class="sc-control-btn" id="sc-tl-select-btn" aria-pressed="false" title="Select a trendline; drag the line body to move parallel; drag a round handle to move that anchor only">Select TL</button>
       <button type="button" class="sc-control-btn" id="sc-delete-selected-tl" disabled title="Remove the selected trendline">Remove selected</button>
       <button type="button" class="sc-control-btn" id="sc-clear-tl" title="Remove all trendlines (horizontal levels unchanged)">Clear trendlines</button>
       <label class="sc-control-btn" style="cursor:pointer">
@@ -107,7 +107,7 @@
   <p class="sc-help" id="sc-help">
     <strong>Chart:</strong> drag to pan; scroll or pinch to zoom.
     <strong>Trendline:</strong> turn on <em>Trendline</em>, click the first point (marked), move the pointer to preview the line, click again to finish; hold <kbd style="font-size:11px;padding:1px 4px;border-radius:4px;border:1px solid var(--border)">Shift</kbd> on the second click to extend.
-    <strong>Select:</strong> turn on <em>Select TL</em>, click a line (or its chip), then <kbd style="font-size:11px;padding:1px 4px;border-radius:4px;border:1px solid var(--border)">Delete</kbd> or <em>Remove selected</em>. <strong>Move:</strong> with a line selected, drag on the line with the <strong>left or right</strong> mouse button — the point you grabbed stays under the cursor while the whole line moves parallel (same slope).
+    <strong>Select:</strong> turn on <em>Select TL</em>, click a line (or its chip), then <kbd style="font-size:11px;padding:1px 4px;border-radius:4px;border:1px solid var(--border)">Delete</kbd> or <em>Remove selected</em>. <strong>Parallel move:</strong> drag the <em>line between</em> the two round handles (left or right button) — both anchors move together. <strong>Reshape one end:</strong> start the drag <em>on a handle</em> (left or right) — only that anchor moves until you release.
   </p>
 
   <div id="sc-chips" class="sc-indicator-chips"></div>

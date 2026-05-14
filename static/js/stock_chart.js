@@ -81,6 +81,8 @@
   var tlSelectMode = false;
   var selectedTlId = null;
   var TL_HIT_PX = 10;
+  /** Pixel radius to grab start/end handles when reshaping with right-drag. */
+  var TL_HANDLE_HIT_PX = 14;
   var tlRmbDrag = null;
   var tlSuppressSelectClick = false;
   var tlRedrawRaf = null;
@@ -1043,13 +1045,22 @@
     ctx.stroke();
   }
 
-  function getTrendlinePixelEndpoints(tl, w) {
+  /** Raw chart pixels for time1/price1 and time2/price2 (not segment-extended). */
+  function getTrendlineAnchorPixels(tl) {
     if (!mainChart || !candleSeries) return null;
     var x1 = timeToCoordinateExtrapolated(tl.time1);
     var y1 = candleSeries.priceToCoordinate(tl.price1);
     var x2 = timeToCoordinateExtrapolated(tl.time2);
     var y2 = candleSeries.priceToCoordinate(tl.price2);
     if (x1 == null || y1 == null || x2 == null || y2 == null) return null;
+    return { x1: x1, y1: y1, x2: x2, y2: y2 };
+  }
+
+  function getTrendlinePixelEndpoints(tl, w) {
+    if (!mainChart || !candleSeries) return null;
+    var anchors = getTrendlineAnchorPixels(tl);
+    if (!anchors) return null;
+    var x1 = anchors.x1, y1 = anchors.y1, x2 = anchors.x2, y2 = anchors.y2;
     if (tl.extended && x1 !== x2) {
       var dx = x2 - x1, dy = y2 - y1;
       var t0 = (-x1) / dx;
@@ -1064,6 +1075,31 @@
       };
     }
     return { x1: x1, y1: y1, x2: x2, y2: y2 };
+  }
+
+  /** 1 = first anchor, 2 = second; null if outside handle radius. */
+  function hitTestTrendlineHandle(px, py, tl) {
+    var ap = getTrendlineAnchorPixels(tl);
+    if (!ap) return null;
+    var d1 = Math.hypot(px - ap.x1, py - ap.y1);
+    var d2 = Math.hypot(px - ap.x2, py - ap.y2);
+    if (d1 <= TL_HANDLE_HIT_PX && d1 <= d2) return 1;
+    if (d2 <= TL_HANDLE_HIT_PX) return 2;
+    return null;
+  }
+
+  /**
+   * Hit for parallel line move: on the drawn segment but not on an endpoint handle.
+   * Handles always resize one anchor (left or right button); the line body moves both.
+   */
+  function hitTestTrendlineParallelBody(px, py, tl, w) {
+    if (!tl) return false;
+    var ep = getTrendlinePixelEndpoints(tl, w);
+    if (!ep) return false;
+    if (distPointToSegment(px, py, ep.x1, ep.y1, ep.x2, ep.y2) > TL_HIT_PX) return false;
+    var h = hitTestTrendlineHandle(px, py, tl);
+    if (h != null) return false;
+    return true;
   }
 
   function distPointToSegment(px, py, x1, y1, x2, y2) {
@@ -1141,6 +1177,13 @@
       ctx.lineTo(ep.x2, ep.y2);
       ctx.stroke();
       ctx.setLineDash([]);
+      if (sel) {
+        var ap = getTrendlineAnchorPixels(tl);
+        if (ap) {
+          drawAnchorMarker(ctx, ap.x1, ap.y1);
+          drawAnchorMarker(ctx, ap.x2, ap.y2);
+        }
+      }
     });
 
     if (tlMode && tlAnchors.length === 1 && mainChart && candleSeries) {
@@ -1188,6 +1231,32 @@
       endTlRmbDrag();
       return;
     }
+    if (tlRmbDrag.mode === 'endpoint') {
+      var p = canvasPixelFromClient(ev.clientX, ev.clientY);
+      if (!p) return;
+      var time = coordinateToTimeExtrapolated(p.x);
+      var price = coordinateToPriceExtrapolated(p.y);
+      if (time == null || price == null) return;
+      var fo = tlRmbDrag.fixedOther;
+      if (tlRmbDrag.whichEnd === 1) {
+        tlx.time1 = time;
+        tlx.price1 = price;
+        if (fo) {
+          tlx.time2 = fo.time;
+          tlx.price2 = fo.price;
+        }
+      } else {
+        tlx.time2 = time;
+        tlx.price2 = price;
+        if (fo) {
+          tlx.time1 = fo.time;
+          tlx.price1 = fo.price;
+        }
+      }
+      scheduleDrawTrendlines();
+      return;
+    }
+    if (tlRmbDrag.mode !== 'move') return;
     var p = canvasPixelFromClient(ev.clientX, ev.clientY);
     if (!p) return;
     var ddx = p.x - tlRmbDrag.gx;
@@ -1217,8 +1286,10 @@
       var py = ev.clientY - rect.top;
       var wrap = document.getElementById('sc-main-wrap');
       var wid = wrap ? wrap.clientWidth : 0;
+      var selTl = findTrendlineById(selectedTlId);
+      var onHandle = selTl && hitTestTrendlineHandle(px, py, selTl);
       var hit = hitTestTrendlineIds(px, py, wid);
-      if (hit === selectedTlId || !!tlRmbDrag) ev.preventDefault();
+      if (onHandle || hit === selectedTlId || !!tlRmbDrag) ev.preventDefault();
     });
 
     var onTlDragPointerMove = function (ev) {
@@ -1240,7 +1311,7 @@
 
     canvas.addEventListener('pointerdown', function (ev) {
       if (!tlSelectMode || !mainChart || !candleSeries || !selectedTlId) return;
-      if (ev.pointerType !== 'mouse' || !ev.isPrimary) return;
+      if (ev.pointerType !== 'mouse') return;
       if (ev.button !== 0 && ev.button !== 2) return;
       if (tlRmbDrag) return;
       var rect = canvas.getBoundingClientRect();
@@ -1248,15 +1319,40 @@
       var py = ev.clientY - rect.top;
       var wrap = document.getElementById('sc-main-wrap');
       var wid = wrap ? wrap.clientWidth : 0;
-      var hit = hitTestTrendlineIds(px, py, wid);
-      if (hit !== selectedTlId) return;
       var tl = findTrendlineById(selectedTlId);
       if (!tl) return;
+      var whichEnd = hitTestTrendlineHandle(px, py, tl);
+      if (whichEnd != null) {
+        ev.preventDefault();
+        var fixedOther = whichEnd === 1
+          ? { time: tl.time2, price: tl.price2 }
+          : { time: tl.time1, price: tl.price1 };
+        tlRmbDrag = {
+          mode: 'endpoint',
+          whichEnd: whichEnd,
+          fixedOther: fixedOther,
+          tlId: selectedTlId,
+          pointerId: ev.pointerId,
+          button: ev.button,
+          didMove: false,
+          downPx: px,
+          downPy: py
+        };
+        try {
+          if (typeof canvas.setPointerCapture === 'function') {
+            canvas.setPointerCapture(ev.pointerId);
+          }
+        } catch (_) {}
+        onTlRmbDragMove(ev);
+        return;
+      }
+      if (!hitTestTrendlineParallelBody(px, py, tl, wid)) return;
       var ep = getTrendlinePixelEndpoints(tl, wid);
       if (!ep) return;
       ev.preventDefault();
       var grab = projectPointToSegment(px, py, ep.x1, ep.y1, ep.x2, ep.y2);
       tlRmbDrag = {
+        mode: 'move',
         tlId: selectedTlId,
         ep0: { x1: ep.x1, y1: ep.y1, x2: ep.x2, y2: ep.y2 },
         gx: grab.x,
