@@ -85,6 +85,8 @@
   var TL_HANDLE_HIT_PX = 14;
   var tlRmbDrag = null;
   var tlSuppressSelectClick = false;
+  /** After first anchor on pointerdown, ignore the following click (mouseup) so the line is not finished in one press. */
+  var tlSuppressNextDrawClick = false;
   var tlRedrawRaf = null;
   var tlAnchorPulse = null;
   var tlPulseTimer = null;
@@ -453,6 +455,7 @@
     if (!tlMode) return;
     tlMode = false;
     tlAnchors = [];
+    tlSuppressNextDrawClick = false;
     detachTlDraftPreviewListeners();
     if (tlRedrawRaf != null) {
       cancelAnimationFrame(tlRedrawRaf);
@@ -1310,6 +1313,19 @@
     canvas.addEventListener('pointercancel', onTlDragPointerEnd);
 
     canvas.addEventListener('pointerdown', function (ev) {
+      if (tlMode && !tlSelectMode && mainChart && candleSeries && tlAnchors.length === 0) {
+        if (ev.button !== 0) return;
+        if (tlRmbDrag) return;
+        var ptDown = canvasPointToChart(ev);
+        if (!ptDown) return;
+        tlAnchors.push(ptDown);
+        var primDown = canvasPixelFromClient(ev.clientX, ev.clientY);
+        if (primDown) tlPreviewPx = primDown;
+        attachTlDraftPreviewListeners();
+        scheduleDrawTrendlines();
+        tlSuppressNextDrawClick = true;
+        return;
+      }
       if (!tlSelectMode || !mainChart || !candleSeries || !selectedTlId) return;
       if (ev.pointerType !== 'mouse') return;
       if (ev.button !== 0 && ev.button !== 2) return;
@@ -1388,16 +1404,14 @@
         return;
       }
       if (!tlMode || !mainChart) return;
-      var pt = canvasPointToChart(ev);
-      if (!pt) return;
-      if (tlAnchors.length === 0) {
-        tlAnchors.push(pt);
-        var prim = canvasPixelFromClient(ev.clientX, ev.clientY);
-        if (prim) tlPreviewPx = prim;
-        attachTlDraftPreviewListeners();
-        scheduleDrawTrendlines();
+      if (tlSuppressNextDrawClick) {
+        tlSuppressNextDrawClick = false;
+        ev.stopPropagation();
         return;
       }
+      var pt = canvasPointToChart(ev);
+      if (!pt) return;
+      if (tlAnchors.length === 0) return;
       var a0 = tlAnchors[0];
       var ax = timeToCoordinateExtrapolated(a0.time);
       var ay = candleSeries.priceToCoordinate(a0.price);
@@ -1972,6 +1986,7 @@
         tlBtn.setAttribute('aria-pressed', 'true');
         canvas.classList.add('draw-mode');
         tlAnchors = [];
+        tlSuppressNextDrawClick = false;
         closeAllPanels(null);
       });
     }
@@ -1995,6 +2010,7 @@
     document.getElementById('sc-clear-tl') && document.getElementById('sc-clear-tl').addEventListener('click', function () {
       trendlines = [];
       tlAnchors = [];
+      tlSuppressNextDrawClick = false;
       selectedTlId = null;
       updateDeleteSelectedTlButton();
       scheduleSaveAnnotations();
