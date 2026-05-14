@@ -7,26 +7,44 @@
 
 {% block content %}
 <style>
-.sc-page{max-width:1280px;margin:0 auto;padding:0 var(--space-3)}
+.sc-page{position:relative;max-width:1280px;margin:0 auto;padding:0 var(--space-3)}
 .sc-toolbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:var(--space-3)}
 .sc-toolbar h1{margin:0;font-size:20px;font-weight:700;letter-spacing:-0.02em}
 .sc-toolbar-right{display:flex;gap:8px;align-items:center}
+.sc-toolbar-right .button{min-height:44px;padding:10px 14px;display:inline-flex;align-items:center}
 .sc-interval-bar{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:var(--space-3)}
-.sc-intervals{display:flex;gap:4px}
-.sc-ivbtn{padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--muted);font-size:13px;font-weight:600;cursor:pointer;transition:all .15s}
+.sc-intervals{display:flex;gap:4px;flex-wrap:wrap}
+.sc-ivbtn{min-height:44px;padding:8px 12px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--muted);font-size:13px;font-weight:600;cursor:pointer;transition:all .15s}
 .sc-ivbtn:hover{background:var(--surface-2);color:var(--text)}
 .sc-ivbtn.active{background:var(--accent);border-color:var(--accent);color:#fff}
-.sc-controls{display:flex;gap:8px;margin-left:auto;flex-wrap:wrap}
-.sc-control-btn{padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:13px;cursor:pointer;transition:all .15s}
+.sc-controls{display:flex;gap:8px;margin-left:auto;flex-wrap:wrap;align-items:center}
+.sc-control-btn{min-height:44px;padding:8px 12px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:13px;cursor:pointer;transition:all .15s;display:inline-flex;align-items:center;gap:6px}
 .sc-control-btn:hover{background:var(--surface-2)}
 .sc-control-btn.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.sc-help{font-size:12px;color:var(--muted);line-height:1.45;margin:0 0 var(--space-3);padding:10px 12px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--surface-2)}
+.sc-quote-bar{display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:8px 12px;border-bottom:1px solid var(--border);font-size:13px;background:var(--surface-2)}
+.sc-quote-bar[hidden]{display:none!important}
+.sc-live-dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex-shrink:0}
+.sc-live-dot.sc-live-on{background:var(--positive);box-shadow:0 0 0 2px rgba(34,197,94,.25)}
+.sc-live-dot.sc-live-warn{background:#eab308;box-shadow:0 0 0 2px rgba(234,179,8,.25)}
+.sc-live-dot.sc-live-off{background:var(--muted)}
+.sc-ltp{font-weight:700;font-variant-numeric:tabular-nums}
+.sc-chg{font-variant-numeric:tabular-nums;font-weight:600}
+.sc-chg-up{color:var(--positive)}.sc-chg-down{color:var(--negative)}
+.sc-live-meta{color:var(--muted);font-size:12px}
 .sc-indicator-chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:var(--space-2);min-height:28px}
+.sc-ind-limit-hint{font-size:12px;color:var(--muted);margin:0 0 var(--space-2);display:none}
+.sc-ind-limit-hint.sc-visible{display:block}
+.sc-field-err{font-size:12px;color:var(--negative);margin:0 0 8px;display:none}
+.sc-field-err.sc-visible{display:block}
 .sc-chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:600;border:1px solid var(--border);background:var(--surface-2);color:var(--text)}
 .sc-chip-remove{cursor:pointer;opacity:.6;font-size:14px;line-height:1;margin-left:2px}
 .sc-chip-remove:hover{opacity:1}
 .sc-card{border-radius:var(--radius-lg);border:1px solid var(--border);background:var(--surface);overflow:hidden}
 .sc-chart-area{display:flex;flex-direction:column}
 .sc-main-wrap{position:relative;height:min(460px,55vh);min-height:280px}
+.sc-chart-area.sc-rsi-hidden .sc-rsi-wrap{display:none}
+.sc-chart-area.sc-rsi-hidden .sc-main-wrap{height:min(560px,65vh);min-height:320px}
 .sc-rsi-wrap{position:relative;height:120px;border-top:1px solid var(--border)}
 .sc-trendline-canvas{position:absolute;inset:0;pointer-events:none;z-index:10}
 .sc-trendline-canvas.draw-mode{pointer-events:all;cursor:crosshair}
@@ -58,31 +76,47 @@
   </div>
 
   <div class="sc-interval-bar">
-    <div class="sc-intervals">
-      <button class="sc-ivbtn" data-iv="minute">1m</button>
-      <button class="sc-ivbtn" data-iv="5minute">5m</button>
-      <button class="sc-ivbtn" data-iv="15minute">15m</button>
-      <button class="sc-ivbtn" data-iv="60minute">1hr</button>
-      <button class="sc-ivbtn active" data-iv="day">1D</button>
-      <button class="sc-ivbtn" data-iv="week">1W</button>
-      <button class="sc-ivbtn" data-iv="month">1M</button>
+    <div class="sc-intervals" role="toolbar" aria-label="Chart interval">
+      <button type="button" class="sc-ivbtn" data-iv="minute">1m</button>
+      <button type="button" class="sc-ivbtn" data-iv="5minute">5m</button>
+      <button type="button" class="sc-ivbtn" data-iv="15minute">15m</button>
+      <button type="button" class="sc-ivbtn" data-iv="60minute">1hr</button>
+      <button type="button" class="sc-ivbtn active" data-iv="day">1D</button>
+      <button type="button" class="sc-ivbtn" data-iv="week">1W</button>
+      <button type="button" class="sc-ivbtn" data-iv="month">1M</button>
     </div>
     <div class="sc-controls">
-      <button class="sc-control-btn" id="sc-add-ind">+ Indicator</button>
-      <button class="sc-control-btn" id="sc-add-lvl">+ Level</button>
-      <button class="sc-control-btn" id="sc-trendline-btn">✎ Trendline</button>
-      <button class="sc-control-btn" id="sc-clear-tl">Clear Lines</button>
+      <button type="button" class="sc-control-btn" id="sc-add-ind">+ Indicator</button>
+      <button type="button" class="sc-control-btn" id="sc-add-lvl">+ Level</button>
+      <button type="button" class="sc-control-btn" id="sc-trendline-btn" aria-pressed="false" title="Draw trendlines; hold Shift on second click to extend">✎ Trendline</button>
+      <button type="button" class="sc-control-btn" id="sc-clear-tl" title="Remove all trendlines (horizontal levels unchanged)">Clear trendlines</button>
       <label class="sc-control-btn" style="cursor:pointer">
         <input type="checkbox" id="sc-show-vol" checked style="margin-right:4px">Vol
+      </label>
+      <label class="sc-control-btn" style="cursor:pointer">
+        <input type="checkbox" id="sc-show-rsi" checked style="margin-right:4px">RSI
       </label>
     </div>
   </div>
 
+  <p class="sc-help" id="sc-help">
+    <strong>Chart:</strong> drag to pan; scroll or pinch to zoom.
+    <strong>Trendline:</strong> click two points on the chart; hold <kbd style="font-size:11px;padding:1px 4px;border-radius:4px;border:1px solid var(--border)">Shift</kbd> on the second click to extend the line.
+  </p>
+
   <div id="sc-chips" class="sc-indicator-chips"></div>
+  <p id="sc-ind-limit-hint" class="sc-ind-limit-hint" role="status"></p>
 
   <div class="sc-card">
     <div id="sc-status" class="sc-status">Loading chart…</div>
     <div id="sc-chart-area" class="sc-chart-area" hidden>
+      <div id="sc-quote-bar" class="sc-quote-bar" hidden>
+        <span id="sc-live-dot" class="sc-live-dot" aria-hidden="true"></span>
+        <span id="sc-live-label" class="sc-live-meta">—</span>
+        <span id="sc-ltp" class="sc-ltp">—</span>
+        <span id="sc-chg-bar" class="sc-chg"></span>
+        <span id="sc-stale-hint" class="sc-live-meta" hidden></span>
+      </div>
       <div class="sc-main-wrap" id="sc-main-wrap">
         <div id="sc-main-chart" style="width:100%;height:100%"></div>
         <canvas id="sc-tl-canvas" class="sc-trendline-canvas"></canvas>
@@ -95,8 +129,8 @@
   </div>
 
   <!-- Indicator panel -->
-  <div id="sc-ind-panel" class="sc-panel" hidden style="top:120px;right:20px">
-    <h3>Add Indicator</h3>
+  <div id="sc-ind-panel" class="sc-panel" role="dialog" aria-modal="true" aria-labelledby="sc-ind-panel-title" hidden style="top:120px;right:20px">
+    <h3 id="sc-ind-panel-title">Add Indicator</h3>
     <div class="sc-panel-row">
       <label>Type</label>
       <select id="sc-ind-type"><option value="SMA">SMA</option><option value="EMA">EMA</option></select>
@@ -110,14 +144,14 @@
       <input type="color" id="sc-ind-color" value="#f59e0b" style="width:100%;height:32px;border-radius:6px;border:1px solid var(--border);cursor:pointer;background:transparent">
     </div>
     <div class="sc-panel-btns">
-      <button class="sc-btn-primary" id="sc-ind-add-btn">Add</button>
-      <button class="sc-btn-secondary" id="sc-ind-cancel">Cancel</button>
+      <button type="button" class="sc-btn-primary" id="sc-ind-add-btn">Add</button>
+      <button type="button" class="sc-btn-secondary" id="sc-ind-cancel">Cancel</button>
     </div>
   </div>
 
   <!-- Level panel -->
-  <div id="sc-lvl-panel" class="sc-panel" hidden style="top:120px;right:20px">
-    <h3>Add Horizontal Level</h3>
+  <div id="sc-lvl-panel" class="sc-panel" role="dialog" aria-modal="true" aria-labelledby="sc-lvl-panel-title" hidden style="top:120px;right:20px">
+    <h3 id="sc-lvl-panel-title">Add Horizontal Level</h3>
     <div class="sc-panel-row">
       <label>Price</label>
       <input type="number" id="sc-lvl-price" step="0.05" placeholder="e.g. 23500">
@@ -138,9 +172,10 @@
         <option value="dotted">Dotted</option>
       </select>
     </div>
+    <p id="sc-lvl-err" class="sc-field-err" role="alert"></p>
     <div class="sc-panel-btns">
-      <button class="sc-btn-primary" id="sc-lvl-add-btn">Add</button>
-      <button class="sc-btn-secondary" id="sc-lvl-cancel">Cancel</button>
+      <button type="button" class="sc-btn-primary" id="sc-lvl-add-btn">Add</button>
+      <button type="button" class="sc-btn-secondary" id="sc-lvl-cancel">Cancel</button>
     </div>
   </div>
 </div>

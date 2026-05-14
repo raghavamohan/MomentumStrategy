@@ -3,10 +3,12 @@
   'use strict';
 
   var TP_STORAGE_KEY = 'sc_chart_tooltip_prefs';
+  var RSI_SHOW_KEY = 'sc_chart_show_rsi';
   var RSI_PERIOD = 14;
   var MAX_MAIN_INDICATORS = 3;
   var SAVE_DEBOUNCE_MS = 500;
   var WS_RECONNECT_MS = 4000;
+  var STALE_TICK_MS = 90000;
 
   // ── Bootstrap ────────────────────────────────────────────────────────────
   var boot = {};
@@ -49,10 +51,18 @@
   var allBars = [];
   var liveBar = null;
   var showVolume = true;
+  var showRsi = true;
+  try {
+    var rsiStored = localStorage.getItem(RSI_SHOW_KEY);
+    if (rsiStored === '0') showRsi = false;
+  } catch (_) {}
   var ws = null;
   var wsReconnectTimer = null;
   var lastTick = null;
+  var wsLiveState = 'idle';
+  var staleCheckTimer = null;
   var chartResizeObs = null;
+  var chartResizeDebounceTimer = null;
 
   var indicators = [
     { id: uid(), type: 'SMA', period: 21, color: '#f59e0b', series: null },
@@ -256,8 +266,192 @@
     if (el) el.hidden = false;
   }
 
+  function getTooltipPanel() {
+    return document.getElementById('sc-tooltip-panel');
+  }
+
+  function closeAllPanels(except) {
+    var ind = document.getElementById('sc-ind-panel');
+    var lvl = document.getElementById('sc-lvl-panel');
+    var tp = getTooltipPanel();
+    if (except !== 'ind' && ind) ind.hidden = true;
+    if (except !== 'lvl' && lvl) lvl.hidden = true;
+    if (except !== 'tooltip' && tp) tp.hidden = true;
+  }
+
+  function replaceChartUrlInterval() {
+    try {
+      var u = new URL(window.location.href);
+      u.searchParams.set('interval', currentIv);
+      history.replaceState(null, '', u.pathname + u.search);
+    } catch (_) {}
+  }
+
+  function exitTrendlineMode() {
+    if (!tlMode) return;
+    tlMode = false;
+    tlAnchors = [];
+    var tlBtn = document.getElementById('sc-trendline-btn');
+    var canvas = getTlCanvas();
+    if (tlBtn) {
+      tlBtn.classList.remove('active');
+      tlBtn.setAttribute('aria-pressed', 'false');
+    }
+    if (canvas) canvas.classList.remove('draw-mode');
+  }
+
+  function setLvlError(msg) {
+    var el = document.getElementById('sc-lvl-err');
+    if (!el) return;
+    if (msg) {
+      el.textContent = msg;
+      el.classList.add('sc-visible');
+    } else {
+      el.textContent = '';
+      el.classList.remove('sc-visible');
+    }
+  }
+
+  function updateQuoteBarLayout() {
+    var bar = document.getElementById('sc-quote-bar');
+    var area = document.getElementById('sc-chart-area');
+    if (!bar || !area || area.hidden) return;
+    bar.hidden = false;
+  }
+
+  function setWsUiState(state) {
+    wsLiveState = state;
+    var dot = document.getElementById('sc-live-dot');
+    var label = document.getElementById('sc-live-label');
+    if (!dot || !label) return;
+    dot.classList.remove('sc-live-on', 'sc-live-warn', 'sc-live-off');
+    if (state === 'live') {
+      dot.classList.add('sc-live-on');
+      label.textContent = 'Live ticks';
+    } else if (state === 'connecting') {
+      dot.classList.add('sc-live-warn');
+      label.textContent = 'Connecting\u2026';
+    } else if (state === 'reconnecting') {
+      dot.classList.add('sc-live-warn');
+      label.textContent = 'Reconnecting\u2026';
+    } else if (state === 'aggregated') {
+      dot.classList.add('sc-live-off');
+      label.textContent = 'No live stream (aggregated chart)';
+    } else {
+      dot.classList.add('sc-live-off');
+      label.textContent = 'Ticks unavailable';
+    }
+  }
+
+  function refreshQuoteBarFromBars() {
+    var ltpEl = document.getElementById('sc-ltp');
+    var chgEl = document.getElementById('sc-chg-bar');
+    if (!ltpEl || !chgEl || !allBars.length) return;
+    var b = liveBar || allBars[allBars.length - 1];
+    if (!b) return;
+    var c = Number(b.close);
+    var o = Number(b.open);
+    ltpEl.textContent = isFinite(c) ? fmtNum(c) : '\u2014';
+    if (isFinite(c) && isFinite(o) && o) {
+      var pct = ((c - o) / o) * 100;
+      chgEl.textContent = (pct >= 0 ? '+' : '') + fmtNum(pct, 2) + '%';
+      chgEl.classList.toggle('sc-chg-up', pct >= 0);
+      chgEl.classList.toggle('sc-chg-down', pct < 0);
+    } else {
+      chgEl.textContent = '';
+      chgEl.classList.remove('sc-chg-up', 'sc-chg-down');
+    }
+  }
+
+  function updateStaleHint() {
+    var hint = document.getElementById('sc-stale-hint');
+    if (!hint) return;
+    var ivCfg = IV_CFG[currentIv] || IV_CFG.day;
+    if (ivCfg.agg || !lastTick || !lastTick.ts) {
+      hint.hidden = true;
+      return;
+    }
+    var age = Date.now() - Number(lastTick.ts);
+    if (age > STALE_TICK_MS) {
+      hint.hidden = false;
+      hint.textContent = 'No ticks for ' + Math.round(age / 60000) + 'm (check session or market hours)';
+    } else {
+      hint.hidden = true;
+    }
+  }
+
+  /**
+   * Apply measured width/height to Lightweight Charts panes. The library does not
+   * infer height from CSS alone; ResizeObserver previously updated width only,
+   * which left the RSI pane at 0 height after the chart area became visible.
+   * Do not call alignRsiTimeScaleToMain here — that fights user zoom/pan; time
+   * sync is handled by subscribeVisibleTimeRangeChange.
+   */
+  function syncChartPaneSizes() {
+    var area = document.getElementById('sc-chart-area');
+    if (area && area.hidden) return;
+
+    var mainEl = document.getElementById('sc-main-chart');
+    var mainWrap = document.getElementById('sc-main-wrap');
+    var rsiEl = document.getElementById('sc-rsi-chart');
+    var rsiWrap = document.getElementById('sc-rsi-wrap');
+    if (!mainChart || !mainEl || !mainWrap) return;
+
+    var mw = Math.max(mainWrap.clientWidth, mainEl.offsetWidth, 1);
+    var mh = Math.max(mainWrap.clientHeight, mainEl.offsetHeight, 1);
+    void mainWrap.offsetHeight;
+    mw = Math.max(mainWrap.clientWidth, mainEl.offsetWidth, mw);
+    mh = Math.max(mainWrap.clientHeight, mainEl.offsetHeight, mh);
+    if (mw < 48) mw = 320;
+    if (mh < 48) mh = 280;
+
+    mainChart.applyOptions({ width: mw, height: mh });
+
+    if (!rsiChart || !rsiEl || !showRsi) {
+      drawTrendlines();
+      return;
+    }
+
+    var rw = Math.max(rsiWrap ? rsiWrap.clientWidth : rsiEl.offsetWidth, rsiEl.offsetWidth, 1);
+    var rh = Math.max(rsiWrap ? rsiWrap.clientHeight : rsiEl.offsetHeight, rsiEl.offsetHeight, 1);
+    if (rsiWrap) void rsiWrap.offsetHeight;
+    rw = Math.max(rsiWrap ? rsiWrap.clientWidth : rsiEl.offsetWidth, rsiEl.offsetWidth, rw);
+    rh = Math.max(rsiWrap ? rsiWrap.clientHeight : rsiEl.offsetHeight, rsiEl.offsetHeight, rh);
+    if (rw < 48) rw = Math.max(mw, 200);
+    if (rh < 40) rh = 120;
+
+    rsiChart.applyOptions({ width: rw, height: rh });
+
+    drawTrendlines();
+  }
+
+  function scheduleSyncChartPaneSizes() {
+    if (chartResizeDebounceTimer) clearTimeout(chartResizeDebounceTimer);
+    chartResizeDebounceTimer = setTimeout(function () {
+      chartResizeDebounceTimer = null;
+      syncChartPaneSizes();
+    }, 100);
+  }
+
+  function applyRsiVisibility() {
+    var area = document.getElementById('sc-chart-area');
+    var rsiCb = document.getElementById('sc-show-rsi');
+    if (rsiCb) rsiCb.checked = showRsi;
+    if (area) area.classList.toggle('sc-rsi-hidden', !showRsi);
+    try { localStorage.setItem(RSI_SHOW_KEY, showRsi ? '1' : '0'); } catch (_) {}
+    requestAnimationFrame(function () {
+      syncChartPaneSizes();
+      requestAnimationFrame(syncChartPaneSizes);
+    });
+  }
+
   // ── Charts lifecycle ─────────────────────────────────────────────────────
   function destroyCharts() {
+    clearStaleCheck();
+    if (chartResizeDebounceTimer) {
+      clearTimeout(chartResizeDebounceTimer);
+      chartResizeDebounceTimer = null;
+    }
     if (chartResizeObs) {
       try { chartResizeObs.disconnect(); } catch (_) {}
       chartResizeObs = null;
@@ -382,14 +576,12 @@
     });
 
     chartResizeObs = new ResizeObserver(function () {
-      if (!mainChart || !rsiChart) return;
-      mainChart.applyOptions({ width: mainEl.offsetWidth });
-      rsiChart.applyOptions({ width: rsiEl.offsetWidth });
-      drawTrendlines();
-      alignRsiTimeScaleToMain();
+      scheduleSyncChartPaneSizes();
     });
-    chartResizeObs.observe(mainEl);
-    chartResizeObs.observe(rsiEl);
+    var mainWrap = document.getElementById('sc-main-wrap');
+    var rsiWrap = document.getElementById('sc-rsi-wrap');
+    if (mainWrap) chartResizeObs.observe(mainWrap);
+    if (rsiWrap) chartResizeObs.observe(rsiWrap);
   }
 
   // ── Annotations API ───────────────────────────────────────────────────────
@@ -499,6 +691,31 @@
 
     cachedRsiPoints = calcRSI(bars, RSI_PERIOD);
     rsiLineSeries.setData(cachedRsiPoints);
+  }
+
+  /**
+   * Update last RSI / MA points during live ticks without removing series or
+   * calling setData on the full RSI series (that resets time scale and fights zoom).
+   */
+  function updateDerivedSeriesLive() {
+    if (!mainChart || !candleSeries || !rsiLineSeries) return;
+    var bars = barsForIndicators();
+    if (!bars.length) return;
+
+    cachedRsiPoints = calcRSI(bars, RSI_PERIOD);
+    var lastRsi = cachedRsiPoints[cachedRsiPoints.length - 1];
+    if (lastRsi) {
+      try { rsiLineSeries.update(lastRsi); } catch (_) {}
+    }
+
+    indicators.forEach(function (ind) {
+      if (!ind.series) return;
+      var pts = ind.type === 'EMA' ? calcEMA(bars, ind.period) : calcSMA(bars, ind.period);
+      var lp = pts[pts.length - 1];
+      if (lp) {
+        try { ind.series.update(lp); } catch (_) {}
+      }
+    });
   }
 
   function rsiValueAtTime(t) {
@@ -670,18 +887,38 @@
     }
   }
 
+  function clearStaleCheck() {
+    if (staleCheckTimer) {
+      clearInterval(staleCheckTimer);
+      staleCheckTimer = null;
+    }
+  }
+
   function connectWS() {
     closeWS();
     var ivCfg = IV_CFG[currentIv] || IV_CFG.day;
-    if (ivCfg.agg) return;
+    if (ivCfg.agg) {
+      setWsUiState('aggregated');
+      return;
+    }
 
+    setWsUiState('connecting');
     var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     var url = proto + '//' + location.host + '/ws/chart-ticks?instrument_token=' + TOKEN;
     try {
       ws = new WebSocket(url);
     } catch (_) {
+      setWsUiState('reconnecting');
       return;
     }
+
+    ws.onopen = function () {
+      setWsUiState('live');
+    };
+
+    ws.onerror = function () {
+      if (ws && ws.readyState !== WebSocket.OPEN) setWsUiState('reconnecting');
+    };
 
     ws.onmessage = function (ev) {
       try {
@@ -693,6 +930,7 @@
     ws.onclose = function () {
       ws = null;
       if (!TOKEN || (IV_CFG[currentIv] || {}).agg) return;
+      setWsUiState('reconnecting');
       wsReconnectTimer = setTimeout(connectWS, WS_RECONNECT_MS);
     };
   }
@@ -754,8 +992,10 @@
       value: liveBar.volume,
       color: liveBar.close >= liveBar.open ? 'rgba(34,197,94,.35)' : 'rgba(239,68,68,.35)'
     });
-    refreshIndicators();
+    updateDerivedSeriesLive();
     drawTrendlines();
+    refreshQuoteBarFromBars();
+    updateStaleHint();
   }
 
   // ── Crosshair / tooltip ───────────────────────────────────────────────────
@@ -861,7 +1101,20 @@
     var addInd = document.getElementById('sc-add-ind');
     var full = indicators.length >= MAX_MAIN_INDICATORS;
     if (btn) btn.disabled = full;
-    if (addInd) addInd.disabled = full;
+    if (addInd) {
+      addInd.disabled = full;
+      addInd.title = full ? ('Maximum ' + MAX_MAIN_INDICATORS + ' indicators — remove one to add another') : '';
+    }
+    var hint = document.getElementById('sc-ind-limit-hint');
+    if (hint) {
+      if (full) {
+        hint.textContent = 'Maximum ' + MAX_MAIN_INDICATORS + ' indicators on the chart. Remove one from the chips above to add another.';
+        hint.classList.add('sc-visible');
+      } else {
+        hint.textContent = '';
+        hint.classList.remove('sc-visible');
+      }
+    }
   }
 
   function renderChips() {
@@ -924,7 +1177,9 @@
   function syncIntervalButtons() {
     document.querySelectorAll('.sc-ivbtn').forEach(function (btn) {
       var iv = btn.getAttribute('data-iv');
-      btn.classList.toggle('active', iv === currentIv);
+      var on = iv === currentIv;
+      btn.classList.toggle('active', on);
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
     });
   }
 
@@ -960,8 +1215,12 @@
     ];
 
     var h = document.createElement('h3');
+    h.id = 'sc-tooltip-panel-title';
     h.textContent = 'Tooltip fields';
     panel.appendChild(h);
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-modal', 'true');
+    panel.setAttribute('aria-labelledby', 'sc-tooltip-panel-title');
 
     fields.forEach(function (f) {
       var rowEl = document.createElement('label');
@@ -986,8 +1245,36 @@
 
     document.querySelector('.sc-page').appendChild(panel);
 
-    btn.addEventListener('click', function () {
-      panel.hidden = !panel.hidden;
+    btn.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      if (panel.hidden) {
+        closeAllPanels('tooltip');
+        panel.hidden = false;
+        var firstCb = panel.querySelector('input[type="checkbox"]');
+        if (firstCb) setTimeout(function () { try { firstCb.focus(); } catch (_) {} }, 0);
+      } else {
+        panel.hidden = true;
+      }
+    });
+  }
+
+  function isPanelOpenTrigger(el) {
+    if (!el || !el.closest) return false;
+    return !!el.closest('#sc-add-ind') || !!el.closest('#sc-add-lvl') || !!el.closest('#sc-tooltip-btn');
+  }
+
+  function setupGlobalUiHandlers() {
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key !== 'Escape') return;
+      closeAllPanels(null);
+      exitTrendlineMode();
+    });
+
+    document.addEventListener('mousedown', function (ev) {
+      var t = ev.target;
+      if (t.closest && t.closest('.sc-panel')) return;
+      if (isPanelOpenTrigger(t)) return;
+      closeAllPanels(null);
     });
   }
 
@@ -995,6 +1282,7 @@
     syncIntervalButtons();
     buildTooltipSettingsPanel();
     bindTrendlineCanvas();
+    setupGlobalUiHandlers();
 
     document.querySelectorAll('.sc-ivbtn').forEach(function (btn) {
       btn.addEventListener('click', function () {
@@ -1002,6 +1290,7 @@
         if (!iv || iv === currentIv) return;
         currentIv = iv;
         syncIntervalButtons();
+        replaceChartUrlInterval();
         closeWS();
         destroyCharts();
         initCharts();
@@ -1012,8 +1301,12 @@
     var addInd = document.getElementById('sc-add-ind');
     var indPanel = document.getElementById('sc-ind-panel');
     if (addInd && indPanel) {
-      addInd.addEventListener('click', function () {
+      addInd.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        closeAllPanels('ind');
         indPanel.hidden = false;
+        var sel = document.getElementById('sc-ind-type');
+        if (sel) setTimeout(function () { try { sel.focus(); } catch (_) {} }, 0);
       });
     }
     document.getElementById('sc-ind-cancel') && document.getElementById('sc-ind-cancel').addEventListener('click', function () {
@@ -1034,14 +1327,27 @@
     var addLvl = document.getElementById('sc-add-lvl');
     var lvlPanel = document.getElementById('sc-lvl-panel');
     if (addLvl && lvlPanel) {
-      addLvl.addEventListener('click', function () { lvlPanel.hidden = false; });
+      addLvl.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        closeAllPanels('lvl');
+        setLvlError('');
+        lvlPanel.hidden = false;
+        var inp = document.getElementById('sc-lvl-price');
+        if (inp) setTimeout(function () { try { inp.focus(); } catch (_) {} }, 0);
+      });
     }
     document.getElementById('sc-lvl-cancel') && document.getElementById('sc-lvl-cancel').addEventListener('click', function () {
       if (lvlPanel) lvlPanel.hidden = true;
+      setLvlError('');
     });
     document.getElementById('sc-lvl-add-btn') && document.getElementById('sc-lvl-add-btn').addEventListener('click', function () {
-      var price = parseFloat((document.getElementById('sc-lvl-price') || {}).value);
-      if (!isFinite(price)) return;
+      var raw = (document.getElementById('sc-lvl-price') || {}).value;
+      var price = parseFloat(String(raw).replace(/,/g, ''));
+      if (!isFinite(price)) {
+        setLvlError('Enter a valid price.');
+        return;
+      }
+      setLvlError('');
       var label = (document.getElementById('sc-lvl-label') || {}).value || '';
       var color = (document.getElementById('sc-lvl-color') || {}).value || '#22c55e';
       var styleSel = document.getElementById('sc-lvl-style');
@@ -1056,11 +1362,14 @@
     var tlBtn = document.getElementById('sc-trendline-btn');
     var canvas = getTlCanvas();
     if (tlBtn && canvas) {
-      tlBtn.addEventListener('click', function () {
+      tlBtn.addEventListener('click', function (ev) {
+        ev.stopPropagation();
         tlMode = !tlMode;
         tlBtn.classList.toggle('active', tlMode);
+        tlBtn.setAttribute('aria-pressed', tlMode ? 'true' : 'false');
         canvas.classList.toggle('draw-mode', tlMode);
         tlAnchors = [];
+        if (tlMode) closeAllPanels(null);
       });
     }
 
@@ -1081,15 +1390,44 @@
       });
     }
 
-    window.addEventListener('beforeunload', closeWS);
+    var rsiCb = document.getElementById('sc-show-rsi');
+    if (rsiCb) {
+      rsiCb.checked = showRsi;
+      rsiCb.addEventListener('change', function () {
+        showRsi = rsiCb.checked;
+        applyRsiVisibility();
+      });
+    }
+
+    applyRsiVisibility();
+
+    window.addEventListener('beforeunload', function () {
+      clearStaleCheck();
+      closeWS();
+    });
   }
 
   // ── History load ──────────────────────────────────────────────────────────
+  function parseHistoryFetchResponse(r) {
+    return r.text().then(function (text) {
+      var body = {};
+      if (text) {
+        try {
+          body = JSON.parse(text);
+        } catch (_) {
+          body = { error: text.trim().slice(0, 240) || ('HTTP ' + r.status) };
+        }
+      }
+      return { ok: r.ok, status: r.status, body: body };
+    });
+  }
+
   function loadHistory() {
     if (!TOKEN) { showStatus('Missing instrument token.'); return; }
     if (!candleSeries) return;
 
     showStatus('Loading\u2026');
+    lastTick = null;
     var ivCfg = IV_CFG[currentIv] || IV_CFG.day;
     var kiteIv = ivCfg.kite;
     var params = new URLSearchParams({
@@ -1103,8 +1441,15 @@
       credentials: 'same-origin',
       headers: { Accept: 'application/json' }
     })
-      .then(function (r) { return r.json(); })
-      .then(function (body) {
+      .then(parseHistoryFetchResponse)
+      .then(function (res) {
+        if (!res.ok) {
+          var msg = (res.body && res.body.error) ? String(res.body.error) : 'Could not load chart data.';
+          if (res.status === 401) msg = 'Session expired. Open the dashboard and sign in again.';
+          showStatus(msg);
+          return;
+        }
+        var body = res.body;
         var raw = (body.candles || []).map(function (c) {
           return {
             time: toTime(c.date),
@@ -1123,6 +1468,7 @@
         }
         hideStatus();
         showArea();
+        syncChartPaneSizes();
         candleSeries.setData(bars);
         volSeries.setData(bars.map(function (b) {
           return {
@@ -1139,7 +1485,13 @@
         renderChips();
         drawTrendlines();
         alignRsiTimeScaleToMain();
+        updateQuoteBarLayout();
+        refreshQuoteBarFromBars();
+        applyRsiVisibility();
+        clearStaleCheck();
+        staleCheckTimer = setInterval(updateStaleHint, 15000);
         connectWS();
+        replaceChartUrlInterval();
       })
       .catch(function () { showStatus('Network error loading chart data.'); });
   }
