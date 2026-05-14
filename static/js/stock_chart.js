@@ -39,13 +39,19 @@
     month: { kite: 'day', days: 3650, label: '1M', timeVisible: false, agg: 'month' }
   };
 
+  /** Default crosshair off (LightweightCharts.CrosshairMode.Hidden === 2); use Crosshair mode toggle for Magnet. */
   var CHART_OPTS = {
     layout: { background: { color: '#0f172a' }, textColor: '#94a3b8' },
     grid: { vertLines: { color: 'rgba(148,163,184,.08)' }, horzLines: { color: 'rgba(148,163,184,.08)' } },
-    crosshair: { mode: 1 },
+    crosshair: { mode: 2 },
     rightPriceScale: { borderColor: 'rgba(148,163,184,.15)' },
     timeScale: { borderColor: 'rgba(148,163,184,.15)', fixLeftEdge: true, rightOffset: RIGHT_OFFSET_BARS }
   };
+
+  var MODE_NONE = 'none';
+  var MODE_CROSSHAIR = 'crosshair';
+  var MODE_OBJECTS = 'objects';
+  var chartInteractionMode = MODE_NONE;
 
   // ── State ────────────────────────────────────────────────────────────────
   var currentIv = BOOT_INTERVAL in IV_CFG ? BOOT_INTERVAL : 'day';
@@ -74,11 +80,9 @@
   var levels = [];
   var levelPriceLines = {};
   var saveTimer = null;
-  var tlMode = false;
   var tlAnchors = [];
   var tlPreviewPx = null;
   var tlDraftMoveBound = null;
-  var tlSelectMode = false;
   var selectedTlId = null;
   var TL_HIT_PX = 10;
   /** Pixel radius to grab start/end handles when reshaping with right-drag. */
@@ -90,6 +94,16 @@
   var tlRedrawRaf = null;
   var tlAnchorPulse = null;
   var tlPulseTimer = null;
+  /** Main chart DOM listeners (wheel / pointer) to redraw TLs when price scale changes; v4.2 has no price-scale subscription. */
+  var tlMainDomSyncEl = null;
+  var tlMainWrapSyncEl = null;
+  var tlDomWheelHandler = null;
+  var tlDomPointerDownHandler = null;
+  /** LW may call setPointerCapture on the price axis; document capture + legacy mouse sees drags reliably. */
+  var tlDocPointerSyncArmed = false;
+  var tlDocPointerMoveSync = null;
+  var tlDocMouseMoveSync = null;
+  var tlDocDragEndSync = null;
 
   var LW = window.LightweightCharts;
   var mainChart, rsiChart, candleSeries, volSeries, rsiLineSeries;
@@ -431,13 +445,50 @@
   function attachTlDraftPreviewListeners() {
     if (tlDraftMoveBound) return;
     tlDraftMoveBound = function (ev) {
-      if (!tlMode || tlAnchors.length !== 1 || !mainChart) return;
+      if (chartInteractionMode !== MODE_OBJECTS || tlAnchors.length !== 1 || !mainChart) return;
       var p = canvasPixelFromClient(ev.clientX, ev.clientY);
       if (!p) return;
       tlPreviewPx = p;
       scheduleDrawTrendlines();
     };
     window.addEventListener('mousemove', tlDraftMoveBound);
+  }
+
+  function applyChartInteractionMode() {
+    var hiddenMode = LW && LW.CrosshairMode ? LW.CrosshairMode.Hidden : 2;
+    var magnetMode = LW && LW.CrosshairMode ? LW.CrosshairMode.Magnet : 1;
+    var mode = chartInteractionMode === MODE_CROSSHAIR ? magnetMode : hiddenMode;
+    if (mainChart) {
+      try { mainChart.applyOptions({ crosshair: { mode: mode } }); } catch (_) {}
+    }
+    if (rsiChart) {
+      try { rsiChart.applyOptions({ crosshair: { mode: mode } }); } catch (_) {}
+    }
+    var canvas = getTlCanvas();
+    if (canvas) {
+      canvas.classList.remove('object-interact-mode', 'drawing-tl');
+      if (chartInteractionMode === MODE_OBJECTS) {
+        canvas.classList.add('object-interact-mode');
+        if (tlAnchors.length === 1) canvas.classList.add('drawing-tl');
+      }
+    }
+    var cxBtn = document.getElementById('sc-mode-crosshair');
+    var objBtn = document.getElementById('sc-mode-objects');
+    if (cxBtn) {
+      var cxOn = chartInteractionMode === MODE_CROSSHAIR;
+      cxBtn.classList.toggle('active', cxOn);
+      cxBtn.setAttribute('aria-pressed', cxOn ? 'true' : 'false');
+    }
+    if (objBtn) {
+      var obOn = chartInteractionMode === MODE_OBJECTS;
+      objBtn.classList.toggle('active', obOn);
+      objBtn.setAttribute('aria-pressed', obOn ? 'true' : 'false');
+    }
+  }
+
+  function clearCrosshairBothCharts() {
+    try { if (mainChart && typeof mainChart.clearCrosshairPosition === 'function') mainChart.clearCrosshairPosition(); } catch (_) {}
+    try { if (rsiChart && typeof rsiChart.clearCrosshairPosition === 'function') rsiChart.clearCrosshairPosition(); } catch (_) {}
   }
 
   function endTlRmbDrag() {
@@ -451,11 +502,11 @@
     if (had) scheduleSaveAnnotations();
   }
 
-  function exitTrendlineMode() {
-    if (!tlMode) return;
-    tlMode = false;
+  function leaveObjectsInteractionCleanup() {
+    endTlRmbDrag();
     tlAnchors = [];
     tlSuppressNextDrawClick = false;
+    tlSuppressSelectClick = false;
     detachTlDraftPreviewListeners();
     if (tlRedrawRaf != null) {
       cancelAnimationFrame(tlRedrawRaf);
@@ -466,59 +517,30 @@
       tlPulseTimer = null;
     }
     tlAnchorPulse = null;
-    var tlBtn = document.getElementById('sc-trendline-btn');
-    var canvas = getTlCanvas();
-    if (tlBtn) {
-      tlBtn.classList.remove('active');
-      tlBtn.setAttribute('aria-pressed', 'false');
-    }
-    if (canvas) canvas.classList.remove('draw-mode');
-    drawTrendlines();
+    tlPreviewPx = null;
+    selectedTlId = null;
   }
 
-  function updateDeleteSelectedTlButton() {
-    var delBtn = document.getElementById('sc-delete-selected-tl');
-    if (delBtn) delBtn.disabled = !selectedTlId;
+  function setChartInteractionMode(desired) {
+    var next = desired === chartInteractionMode ? MODE_NONE : desired;
+    if (next === chartInteractionMode) return;
+    var prev = chartInteractionMode;
+    if (prev === MODE_OBJECTS && next !== MODE_OBJECTS) {
+      leaveObjectsInteractionCleanup();
+    }
+    if (next !== MODE_CROSSHAIR) {
+      clearCrosshairBothCharts();
+    }
+    chartInteractionMode = next;
+    applyChartInteractionMode();
+    drawTrendlines();
+    renderChips();
   }
 
   function setSelectedTrendline(id) {
     selectedTlId = id || null;
-    updateDeleteSelectedTlButton();
     drawTrendlines();
     renderChips();
-  }
-
-  function exitTlSelectMode() {
-    if (!tlSelectMode) return;
-    tlSelectMode = false;
-    endTlRmbDrag();
-    selectedTlId = null;
-    updateDeleteSelectedTlButton();
-    var selBtn = document.getElementById('sc-tl-select-btn');
-    var canvas = getTlCanvas();
-    if (selBtn) {
-      selBtn.classList.remove('active');
-      selBtn.setAttribute('aria-pressed', 'false');
-    }
-    if (canvas) canvas.classList.remove('select-mode');
-    drawTrendlines();
-    renderChips();
-  }
-
-  function setTlSelectMode(on) {
-    var canvas = getTlCanvas();
-    if (on) {
-      exitTrendlineMode();
-      tlSelectMode = true;
-      var selBtn = document.getElementById('sc-tl-select-btn');
-      if (selBtn) {
-        selBtn.classList.add('active');
-        selBtn.setAttribute('aria-pressed', 'true');
-      }
-      if (canvas) canvas.classList.add('select-mode');
-    } else {
-      exitTlSelectMode();
-    }
   }
 
   function deleteSelectedTrendline() {
@@ -527,7 +549,6 @@
     var id = selectedTlId;
     trendlines = trendlines.filter(function (x) { return x.id !== id; });
     selectedTlId = null;
-    updateDeleteSelectedTlButton();
     scheduleSaveAnnotations();
     drawTrendlines();
     renderChips();
@@ -688,6 +709,7 @@
 
   // ── Charts lifecycle ─────────────────────────────────────────────────────
   function destroyCharts() {
+    unbindMainChartTrendlineDomSync();
     clearStaleCheck();
     endTlRmbDrag();
     detachTlDraftPreviewListeners();
@@ -793,6 +815,7 @@
     // view after enough ticks/resizes. RSI → main is intentionally omitted to
     // keep the main viewport authoritative.
     mainChart.timeScale().subscribeVisibleLogicalRangeChange(function (r) {
+      scheduleDrawTrendlines();
       if (paneRangeSyncing || !rsiChart || !r || r.from == null || r.to == null) return;
       paneRangeSyncing = true;
       try {
@@ -816,6 +839,9 @@
     var rsiWrap = document.getElementById('sc-rsi-wrap');
     if (mainWrap) chartResizeObs.observe(mainWrap);
     if (rsiWrap) chartResizeObs.observe(rsiWrap);
+
+    applyChartInteractionMode();
+    bindMainChartTrendlineDomSync();
   }
 
   // ── Annotations API ───────────────────────────────────────────────────────
@@ -951,6 +977,7 @@
         try { ind.series.update(lp); } catch (_) {}
       }
     });
+    
   }
 
   function rsiValueAtTime(t) {
@@ -1027,6 +1054,88 @@
       tlRedrawRaf = null;
       drawTrendlines();
     });
+  }
+
+  function needsTrendlineScalePoll() {
+    return trendlines.length > 0 || tlAnchors.length > 0 || selectedTlId != null || tlAnchorPulse != null;
+  }
+
+  function tlDisarmDocumentPointerSync() {
+    if (!tlDocPointerSyncArmed) return;
+    tlDocPointerSyncArmed = false;
+    if (tlDocPointerMoveSync) {
+      document.removeEventListener('pointermove', tlDocPointerMoveSync, { capture: true });
+      tlDocPointerMoveSync = null;
+    }
+    if (tlDocMouseMoveSync) {
+      document.removeEventListener('mousemove', tlDocMouseMoveSync, { capture: true });
+      tlDocMouseMoveSync = null;
+    }
+    if (tlDocDragEndSync) {
+      document.removeEventListener('pointerup', tlDocDragEndSync, { capture: true });
+      document.removeEventListener('pointercancel', tlDocDragEndSync, { capture: true });
+      document.removeEventListener('mouseup', tlDocDragEndSync, { capture: true });
+      tlDocDragEndSync = null;
+    }
+  }
+
+  function tlArmDocumentPointerSync() {
+    if (tlDocPointerSyncArmed) return;
+    tlDocPointerSyncArmed = true;
+    tlDocPointerMoveSync = function (ev) {
+      if (needsTrendlineScalePoll() && ev.buttons) scheduleDrawTrendlines();
+    };
+    tlDocMouseMoveSync = function (ev) {
+      if (needsTrendlineScalePoll() && ev.buttons) scheduleDrawTrendlines();
+    };
+    tlDocDragEndSync = function () {
+      if (needsTrendlineScalePoll()) scheduleDrawTrendlines();
+      tlDisarmDocumentPointerSync();
+    };
+    document.addEventListener('pointermove', tlDocPointerMoveSync, { capture: true, passive: true });
+    document.addEventListener('mousemove', tlDocMouseMoveSync, { capture: true, passive: true });
+    document.addEventListener('pointerup', tlDocDragEndSync, { capture: true });
+    document.addEventListener('pointercancel', tlDocDragEndSync, { capture: true });
+    document.addEventListener('mouseup', tlDocDragEndSync, { capture: true });
+  }
+
+  function bindMainChartTrendlineDomSync() {
+    unbindMainChartTrendlineDomSync();
+    if (!mainChart || typeof mainChart.chartElement !== 'function') return;
+    var el = mainChart.chartElement();
+    if (!el) return;
+    tlMainDomSyncEl = el;
+    var mainWrap = document.getElementById('sc-main-wrap');
+    tlDomWheelHandler = function () {
+      if (needsTrendlineScalePoll()) scheduleDrawTrendlines();
+    };
+    tlDomPointerDownHandler = function () {
+      if (!needsTrendlineScalePoll()) return;
+      scheduleDrawTrendlines();
+      tlArmDocumentPointerSync();
+    };
+    if (mainWrap) {
+      tlMainWrapSyncEl = mainWrap;
+      mainWrap.addEventListener('pointerdown', tlDomPointerDownHandler, true);
+    }
+    el.addEventListener('wheel', tlDomWheelHandler, { passive: true, capture: true });
+    el.addEventListener('pointerdown', tlDomPointerDownHandler, true);
+  }
+
+  function unbindMainChartTrendlineDomSync() {
+    tlDisarmDocumentPointerSync();
+    var el = tlMainDomSyncEl;
+    if (tlMainWrapSyncEl && tlDomPointerDownHandler) {
+      tlMainWrapSyncEl.removeEventListener('pointerdown', tlDomPointerDownHandler, true);
+      tlMainWrapSyncEl = null;
+    }
+    if (el) {
+      if (tlDomWheelHandler) el.removeEventListener('wheel', tlDomWheelHandler, { capture: true });
+      if (tlDomPointerDownHandler) el.removeEventListener('pointerdown', tlDomPointerDownHandler, true);
+    }
+    tlMainDomSyncEl = null;
+    tlDomWheelHandler = null;
+    tlDomPointerDownHandler = null;
   }
 
   function canvasPixelFromClient(clientX, clientY) {
@@ -1189,7 +1298,7 @@
       }
     });
 
-    if (tlMode && tlAnchors.length === 1 && mainChart && candleSeries) {
+    if (chartInteractionMode === MODE_OBJECTS && tlAnchors.length === 1 && mainChart && candleSeries) {
       var a0 = tlAnchors[0];
       var ax = timeToCoordinateExtrapolated(a0.time);
       var ay = candleSeries.priceToCoordinate(a0.price);
@@ -1283,7 +1392,7 @@
     canvas.dataset.scTlBound = '1';
 
     canvas.addEventListener('contextmenu', function (ev) {
-      if (!tlSelectMode || !mainChart || !selectedTlId) return;
+      if (chartInteractionMode !== MODE_OBJECTS || !mainChart || !selectedTlId) return;
       var rect = canvas.getBoundingClientRect();
       var px = ev.clientX - rect.left;
       var py = ev.clientY - rect.top;
@@ -1313,9 +1422,73 @@
     canvas.addEventListener('pointercancel', onTlDragPointerEnd);
 
     canvas.addEventListener('pointerdown', function (ev) {
-      if (tlMode && !tlSelectMode && mainChart && candleSeries && tlAnchors.length === 0) {
+      var rect = canvas.getBoundingClientRect();
+      var px = ev.clientX - rect.left;
+      var py = ev.clientY - rect.top;
+      var wrap = document.getElementById('sc-main-wrap');
+      var wid = wrap ? wrap.clientWidth : 0;
+
+      if (chartInteractionMode === MODE_OBJECTS && mainChart && candleSeries && tlAnchors.length === 0 && selectedTlId) {
+        if (ev.button !== 0 && ev.button !== 2) return;
+        if (tlRmbDrag) return;
+        var tlDrag = findTrendlineById(selectedTlId);
+        if (!tlDrag) return;
+        var whichEnd = hitTestTrendlineHandle(px, py, tlDrag);
+        if (whichEnd != null) {
+          ev.preventDefault();
+          var fixedOther = whichEnd === 1
+            ? { time: tlDrag.time2, price: tlDrag.price2 }
+            : { time: tlDrag.time1, price: tlDrag.price1 };
+          tlRmbDrag = {
+            mode: 'endpoint',
+            whichEnd: whichEnd,
+            fixedOther: fixedOther,
+            tlId: selectedTlId,
+            pointerId: ev.pointerId,
+            button: ev.button,
+            didMove: false,
+            downPx: px,
+            downPy: py
+          };
+          try {
+            if (typeof canvas.setPointerCapture === 'function') {
+              canvas.setPointerCapture(ev.pointerId);
+            }
+          } catch (_) {}
+          onTlRmbDragMove(ev);
+          return;
+        }
+        if (hitTestTrendlineParallelBody(px, py, tlDrag, wid)) {
+          var ep = getTrendlinePixelEndpoints(tlDrag, wid);
+          if (!ep) return;
+          ev.preventDefault();
+          var grab = projectPointToSegment(px, py, ep.x1, ep.y1, ep.x2, ep.y2);
+          tlRmbDrag = {
+            mode: 'move',
+            tlId: selectedTlId,
+            ep0: { x1: ep.x1, y1: ep.y1, x2: ep.x2, y2: ep.y2 },
+            gx: grab.x,
+            gy: grab.y,
+            pointerId: ev.pointerId,
+            button: ev.button,
+            didMove: false,
+            downPx: px,
+            downPy: py
+          };
+          try {
+            if (typeof canvas.setPointerCapture === 'function') {
+              canvas.setPointerCapture(ev.pointerId);
+            }
+          } catch (_) {}
+          return;
+        }
+      }
+
+      if (chartInteractionMode === MODE_OBJECTS && mainChart && candleSeries && tlAnchors.length === 0) {
         if (ev.button !== 0) return;
         if (tlRmbDrag) return;
+        if (hitTestTrendlineIds(px, py, wid) != null) return;
+        if (selectedTlId) return;
         var ptDown = canvasPointToChart(ev);
         if (!ptDown) return;
         tlAnchors.push(ptDown);
@@ -1324,129 +1497,81 @@
         attachTlDraftPreviewListeners();
         scheduleDrawTrendlines();
         tlSuppressNextDrawClick = true;
+        applyChartInteractionMode();
         return;
       }
-      if (!tlSelectMode || !mainChart || !candleSeries || !selectedTlId) return;
-      if (ev.pointerType !== 'mouse') return;
-      if (ev.button !== 0 && ev.button !== 2) return;
-      if (tlRmbDrag) return;
-      var rect = canvas.getBoundingClientRect();
-      var px = ev.clientX - rect.left;
-      var py = ev.clientY - rect.top;
-      var wrap = document.getElementById('sc-main-wrap');
-      var wid = wrap ? wrap.clientWidth : 0;
-      var tl = findTrendlineById(selectedTlId);
-      if (!tl) return;
-      var whichEnd = hitTestTrendlineHandle(px, py, tl);
-      if (whichEnd != null) {
-        ev.preventDefault();
-        var fixedOther = whichEnd === 1
-          ? { time: tl.time2, price: tl.price2 }
-          : { time: tl.time1, price: tl.price1 };
-        tlRmbDrag = {
-          mode: 'endpoint',
-          whichEnd: whichEnd,
-          fixedOther: fixedOther,
-          tlId: selectedTlId,
-          pointerId: ev.pointerId,
-          button: ev.button,
-          didMove: false,
-          downPx: px,
-          downPy: py
-        };
-        try {
-          if (typeof canvas.setPointerCapture === 'function') {
-            canvas.setPointerCapture(ev.pointerId);
-          }
-        } catch (_) {}
-        onTlRmbDragMove(ev);
-        return;
-      }
-      if (!hitTestTrendlineParallelBody(px, py, tl, wid)) return;
-      var ep = getTrendlinePixelEndpoints(tl, wid);
-      if (!ep) return;
-      ev.preventDefault();
-      var grab = projectPointToSegment(px, py, ep.x1, ep.y1, ep.x2, ep.y2);
-      tlRmbDrag = {
-        mode: 'move',
-        tlId: selectedTlId,
-        ep0: { x1: ep.x1, y1: ep.y1, x2: ep.x2, y2: ep.y2 },
-        gx: grab.x,
-        gy: grab.y,
-        pointerId: ev.pointerId,
-        button: ev.button,
-        didMove: false,
-        downPx: px,
-        downPy: py
-      };
-      try {
-        if (typeof canvas.setPointerCapture === 'function') {
-          canvas.setPointerCapture(ev.pointerId);
-        }
-      } catch (_) {}
     });
 
     canvas.addEventListener('click', function (ev) {
-      if (tlSelectMode && mainChart) {
+      if (chartInteractionMode !== MODE_OBJECTS || !mainChart || !candleSeries) return;
+
+      if (tlAnchors.length === 1) {
         if (tlSuppressSelectClick) {
           tlSuppressSelectClick = false;
           ev.stopPropagation();
           return;
         }
-        var rect = canvas.getBoundingClientRect();
-        var px = ev.clientX - rect.left;
-        var py = ev.clientY - rect.top;
-        var wrap = document.getElementById('sc-main-wrap');
-        var wid = wrap ? wrap.clientWidth : 0;
-        var hit = hitTestTrendlineIds(px, py, wid);
-        setSelectedTrendline(hit);
-        ev.stopPropagation();
-        return;
-      }
-      if (!tlMode || !mainChart) return;
-      if (tlSuppressNextDrawClick) {
-        tlSuppressNextDrawClick = false;
-        ev.stopPropagation();
-        return;
-      }
-      var pt = canvasPointToChart(ev);
-      if (!pt) return;
-      if (tlAnchors.length === 0) return;
-      var a0 = tlAnchors[0];
-      var ax = timeToCoordinateExtrapolated(a0.time);
-      var ay = candleSeries.priceToCoordinate(a0.price);
-      var bx = timeToCoordinateExtrapolated(pt.time);
-      var by = candleSeries.priceToCoordinate(pt.price);
-      if (tlPulseTimer) {
-        clearTimeout(tlPulseTimer);
-        tlPulseTimer = null;
-      }
-      tlAnchorPulse = (ax != null && ay != null && bx != null && by != null)
-        ? [{ x: ax, y: ay }, { x: bx, y: by }]
-        : null;
-      tlAnchors = [];
-      detachTlDraftPreviewListeners();
-      trendlines.push({
-        id: uid(),
-        time1: a0.time,
-        price1: a0.price,
-        time2: pt.time,
-        price2: pt.price,
-        color: '#f59e0b',
-        width: 1,
-        label: '',
-        extended: !!ev.shiftKey
-      });
-      scheduleSaveAnnotations();
-      drawTrendlines();
-      renderChips();
-      if (tlAnchorPulse) {
-        tlPulseTimer = setTimeout(function () {
+        if (tlSuppressNextDrawClick) {
+          tlSuppressNextDrawClick = false;
+          ev.stopPropagation();
+          return;
+        }
+        var pt = canvasPointToChart(ev);
+        if (!pt) return;
+        var a0 = tlAnchors[0];
+        var ax = timeToCoordinateExtrapolated(a0.time);
+        var ay = candleSeries.priceToCoordinate(a0.price);
+        var bx = timeToCoordinateExtrapolated(pt.time);
+        var by = candleSeries.priceToCoordinate(pt.price);
+        if (tlPulseTimer) {
+          clearTimeout(tlPulseTimer);
           tlPulseTimer = null;
-          tlAnchorPulse = null;
-          drawTrendlines();
-        }, 450);
+        }
+        tlAnchorPulse = (ax != null && ay != null && bx != null && by != null)
+          ? [{ x: ax, y: ay }, { x: bx, y: by }]
+          : null;
+        tlAnchors = [];
+        detachTlDraftPreviewListeners();
+        trendlines.push({
+          id: uid(),
+          time1: a0.time,
+          price1: a0.price,
+          time2: pt.time,
+          price2: pt.price,
+          color: '#f59e0b',
+          width: 1,
+          label: '',
+          extended: !!ev.shiftKey
+        });
+        scheduleSaveAnnotations();
+        applyChartInteractionMode();
+        drawTrendlines();
+        renderChips();
+        if (tlAnchorPulse) {
+          tlPulseTimer = setTimeout(function () {
+            tlPulseTimer = null;
+            tlAnchorPulse = null;
+            drawTrendlines();
+          }, 450);
+        }
+        ev.stopPropagation();
+        return;
       }
+
+      if (tlSuppressSelectClick) {
+        tlSuppressSelectClick = false;
+        ev.stopPropagation();
+        return;
+      }
+
+      var rect = canvas.getBoundingClientRect();
+      var px = ev.clientX - rect.left;
+      var py = ev.clientY - rect.top;
+      var wrap = document.getElementById('sc-main-wrap');
+      var wid = wrap ? wrap.clientWidth : 0;
+      var hit = hitTestTrendlineIds(px, py, wid);
+      setSelectedTrendline(hit);
+      ev.stopPropagation();
     });
   }
 
@@ -1603,6 +1728,11 @@
     var wrap = document.getElementById('sc-main-wrap');
     if (!tip || !wrap || !candleSeries) return;
 
+    if (chartInteractionMode !== MODE_CROSSHAIR) {
+      tip.hidden = true;
+      return;
+    }
+
     if (!param || !param.point || param.point.x === undefined) {
       tip.hidden = true;
       return;
@@ -1734,6 +1864,9 @@
         '<span class="sc-chip-remove" data-tlid="' + tl.id + '">\u00d7</span>';
       chip.addEventListener('click', function (e) {
         if (e.target.closest && e.target.closest('.sc-chip-remove')) return;
+        if (chartInteractionMode !== MODE_OBJECTS) {
+          setChartInteractionMode(MODE_OBJECTS);
+        }
         setSelectedTrendline(tl.id === selectedTlId ? null : tl.id);
       });
       chip.querySelector('.sc-chip-remove').addEventListener('click', function (e) {
@@ -1741,7 +1874,6 @@
         var id = tl.id;
         if (selectedTlId === id) {
           selectedTlId = null;
-          updateDeleteSelectedTlButton();
         }
         trendlines = trendlines.filter(function (x) { return x.id !== id; });
         scheduleSaveAnnotations();
@@ -1865,11 +1997,12 @@
     document.addEventListener('keydown', function (ev) {
       if (ev.key === 'Escape') {
         closeAllPanels(null);
-        exitTrendlineMode();
-        exitTlSelectMode();
+        if (chartInteractionMode === MODE_OBJECTS) {
+          setChartInteractionMode(MODE_NONE);
+        }
         return;
       }
-      if ((ev.key === 'Delete' || ev.key === 'Backspace') && selectedTlId) {
+      if ((ev.key === 'Delete' || ev.key === 'Backspace') && chartInteractionMode === MODE_OBJECTS && selectedTlId) {
         if (isTypingTarget(ev.target)) return;
         ev.preventDefault();
         deleteSelectedTrendline();
@@ -1965,58 +2098,22 @@
       renderChips();
     });
 
-    var tlBtn = document.getElementById('sc-trendline-btn');
-    var canvas = getTlCanvas();
-    if (tlBtn && canvas) {
-      tlBtn.addEventListener('click', function (ev) {
+    var cxModeBtn = document.getElementById('sc-mode-crosshair');
+    if (cxModeBtn) {
+      cxModeBtn.addEventListener('click', function (ev) {
         ev.stopPropagation();
-        if (tlMode) {
-          exitTrendlineMode();
-          return;
-        }
-        exitTlSelectMode();
-        if (selectedTlId) {
-          selectedTlId = null;
-          updateDeleteSelectedTlButton();
-          drawTrendlines();
-          renderChips();
-        }
-        tlMode = true;
-        tlBtn.classList.add('active');
-        tlBtn.setAttribute('aria-pressed', 'true');
-        canvas.classList.add('draw-mode');
-        tlAnchors = [];
-        tlSuppressNextDrawClick = false;
         closeAllPanels(null);
+        setChartInteractionMode(MODE_CROSSHAIR);
       });
     }
-
-    var selTlBtn = document.getElementById('sc-tl-select-btn');
-    if (selTlBtn && canvas) {
-      selTlBtn.addEventListener('click', function (ev) {
+    var objModeBtn = document.getElementById('sc-mode-objects');
+    if (objModeBtn) {
+      objModeBtn.addEventListener('click', function (ev) {
         ev.stopPropagation();
-        setTlSelectMode(!tlSelectMode);
+        closeAllPanels(null);
+        setChartInteractionMode(MODE_OBJECTS);
       });
     }
-
-    var delSelBtn = document.getElementById('sc-delete-selected-tl');
-    if (delSelBtn) {
-      delSelBtn.addEventListener('click', function (ev) {
-        ev.stopPropagation();
-        deleteSelectedTrendline();
-      });
-    }
-
-    document.getElementById('sc-clear-tl') && document.getElementById('sc-clear-tl').addEventListener('click', function () {
-      trendlines = [];
-      tlAnchors = [];
-      tlSuppressNextDrawClick = false;
-      selectedTlId = null;
-      updateDeleteSelectedTlButton();
-      scheduleSaveAnnotations();
-      drawTrendlines();
-      renderChips();
-    });
 
     var volCb = document.getElementById('sc-show-vol');
     if (volCb) {
@@ -2152,7 +2249,6 @@
     });
     setupUI();
     renderChips();
-    updateDeleteSelectedTlButton();
   };
 
   if (document.readyState === 'loading') {
