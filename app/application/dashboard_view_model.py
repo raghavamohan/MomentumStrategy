@@ -12,7 +12,7 @@ from typing import Any
 from fastapi import Request
 from fastapi.responses import RedirectResponse
 from kiteconnect import KiteConnect
-from kiteconnect.exceptions import TokenException
+from kiteconnect.exceptions import PermissionException, TokenException
 
 from app.infrastructure.auth import load_cached_access_token, load_credentials
 from app.infrastructure.live_prices import live_price_stream
@@ -43,6 +43,14 @@ from app.infrastructure.cache.nse_provider import get_nifty50_symbols
 
 logger = logging.getLogger(__name__)
 _DASHBOARD_TIMING_LOGGER = dashboard_timing_logger()
+
+KITE_PORTFOLIO_PERMISSION_USER_MESSAGE = (
+    "Zerodha rejected portfolio API calls (Insufficient permission). "
+    "In https://developers.kite.trade open your Kite Connect app and enable the "
+    "permissions needed to read profile, holdings, positions, and margins "
+    "(wording varies by console version). Save the app, then use Logout here and "
+    "sign in again."
+)
 
 
 def dashboard_timing_mark(
@@ -224,6 +232,7 @@ async def build_dashboard_view_model(
     quote_keys = index_quote_keys + watch_quote_keys
 
     mf_error: str | None = None
+    kite_api_permission_error: str | None = None
     with ThreadPoolExecutor(max_workers=6) as pool:
         future_equity = pool.submit(kite.holdings)
         future_positions = pool.submit(kite.positions)
@@ -240,6 +249,12 @@ async def build_dashboard_view_model(
             request.session.clear()
             live_price_stream.close()
             return None, RedirectResponse("/", status_code=303)
+        except PermissionException as exc:
+            logger.warning("Kite portfolio snapshot permission denied: %s", exc)
+            kite_api_permission_error = KITE_PORTFOLIO_PERMISSION_USER_MESSAGE
+            equity_raw = []
+            positions_raw = {"net": []}
+            margins_raw = {}
 
         profile_raw = future_profile.result() or {}
         market_condition = future_market_condition.result()
@@ -497,6 +512,7 @@ async def build_dashboard_view_model(
     }
     context = {
         "dashboard_name": DASHBOARD_DISPLAY_NAME,
+        "kite_api_permission_error": kite_api_permission_error,
         "equity_holdings": equity_holdings,
         "equity_totals": equity_totals,
         "equity_sector_summary": equity_sector_info["top_level"],

@@ -70,7 +70,7 @@ from urllib.parse import parse_qs, urlparse
 
 from dotenv import load_dotenv
 from kiteconnect import KiteConnect
-from kiteconnect.exceptions import TokenException
+from kiteconnect.exceptions import PermissionException, TokenException
 
 
 # Repo root (was ``app/`` when this file lived at ``app/auth.py``; now under ``app/infrastructure/``).
@@ -165,12 +165,19 @@ def validate_kite_session(kite: KiteConnect) -> bool:
     read-only, has no side effects, and returns immediately for a
     healthy session. If Kite returns an auth error, pykiteconnect raises
     ``TokenException`` and this helper returns ``False``.
+
+    If Zerodha returns ``PermissionException`` (app missing profile/portfolio
+    permissions in the developer console), the access token may still be
+    valid; callers treat the session as authenticated and surface a dashboard
+    notice instead of forcing a logout.
     """
     try:
         kite.profile()
         return True
     except TokenException:
         return False
+    except PermissionException:
+        return True
 
 
 def _interactive_login(kite: KiteConnect, api_secret: str) -> str:

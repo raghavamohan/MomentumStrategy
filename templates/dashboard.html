@@ -256,6 +256,11 @@
 
   <div id="dashboard-root">
     <textarea id="dashboard-bootstrap" hidden readonly>{{ dashboard_bootstrap_json }}</textarea>
+    {% if kite_api_permission_error %}
+    <div class="alert error kite-api-permission-banner" role="alert" style="white-space: pre-wrap; margin: 0 0 16px;">
+      {{ kite_api_permission_error }}
+    </div>
+    {% endif %}
     <div class="dashboard-shell">
       <aside class="card side-nav" aria-label="Dashboard sections">
         <div class="side-nav-title">Sections</div>
