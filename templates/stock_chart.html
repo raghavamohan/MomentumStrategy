@@ -40,6 +40,8 @@
 .sc-chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:600;border:1px solid var(--border);background:var(--surface-2);color:var(--text)}
 .sc-chip-remove{cursor:pointer;opacity:.6;font-size:14px;line-height:1;margin-left:2px}
 .sc-chip-remove:hover{opacity:1}
+.sc-chip-clear-all{margin-left:2px;padding:3px 12px;border-radius:20px;font-size:12px;font-weight:600;border:1px dashed var(--border);background:transparent;color:var(--muted);cursor:pointer;align-self:center}
+.sc-chip-clear-all:hover{color:var(--text);border-color:var(--muted);background:var(--surface-2)}
 .sc-card{border-radius:var(--radius-lg);border:1px solid var(--border);background:var(--surface);overflow:hidden}
 .sc-chart-area{display:flex;flex-direction:column}
 .sc-main-wrap{position:relative;height:min(460px,55vh);min-height:280px}
@@ -104,6 +106,7 @@
 
   <p class="sc-help" id="sc-help">
     <strong>Chart:</strong> with <em>Crosshair</em> and <em>Objects</em> off, drag to pan and scroll or pinch to zoom only.
+    Double-click the main or RSI pane to reset horizontal and vertical zoom to the default.
     <strong>Crosshair:</strong> turn on <em>Crosshair</em> to show the crosshair; vertical position snaps to the nearest OHLC, moving averages at that time, and RSI (lower pane). <em>Click</em> the main chart to place a horizontal price level at the snapped price.
     <strong>Objects:</strong> turn on <em>Objects</em> to select trendlines (click a line or chip), draw a new line on empty chart (left button down for the first point, move to preview, click again to finish; <kbd style="font-size:11px;padding:1px 4px;border-radius:4px;border:1px solid var(--border)">Shift</kbd> on the second click extends). Drag the line body to move both anchors together, or drag a round handle to move one anchor. <kbd style="font-size:11px;padding:1px 4px;border-radius:4px;border:1px solid var(--border)">Delete</kbd> removes the selected trendline. <kbd style="font-size:11px;padding:1px 4px;border-radius:4px;border:1px solid var(--border)">Esc</kbd> cancels an in-progress line and turns off Objects. Crosshair and Objects cannot both be on.
   </p>

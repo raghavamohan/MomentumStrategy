@@ -101,6 +101,10 @@ export function mountStockChartPage() {
   var tlDocMouseMoveSync = null;
   var tlDocDragEndSync = null;
 
+  /** Main / RSI pane double-click → reset zoom (see bindPaneDoubleClickZoomReset). */
+  var paneDblClickMainHandler = null;
+  var paneDblClickRsiHandler = null;
+
   /** Last applied barSpacing|minBar|rightOffset from main → RSI (avoid redundant applyOptions). */
   var rsiTimeScaleSyncKey = null;
 
@@ -125,6 +129,121 @@ export function mountStockChartPage() {
 
   /** Prevents ping-pong when mirroring visible *logical range* between main and RSI charts. */
   var paneRangeSyncing = false;
+
+  function isDblClickOnChromeUi(tgt) {
+    if (!tgt || !tgt.closest) return false;
+    return !!(tgt.closest('button') || tgt.closest('a') || tgt.closest('input') ||
+      tgt.closest('select') || tgt.closest('textarea') || tgt.closest('.sc-panel') ||
+      tgt.closest('label'));
+  }
+
+  function shouldIgnoreMainPaneDoubleClick(ev) {
+    if (isDblClickOnChromeUi(ev.target)) return true;
+    var wrap = document.getElementById('sc-main-wrap');
+    if (!wrap) return true;
+    if (chartInteractionMode === MODE_OBJECTS) {
+      var canvas = getTlCanvas();
+      if (canvas && canvas.classList.contains('object-interact-mode') &&
+          (ev.target === canvas || canvas.contains(ev.target))) {
+        if (tlAnchors.length || tlRmbDrag) return true;
+        var rect = canvas.getBoundingClientRect();
+        var px = ev.clientX - rect.left;
+        var py = ev.clientY - rect.top;
+        var wid = wrap.clientWidth;
+        if (hitTestTrendlineIds(px, py, wid) != null) return true;
+      }
+    }
+    return false;
+  }
+
+  function resetSharedTimeScaleToDefault() {
+    if (!mainChart) return;
+    try {
+      var ts = mainChart.timeScale();
+      if (typeof ts.resetTimeScale === 'function') {
+        ts.resetTimeScale();
+      } else if (typeof ts.fitContent === 'function') {
+        ts.fitContent();
+      }
+    } catch (_) {}
+    rsiTimeScaleSyncKey = null;
+    try {
+      ensureRsiTimeScaleVisualMatchesMain();
+    } catch (_) {}
+    if (rsiChart && showRsi) {
+      try {
+        alignRsiTimeScaleToMain();
+      } catch (_) {}
+    }
+  }
+
+  function resetMainPanePriceScales() {
+    if (!mainChart) return;
+    try {
+      mainChart.priceScale('right').applyOptions({ autoScale: true });
+    } catch (_) {}
+    try {
+      mainChart.priceScale('vol').applyOptions({ autoScale: true });
+    } catch (_) {}
+  }
+
+  function resetRsiPanePriceScale() {
+    if (!rsiChart) return;
+    try {
+      rsiChart.priceScale('right').applyOptions({ autoScale: true });
+    } catch (_) {}
+  }
+
+  function onMainChartPaneDoubleClick(ev) {
+    if (!mainChart) return;
+    if (typeof ev.button === 'number' && ev.button !== 0) return;
+    if (shouldIgnoreMainPaneDoubleClick(ev)) return;
+    ev.preventDefault();
+    resetSharedTimeScaleToDefault();
+    resetMainPanePriceScales();
+    scheduleDrawTrendlines();
+  }
+
+  function onRsiPaneDoubleClick(ev) {
+    if (!rsiChart || !showRsi) return;
+    if (typeof ev.button === 'number' && ev.button !== 0) return;
+    if (isDblClickOnChromeUi(ev.target)) return;
+    ev.preventDefault();
+    resetSharedTimeScaleToDefault();
+    resetRsiPanePriceScale();
+    scheduleDrawTrendlines();
+  }
+
+  function bindPaneDoubleClickZoomReset() {
+    unbindPaneDoubleClickZoomReset();
+    var mainWrap = document.getElementById('sc-main-wrap');
+    var rsiWrap = document.getElementById('sc-rsi-wrap');
+    if (mainWrap) {
+      paneDblClickMainHandler = function (e) {
+        onMainChartPaneDoubleClick(e);
+      };
+      mainWrap.addEventListener('dblclick', paneDblClickMainHandler, true);
+    }
+    if (rsiWrap) {
+      paneDblClickRsiHandler = function (e) {
+        onRsiPaneDoubleClick(e);
+      };
+      rsiWrap.addEventListener('dblclick', paneDblClickRsiHandler, true);
+    }
+  }
+
+  function unbindPaneDoubleClickZoomReset() {
+    var mainWrap = document.getElementById('sc-main-wrap');
+    var rsiWrap = document.getElementById('sc-rsi-wrap');
+    if (mainWrap && paneDblClickMainHandler) {
+      mainWrap.removeEventListener('dblclick', paneDblClickMainHandler, true);
+    }
+    paneDblClickMainHandler = null;
+    if (rsiWrap && paneDblClickRsiHandler) {
+      rsiWrap.removeEventListener('dblclick', paneDblClickRsiHandler, true);
+    }
+    paneDblClickRsiHandler = null;
+  }
 
   function alignRsiTimeScaleToMain() {
     if (!mainChart || !rsiChart) return;
@@ -484,12 +603,13 @@ export function mountStockChartPage() {
   }
 
   /**
-   * Main chart has two right price scales (candles + volume); RSI has one, so the
-   * time-scale plot width differs. Nudge RSI chart pixel width until timeScale().width()
-   * matches main (capped so we do not grow without bound). Avoids minimumWidth on a
-   * single RSI scale (that ate the plot and shifted the crosshair the other way).
+   * Keep RSI pane in lockstep with the main chart:
+   * 1) Match the candle `right` price-scale gutter width to the RSI `right` gutter
+   *    (same minimumWidth on both so OHLC vs RSI labels align vertically).
+   * 2) Nudge RSI chart pixel width until timeScale().width() matches main (capped),
+   *    since main has an extra volume price strip and the time-plot widths differ otherwise.
    */
-  function alignRsiPaneTimeScaleWidth() {
+  function alignRsiPaneLayout() {
     if (!mainChart || !rsiChart || !showRsi) return;
     var mts = mainChart.timeScale();
     var rts = rsiChart.timeScale();
@@ -499,12 +619,35 @@ export function mountStockChartPage() {
     var baseW = Math.max(rsiWrap ? rsiWrap.clientWidth : rsiEl.offsetWidth, rsiEl.offsetWidth, 1);
     var maxExtra = 100;
     var capW = baseW + maxExtra;
-    for (var i = 0; i < 6; i++) {
+
+    for (var i = 0; i < 8; i++) {
+      var mps = mainChart.priceScale('right');
+      var rps = rsiChart.priceScale('right');
+      if (typeof mps.width === 'function' && typeof rps.width === 'function') {
+        var wm = mps.width();
+        var wr = rps.width();
+        if (wm != null && wr != null && isFinite(wm) && isFinite(wr) && wm > 0 && wr > 0) {
+          var gTarget = Math.ceil(Math.max(wm, wr));
+          try {
+            mps.applyOptions({ minimumWidth: gTarget });
+            rps.applyOptions({ minimumWidth: gTarget });
+          } catch (_) {}
+        }
+      }
+
       var twM = mts.width();
       var twR = rts.width();
       if (twM == null || twR == null || !isFinite(twM) || !isFinite(twR) || twM <= 0 || twR <= 0) return;
+
+      mps = mainChart.priceScale('right');
+      rps = rsiChart.priceScale('right');
+      var wmA = typeof mps.width === 'function' ? mps.width() : null;
+      var wrA = typeof rps.width === 'function' ? rps.width() : null;
+      var timeOk = Math.abs(twM - twR) < 0.75;
+      var gutterOk = wmA != null && wrA != null && isFinite(wmA) && isFinite(wrA) && Math.abs(wmA - wrA) < 1;
+      if (timeOk && gutterOk) return;
+
       var d = twM - twR;
-      if (Math.abs(d) < 0.75) return;
       var ow;
       try {
         ow = rsiChart.options().width;
@@ -514,8 +657,11 @@ export function mountStockChartPage() {
       if (ow == null || !isFinite(ow)) ow = baseW;
       var raw = Math.round(ow + d);
       var nw = Math.min(capW, Math.max(baseW, raw));
-      if (nw === ow) return;
-      rsiChart.applyOptions({ width: nw });
+      if (nw !== ow) {
+        rsiChart.applyOptions({ width: nw });
+      } else if (timeOk) {
+        return;
+      }
     }
   }
 
@@ -547,6 +693,9 @@ export function mountStockChartPage() {
     mainChart.applyOptions({ width: mw, height: mh });
 
     if (!rsiChart || !rsiEl || !showRsi) {
+      try {
+        mainChart.priceScale('right').applyOptions({ minimumWidth: 0 });
+      } catch (_) {}
       drawTrendlines();
       return;
     }
@@ -561,10 +710,10 @@ export function mountStockChartPage() {
 
     rsiChart.applyOptions({ width: rw, height: rh });
 
-    alignRsiPaneTimeScaleWidth();
+    alignRsiPaneLayout();
     requestAnimationFrame(function () {
-      alignRsiPaneTimeScaleWidth();
-      requestAnimationFrame(alignRsiPaneTimeScaleWidth);
+      alignRsiPaneLayout();
+      requestAnimationFrame(alignRsiPaneLayout);
     });
 
     drawTrendlines();
@@ -593,6 +742,7 @@ export function mountStockChartPage() {
   // ── Charts lifecycle ─────────────────────────────────────────────────────
   function destroyCharts() {
     unbindMainChartTrendlineDomSync();
+    unbindPaneDoubleClickZoomReset();
     clearStaleCheck();
     endTlRmbDrag();
     detachTlDraftPreviewListeners();
@@ -729,7 +879,7 @@ export function mountStockChartPage() {
       syncMainCrosshairFromRsi(param);
     });
 
-    alignRsiPaneTimeScaleWidth();
+    alignRsiPaneLayout();
 
     chartResizeObs = new ResizeObserver(function () {
       scheduleSyncChartPaneSizes();
@@ -741,6 +891,7 @@ export function mountStockChartPage() {
 
     applyChartInteractionMode();
     bindMainChartTrendlineDomSync();
+    bindPaneDoubleClickZoomReset();
   }
 
   // ── Annotations API ───────────────────────────────────────────────────────
@@ -865,7 +1016,7 @@ export function mountStockChartPage() {
     cachedRsiPoints = calcRSI(bars, RSI_PERIOD);
     rsiLineSeries.setData(cachedRsiPoints);
     requestAnimationFrame(function () {
-      alignRsiPaneTimeScaleWidth();
+      alignRsiPaneLayout();
     });
   }
 
@@ -2002,6 +2153,25 @@ export function mountStockChartPage() {
     }
   }
 
+  /** Remove every chip-backed overlay: MAs/EMAs, trendlines, and horizontal levels. */
+  function clearAllChips() {
+    indicators.forEach(function (ind) {
+      if (ind.series && mainChart) {
+        try { mainChart.removeSeries(ind.series); } catch (_) {}
+        ind.series = null;
+      }
+    });
+    indicators = [];
+    selectedTlId = null;
+    trendlines = [];
+    drawTrendlines();
+    levels = [];
+    clearLevelPriceLines();
+    scheduleSaveAnnotations();
+    refreshIndicators();
+    renderChips();
+  }
+
   function renderChips() {
     var host = document.getElementById('sc-chips');
     if (!host) return;
@@ -2014,6 +2184,12 @@ export function mountStockChartPage() {
         '<span class="sc-chip-remove" data-ind="' + ind.id + '">\u00d7</span>';
       chip.querySelector('.sc-chip-remove').addEventListener('click', function (e) {
         e.stopPropagation();
+        // Detach chart series before dropping this row from `indicators`; otherwise
+        // refreshIndicators() never sees it and orphaned line series stay on the chart.
+        if (ind.series && mainChart) {
+          try { mainChart.removeSeries(ind.series); } catch (_) {}
+          ind.series = null;
+        }
         indicators = indicators.filter(function (x) { return x.id !== ind.id; });
         refreshIndicators();
         renderChips();
@@ -2067,6 +2243,21 @@ export function mountStockChartPage() {
       });
       host.appendChild(chip);
     });
+
+    if (indicators.length || trendlines.length || levels.length) {
+      var clearAllBtn = document.createElement('button');
+      clearAllBtn.type = 'button';
+      clearAllBtn.className = 'sc-chip-clear-all';
+      clearAllBtn.textContent = 'Clear all';
+      clearAllBtn.setAttribute('aria-label', 'Remove all indicators, trendlines, and price levels');
+      clearAllBtn.title = 'Remove all indicators, trendlines, and price levels from the chart';
+      clearAllBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        clearAllChips();
+      });
+      host.appendChild(clearAllBtn);
+    }
+
     updateIndAddButton();
   }
 
