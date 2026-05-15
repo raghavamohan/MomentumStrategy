@@ -310,12 +310,14 @@ async def build_dashboard_view_model(
                 rest_ltp = float(raw_ltp)
             except (TypeError, ValueError):
                 rest_ltp = None
+        # When the quote API omits last_price (e.g. pre-open / stale cache), still show prior close.
+        display_ltp = rest_ltp if rest_ltp is not None else prev_close
         display = str(data.get("tradingsymbol") or ts or env_label)
         index_quotes_bootstrap.append(
             {
                 "label": display,
                 "token": token,
-                "ltp": rest_ltp,
+                "ltp": display_ltp,
                 "prevClose": prev_close,
             }
         )

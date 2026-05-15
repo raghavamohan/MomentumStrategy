@@ -1096,19 +1096,27 @@
       labelEl.textContent = label + ':';
       const prevRaw = prevClose;
       const prev = prevRaw != null && prevRaw !== '' ? Number(prevRaw) : NaN;
+      const ltpFinite = Number.isFinite(ltp);
+      const displayLtp = ltpFinite ? ltp : Number.isFinite(prev) && prev > 0 ? prev : NaN;
 
-      if (!Number.isFinite(ltp)) {
+      if (!Number.isFinite(displayLtp)) {
         valueEl.textContent = '--';
         changeEl.textContent = '';
         changeEl.className = 'nifty-change';
         return;
       }
 
-      valueEl.textContent = formatInr(ltp);
+      valueEl.textContent = formatInr(displayLtp);
 
       if (!Number.isFinite(prev) || prev <= 0) {
         changeEl.textContent = '';
         changeEl.className = 'nifty-change';
+        return;
+      }
+
+      if (!ltpFinite) {
+        changeEl.textContent = '';
+        changeEl.className = 'nifty-change nifty-change-flat';
         return;
       }
 
@@ -2064,7 +2072,10 @@
         const rawTok = item.token;
         const tok = rawTok != null && rawTok !== '' ? String(rawTok) : '';
         if (tok && Object.prototype.hasOwnProperty.call(ltpMap, tok)) {
-          item.ltp = Number(ltpMap[tok]);
+          const p = Number(ltpMap[tok]);
+          if (Number.isFinite(p)) {
+            item.ltp = p;
+          }
         }
       });
       syncIndexQuoteDom();
