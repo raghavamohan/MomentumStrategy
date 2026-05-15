@@ -45,7 +45,7 @@
 .sc-main-wrap{position:relative;height:min(460px,55vh);min-height:280px}
 .sc-chart-area.sc-rsi-hidden .sc-rsi-wrap{display:none}
 .sc-chart-area.sc-rsi-hidden .sc-main-wrap{height:min(560px,65vh);min-height:320px}
-.sc-rsi-wrap{position:relative;height:120px;border-top:1px solid var(--border)}
+.sc-rsi-wrap{position:relative;height:120px;border-top:1px solid var(--border);overflow-x:visible}
 .sc-trendline-canvas{position:absolute;inset:0;pointer-events:none;z-index:10}
 .sc-trendline-canvas.object-interact-mode{pointer-events:all;cursor:pointer}
 .sc-trendline-canvas.object-interact-mode.drawing-tl{cursor:crosshair}
@@ -91,7 +91,7 @@
     <div class="sc-controls">
       <button type="button" class="sc-control-btn" id="sc-add-ind">+ Indicator</button>
       <button type="button" class="sc-control-btn" id="sc-add-lvl">+ Level</button>
-      <button type="button" class="sc-control-btn" id="sc-mode-crosshair" aria-pressed="false" title="Crosshair: read values along candles and moving averages (magnet). Turn off to pan and zoom only.">Crosshair</button>
+      <button type="button" class="sc-control-btn" id="sc-mode-crosshair" aria-pressed="false" title="Crosshair: snap vertically to OHLC and MAs at the bar under the cursor; click the chart to place a horizontal level. Turn off to pan and zoom only.">Crosshair</button>
       <button type="button" class="sc-control-btn" id="sc-mode-objects" aria-pressed="false" title="Objects: select trendlines, draw new ones (empty chart + first point), drag to move. Delete: Del. Esc exits this mode.">Objects</button>
       <label class="sc-control-btn" style="cursor:pointer">
         <input type="checkbox" id="sc-show-vol" checked style="margin-right:4px">Vol
@@ -104,7 +104,7 @@
 
   <p class="sc-help" id="sc-help">
     <strong>Chart:</strong> with <em>Crosshair</em> and <em>Objects</em> off, drag to pan and scroll or pinch to zoom only.
-    <strong>Crosshair:</strong> turn on <em>Crosshair</em> to show the crosshair and snap along candles and MA lines.
+    <strong>Crosshair:</strong> turn on <em>Crosshair</em> to show the crosshair; vertical position snaps to the nearest OHLC, moving averages at that time, and RSI (lower pane). <em>Click</em> the main chart to place a horizontal price level at the snapped price.
     <strong>Objects:</strong> turn on <em>Objects</em> to select trendlines (click a line or chip), draw a new line on empty chart (left button down for the first point, move to preview, click again to finish; <kbd style="font-size:11px;padding:1px 4px;border-radius:4px;border:1px solid var(--border)">Shift</kbd> on the second click extends). Drag the line body to move both anchors together, or drag a round handle to move one anchor. <kbd style="font-size:11px;padding:1px 4px;border-radius:4px;border:1px solid var(--border)">Delete</kbd> removes the selected trendline. <kbd style="font-size:11px;padding:1px 4px;border-radius:4px;border:1px solid var(--border)">Esc</kbd> cancels an in-progress line and turns off Objects. Crosshair and Objects cannot both be on.
   </p>
 
@@ -127,7 +127,7 @@
         <div id="sc-tooltip" class="sc-tooltip" hidden></div>
       </div>
       <div class="sc-rsi-wrap" id="sc-rsi-wrap">
-        <div id="sc-rsi-chart" style="width:100%;height:100%"></div>
+        <div id="sc-rsi-chart" style="width:100%;height:100%;overflow:visible"></div>
       </div>
     </div>
   </div>

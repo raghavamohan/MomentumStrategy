@@ -101,12 +101,27 @@ export function mountStockChartPage() {
   var tlDocMouseMoveSync = null;
   var tlDocDragEndSync = null;
 
+  /** Last applied barSpacing|minBar|rightOffset from main → RSI (avoid redundant applyOptions). */
+  var rsiTimeScaleSyncKey = null;
+
   var LW = window.LightweightCharts;
   var mainChart, rsiChart, candleSeries, volSeries, rsiLineSeries;
   var rsiObLine, rsiOsLine, rsiMidLine;
   var cachedRsiPoints = [];
   /** 0 idle, 1 syncing from main crosshair, 2 from RSI — prevents feedback loops */
   var crosshairSyncGuard = 0;
+  /** Re-entrancy guard when programmatically snapping main crosshair Y to OHLC / MAs. */
+  var crosshairOhlcSnapGuard = 0;
+  /**
+   * Last OHLC/MA snap we applied via setCrosshairPosition for the current bar.
+   * param.point.y stays tied to the raw mouse, so we must not compare it to the snapped Y
+   * (that would re-apply every move and skip RSI sync / tooltip / click snap below).
+   */
+  var crosshairOhlcSnapApplied = null;
+  /** Last snapped price under crosshair (for click-to-place horizontal level). */
+  var crosshairLastSnap = null;
+  var crosshairSnapListenersBound = false;
+  var crosshairSnapClick = null;
 
   /** Prevents ping-pong when mirroring visible *logical range* between main and RSI charts. */
   var paneRangeSyncing = false;
@@ -278,13 +293,17 @@ export function mountStockChartPage() {
   function applyChartInteractionMode() {
     var hiddenMode = LW && LW.CrosshairMode ? LW.CrosshairMode.Hidden : 2;
     var magnetMode = LW && LW.CrosshairMode ? LW.CrosshairMode.Magnet : 1;
-    var mode = chartInteractionMode === MODE_CROSSHAIR ? magnetMode : hiddenMode;
+    /** Main: Normal (0) — we snap Y to OHLC + MAs ourselves; LW magnet on candles favors close only. */
+    var normalMode = LW && LW.CrosshairMode ? LW.CrosshairMode.Normal : 0;
+    var mainCxMode = chartInteractionMode === MODE_CROSSHAIR ? normalMode : hiddenMode;
+    var rsiCxMode = chartInteractionMode === MODE_CROSSHAIR ? magnetMode : hiddenMode;
     if (mainChart) {
-      try { mainChart.applyOptions({ crosshair: { mode: mode } }); } catch (_) {}
+      try { mainChart.applyOptions({ crosshair: { mode: mainCxMode } }); } catch (_) {}
     }
     if (rsiChart) {
-      try { rsiChart.applyOptions({ crosshair: { mode: mode } }); } catch (_) {}
+      try { rsiChart.applyOptions({ crosshair: { mode: rsiCxMode } }); } catch (_) {}
     }
+    bindCrosshairOhlcSnapDom();
     var canvas = getTlCanvas();
     if (canvas) {
       canvas.classList.remove('object-interact-mode', 'drawing-tl');
@@ -351,6 +370,7 @@ export function mountStockChartPage() {
     }
     if (next !== MODE_CROSSHAIR) {
       clearCrosshairBothCharts();
+      crosshairOhlcSnapApplied = null;
     }
     chartInteractionMode = next;
     applyChartInteractionMode();
@@ -464,6 +484,42 @@ export function mountStockChartPage() {
   }
 
   /**
+   * Main chart has two right price scales (candles + volume); RSI has one, so the
+   * time-scale plot width differs. Nudge RSI chart pixel width until timeScale().width()
+   * matches main (capped so we do not grow without bound). Avoids minimumWidth on a
+   * single RSI scale (that ate the plot and shifted the crosshair the other way).
+   */
+  function alignRsiPaneTimeScaleWidth() {
+    if (!mainChart || !rsiChart || !showRsi) return;
+    var mts = mainChart.timeScale();
+    var rts = rsiChart.timeScale();
+    if (typeof mts.width !== 'function' || typeof rts.width !== 'function') return;
+    var rsiWrap = document.getElementById('sc-rsi-wrap');
+    var rsiEl = document.getElementById('sc-rsi-chart');
+    var baseW = Math.max(rsiWrap ? rsiWrap.clientWidth : rsiEl.offsetWidth, rsiEl.offsetWidth, 1);
+    var maxExtra = 100;
+    var capW = baseW + maxExtra;
+    for (var i = 0; i < 6; i++) {
+      var twM = mts.width();
+      var twR = rts.width();
+      if (twM == null || twR == null || !isFinite(twM) || !isFinite(twR) || twM <= 0 || twR <= 0) return;
+      var d = twM - twR;
+      if (Math.abs(d) < 0.75) return;
+      var ow;
+      try {
+        ow = rsiChart.options().width;
+      } catch (_) {
+        ow = baseW;
+      }
+      if (ow == null || !isFinite(ow)) ow = baseW;
+      var raw = Math.round(ow + d);
+      var nw = Math.min(capW, Math.max(baseW, raw));
+      if (nw === ow) return;
+      rsiChart.applyOptions({ width: nw });
+    }
+  }
+
+  /**
    * Apply measured width/height to Lightweight Charts panes. The library does not
    * infer height from CSS alone; ResizeObserver previously updated width only,
    * which left the RSI pane at 0 height after the chart area became visible.
@@ -504,6 +560,12 @@ export function mountStockChartPage() {
     if (rh < 40) rh = 120;
 
     rsiChart.applyOptions({ width: rw, height: rh });
+
+    alignRsiPaneTimeScaleWidth();
+    requestAnimationFrame(function () {
+      alignRsiPaneTimeScaleWidth();
+      requestAnimationFrame(alignRsiPaneTimeScaleWidth);
+    });
 
     drawTrendlines();
   }
@@ -551,6 +613,9 @@ export function mountStockChartPage() {
       try { chartResizeObs.disconnect(); } catch (_) {}
       chartResizeObs = null;
     }
+    unbindCrosshairOhlcSnapDom();
+    crosshairOhlcSnapApplied = null;
+    rsiTimeScaleSyncKey = null;
     if (mainChart) {
       try { mainChart.remove(); } catch (_) {}
       mainChart = null;
@@ -591,7 +656,9 @@ export function mountStockChartPage() {
       downColor: '#ef4444',
       borderVisible: false,
       wickUpColor: '#22c55e',
-      wickDownColor: '#ef4444'
+      wickDownColor: '#ef4444',
+      /** Extra top margin so price lines at the bar high sit inside the pane (not clipped). */
+      scaleMargins: { top: 0.14, bottom: 0.28 }
     });
 
     volSeries = mainChart.addHistogramSeries({
@@ -646,12 +713,23 @@ export function mountStockChartPage() {
     });
 
     mainChart.subscribeCrosshairMove(function (param) {
+      if (chartInteractionMode === MODE_CROSSHAIR) {
+        if (!param || !param.point || param.time === undefined || param.time === null) {
+          crosshairOhlcSnapApplied = null;
+        }
+        tryApplyMainCrosshairOhlcSnap(param);
+      } else {
+        crosshairOhlcSnapApplied = null;
+      }
       syncRsiCrosshairFromMain(param);
       onCrosshair(param);
+      updateCrosshairLastSnap(param);
     });
     rsiChart.subscribeCrosshairMove(function (param) {
       syncMainCrosshairFromRsi(param);
     });
+
+    alignRsiPaneTimeScaleWidth();
 
     chartResizeObs = new ResizeObserver(function () {
       scheduleSyncChartPaneSizes();
@@ -715,6 +793,19 @@ export function mountStockChartPage() {
     return 0;
   }
 
+  /** Match OHLC / snap dedupe granularity so "same price" is consistent. */
+  function levelPriceKey(p) {
+    return Number(p).toFixed(8);
+  }
+
+  function hasLevelAtPrice(price) {
+    var key = levelPriceKey(price);
+    for (var i = 0; i < levels.length; i++) {
+      if (levelPriceKey(levels[i].price) === key) return true;
+    }
+    return false;
+  }
+
   function clearLevelPriceLines() {
     if (!candleSeries) return;
     Object.keys(levelPriceLines).forEach(function (id) {
@@ -773,6 +864,9 @@ export function mountStockChartPage() {
 
     cachedRsiPoints = calcRSI(bars, RSI_PERIOD);
     rsiLineSeries.setData(cachedRsiPoints);
+    requestAnimationFrame(function () {
+      alignRsiPaneTimeScaleWidth();
+    });
   }
 
   /**
@@ -810,6 +904,91 @@ export function mountStockChartPage() {
     return null;
   }
 
+  /** Time under the main crosshair's vertical line (matches pointer X, not always param.time). */
+  function mainCrosshairDataTime(param) {
+    if (!param) return null;
+    if (mainChart && param.point && param.point.x != null) {
+      var ts = mainChart.timeScale();
+      if (typeof ts.coordinateToTime === 'function') {
+        var ct = ts.coordinateToTime(param.point.x);
+        if (ct != null) return ct;
+      }
+    }
+    return param.time;
+  }
+
+  /** Time under the RSI crosshair's vertical line. */
+  function rsiCrosshairDataTime(param) {
+    if (!param) return null;
+    if (rsiChart && param.point && param.point.x != null) {
+      var ts = rsiChart.timeScale();
+      if (typeof ts.coordinateToTime === 'function') {
+        var ct = ts.coordinateToTime(param.point.x);
+        if (ct != null) return ct;
+      }
+    }
+    return param.time;
+  }
+
+  function candleForCrosshairTime(t) {
+    if (t == null) return null;
+    var b = candleAtTime(t);
+    if (b) return b;
+    if (!allBars.length) return null;
+    var secT = chartTimeToUnixSec(t);
+    if (!isFinite(secT)) return null;
+    var best = null;
+    var bestD = Infinity;
+    for (var i = 0; i < allBars.length; i++) {
+      var bar = allBars[i];
+      var d = Math.abs(chartTimeToUnixSec(bar.time) - secT);
+      if (d < bestD) {
+        bestD = d;
+        best = bar;
+      }
+    }
+    return best;
+  }
+
+  function rsiValueForCrosshairTime(t) {
+    if (t == null || !cachedRsiPoints.length) return null;
+    var v = rsiValueAtTime(t);
+    if (v != null) return v;
+    var secT = chartTimeToUnixSec(t);
+    if (!isFinite(secT)) return null;
+    var best = null;
+    var bestD = Infinity;
+    for (var i = 0; i < cachedRsiPoints.length; i++) {
+      var p = cachedRsiPoints[i];
+      if (p.value == null || p.value === undefined) continue;
+      var d = Math.abs(chartTimeToUnixSec(p.time) - secT);
+      if (d < bestD) {
+        bestD = d;
+        best = p.value;
+      }
+    }
+    return best;
+  }
+
+  function ensureRsiTimeScaleVisualMatchesMain() {
+    if (!mainChart || !rsiChart) return;
+    try {
+      var mo = mainChart.timeScale().options();
+      var key = String(mo.barSpacing) + '|' + String(mo.minBarSpacing) + '|' + String(mo.rightOffset) + '|' +
+        String(!!mo.fixLeftEdge) + '|' + String(!!mo.fixRightEdge) + '|' + String(!!mo.rightBarStaysOnScroll);
+      if (key === rsiTimeScaleSyncKey) return;
+      rsiTimeScaleSyncKey = key;
+      rsiChart.timeScale().applyOptions({
+        barSpacing: mo.barSpacing,
+        minBarSpacing: mo.minBarSpacing,
+        rightOffset: mo.rightOffset,
+        fixLeftEdge: mo.fixLeftEdge,
+        fixRightEdge: mo.fixRightEdge,
+        rightBarStaysOnScroll: mo.rightBarStaysOnScroll
+      });
+    } catch (_) {}
+  }
+
   function candleAtTime(t) {
     if (t == null || !allBars.length) return null;
     for (var i = allBars.length - 1; i >= 0; i--) {
@@ -817,6 +996,162 @@ export function mountStockChartPage() {
       if (b.time === t || String(b.time) === String(t)) return b;
     }
     return null;
+  }
+
+  function pushFiniteUniquePrice(set, p) {
+    var n = Number(p);
+    if (!isFinite(n)) return;
+    set[n.toFixed(8)] = n;
+  }
+
+  /** OHLC + overlay line values at crosshair time (for vertical snap targets). */
+  function collectCrosshairSnapPrices(bar, param) {
+    var uniq = {};
+    if (bar) {
+      pushFiniteUniquePrice(uniq, bar.open);
+      pushFiniteUniquePrice(uniq, bar.high);
+      pushFiniteUniquePrice(uniq, bar.low);
+      pushFiniteUniquePrice(uniq, bar.close);
+    }
+    if (param && param.seriesData && indicators) {
+      indicators.forEach(function (ind) {
+        if (!ind.series) return;
+        var sd = param.seriesData.get(ind.series);
+        if (sd && sd.value != null) pushFiniteUniquePrice(uniq, sd.value);
+      });
+    }
+    var out = [];
+    for (var k in uniq) {
+      if (Object.prototype.hasOwnProperty.call(uniq, k)) out.push(uniq[k]);
+    }
+    return out;
+  }
+
+  function nearestSnapPriceForPixel(yPx, prices) {
+    if (!candleSeries || yPx == null || !isFinite(yPx) || !prices || !prices.length) return null;
+    var best = null;
+    var bestD = Infinity;
+    for (var i = 0; i < prices.length; i++) {
+      var p = prices[i];
+      var cy = candleSeries.priceToCoordinate(p);
+      if (cy == null || !isFinite(cy)) continue;
+      var d = Math.abs(cy - yPx);
+      if (d < bestD - 1e-6) {
+        bestD = d;
+        best = p;
+      } else if (Math.abs(d - bestD) <= 1e-6 && best != null) {
+        var ref = coordinateToPriceExtrapolated(yPx);
+        if (ref != null && isFinite(ref) && Math.abs(p - ref) < Math.abs(best - ref)) best = p;
+      }
+    }
+    return best;
+  }
+
+  function snapMainCrosshairPriceForBar(bar, param, yHintPx) {
+    if (!mainChart || !candleSeries || typeof mainChart.setCrosshairPosition !== 'function') return null;
+    if (!bar || param == null || param.time == undefined || param.time === null) return null;
+    var targets = collectCrosshairSnapPrices(bar, param);
+    if (!targets.length) return null;
+    var yRef = yHintPx != null && isFinite(yHintPx) ? yHintPx : (param.point && param.point.y != null ? param.point.y : null);
+    if (yRef == null) return null;
+    return nearestSnapPriceForPixel(yRef, targets);
+  }
+
+  /**
+   * Snap main crosshair Y to nearest OHLC / MA in screen space.
+   * Uses (time, snapped price) dedupe — param.point.y follows the mouse, so comparing it to
+   * priceToCoordinate(snapped) would force setCrosshairPosition every event and break the chart.
+   */
+  function tryApplyMainCrosshairOhlcSnap(param) {
+    if (chartInteractionMode !== MODE_CROSSHAIR || crosshairOhlcSnapGuard) return;
+    if (!param || !param.point || param.time === undefined || param.time === null) {
+      crosshairOhlcSnapApplied = null;
+      return;
+    }
+    var bar = candleAtTime(param.time);
+    if (!bar) {
+      crosshairOhlcSnapApplied = null;
+      return;
+    }
+    var yRef = param.point.y;
+    var snapped = snapMainCrosshairPriceForBar(bar, param, yRef);
+    if (snapped == null || !isFinite(Number(snapped))) {
+      crosshairOhlcSnapApplied = null;
+      return;
+    }
+    var newY = candleSeries.priceToCoordinate(snapped);
+    if (newY == null || !isFinite(newY)) return;
+
+    var prev = crosshairOhlcSnapApplied;
+    var keySnap = levelPriceKey(snapped);
+    if (prev && (prev.time === param.time || String(prev.time) === String(param.time)) &&
+        levelPriceKey(prev.price) === keySnap) {
+      return;
+    }
+
+    crosshairOhlcSnapApplied = { time: param.time, price: snapped };
+    crosshairOhlcSnapGuard = 1;
+    try {
+      mainChart.setCrosshairPosition(snapped, param.time, candleSeries);
+    } catch (_) {}
+    crosshairOhlcSnapGuard = 0;
+  }
+
+  function updateCrosshairLastSnap(param) {
+    crosshairLastSnap = null;
+    if (chartInteractionMode !== MODE_CROSSHAIR || !param || !param.point || param.time == null) return;
+    var bar = candleAtTime(param.time);
+    if (!bar) return;
+    var yRef = param.point.y;
+    var snapped = snapMainCrosshairPriceForBar(bar, param, yRef);
+    if (snapped != null && isFinite(snapped)) {
+      crosshairLastSnap = { time: param.time, price: snapped };
+    }
+  }
+
+  function unbindCrosshairOhlcSnapDom() {
+    var el = document.getElementById('sc-main-chart');
+    if (!el || !crosshairSnapListenersBound) return;
+    crosshairSnapListenersBound = false;
+    if (crosshairSnapClick) {
+      el.removeEventListener('click', crosshairSnapClick);
+      crosshairSnapClick = null;
+    }
+  }
+
+  function bindCrosshairOhlcSnapDom() {
+    var el = document.getElementById('sc-main-chart');
+    if (!el) return;
+    if (chartInteractionMode !== MODE_CROSSHAIR) {
+      unbindCrosshairOhlcSnapDom();
+      return;
+    }
+    if (crosshairSnapListenersBound) return;
+    crosshairSnapListenersBound = true;
+    crosshairSnapClick = function (ev) {
+      if (chartInteractionMode !== MODE_CROSSHAIR || ev.button !== 0) return;
+      if (ev.detail !== 1) return;
+      var tgt = ev.target;
+      if (tgt && tgt.closest && (tgt.closest('button') || tgt.closest('a') || tgt.closest('input') ||
+          tgt.closest('select') || tgt.closest('textarea') || tgt.closest('.sc-panel'))) {
+        return;
+      }
+      if (!crosshairLastSnap || crosshairLastSnap.price == null || !isFinite(crosshairLastSnap.price)) return;
+      if (!candleSeries) return;
+      if (hasLevelAtPrice(crosshairLastSnap.price)) return;
+      levels.push({
+        id: uid(),
+        price: crosshairLastSnap.price,
+        color: '#cbd5e1',
+        style: 'solid',
+        width: 2,
+        label: ''
+      });
+      restoreLevels();
+      scheduleSaveAnnotations();
+      renderChips();
+    };
+    el.addEventListener('click', crosshairSnapClick);
   }
 
   function syncRsiCrosshairFromMain(param) {
@@ -832,8 +1167,10 @@ export function mountStockChartPage() {
       return;
     }
     crosshairSyncGuard = 1;
-    var rv = rsiValueAtTime(param.time);
-    if (rv != null) rsiChart.setCrosshairPosition(rv, param.time, rsiLineSeries);
+    ensureRsiTimeScaleVisualMatchesMain();
+    var tUse = mainCrosshairDataTime(param);
+    var rv = rsiValueForCrosshairTime(tUse);
+    if (rv != null) rsiChart.setCrosshairPosition(rv, tUse, rsiLineSeries);
     else rsiChart.clearCrosshairPosition();
     crosshairSyncGuard = 0;
   }
@@ -851,9 +1188,16 @@ export function mountStockChartPage() {
       return;
     }
     crosshairSyncGuard = 2;
-    var b = candleAtTime(param.time);
-    if (b) mainChart.setCrosshairPosition(b.close, param.time, candleSeries);
-    else mainChart.clearCrosshairPosition();
+    var tUse = rsiCrosshairDataTime(param);
+    var b = candleForCrosshairTime(tUse);
+    if (b) {
+      var yClose = candleSeries.priceToCoordinate(Number(b.close));
+      var wrap = document.getElementById('sc-main-wrap');
+      var yHint = yClose != null && isFinite(yClose) ? yClose : (wrap ? wrap.clientHeight * 0.5 : 200);
+      var snapped = snapMainCrosshairPriceForBar(b, { time: tUse, point: { y: yHint } }, yHint);
+      if (snapped == null) snapped = Number(b.close);
+      mainChart.setCrosshairPosition(snapped, tUse, candleSeries);
+    } else mainChart.clearCrosshairPosition();
     crosshairSyncGuard = 0;
   }
 
@@ -1592,7 +1936,8 @@ export function mountStockChartPage() {
     }
 
     if (tooltipPrefs.rsi) {
-      var rv = rsiValueAtTime(param.time);
+      var tRsi = mainCrosshairDataTime(param);
+      var rv = rsiValueForCrosshairTime(tRsi);
       if (rv != null) parts.push(row('RSI' + RSI_PERIOD, fmtNum(rv, 2)));
     }
 
@@ -1907,6 +2252,10 @@ export function mountStockChartPage() {
         setLvlError('Enter a valid price.');
         return;
       }
+      if (hasLevelAtPrice(price)) {
+        setLvlError('A level at that price already exists.');
+        return;
+      }
       setLvlError('');
       var label = (document.getElementById('sc-lvl-label') || {}).value || '';
       var color = (document.getElementById('sc-lvl-color') || {}).value || '#22c55e';
@@ -1942,6 +2291,7 @@ export function mountStockChartPage() {
       volCb.addEventListener('change', function () {
         showVolume = volCb.checked;
         if (volSeries) volSeries.applyOptions({ visible: showVolume });
+        scheduleSyncChartPaneSizes();
       });
     }
 
