@@ -670,7 +670,7 @@ export function mountStockChartPage() {
    * infer height from CSS alone; ResizeObserver previously updated width only,
    * which left the RSI pane at 0 height after the chart area became visible.
    * Do not call alignRsiTimeScaleToMain here — that fights user zoom/pan; range
-   * sync is handled by main → RSI subscribeVisibleLogicalRangeChange.
+   * sync is handled by main ↔ RSI subscribeVisibleLogicalRangeChange.
    */
   function syncChartPaneSizes() {
     var area = document.getElementById('sc-chart-area');
@@ -845,19 +845,29 @@ export function mountStockChartPage() {
       price: 50, color: 'rgba(148,163,184,.3)', lineWidth: 1, lineStyle: 3, axisLabelVisible: false
     });
 
-    // Sync main → RSI by *visible logical range*, 1:1 (no offset).
+    // Sync main ↔ RSI by *visible logical range*, 1:1 (no offset).
     // RSI is padded with whitespace prefix in calcRSI, so both series have the
     // same logical bar count and identical times. Mirroring with no offset
     // means Lightweight Charts has nothing to clamp on the RSI side, which
     // previously destabilized the layout and let the live candle drift out of
-    // view after enough ticks/resizes. RSI → main is intentionally omitted to
-    // keep the main viewport authoritative.
+    // view after enough ticks/resizes. `paneRangeSyncing` prevents ping-pong
+    // when programmatically applying the same range on the peer chart.
     mainChart.timeScale().subscribeVisibleLogicalRangeChange(function (r) {
       scheduleDrawTrendlines();
       if (paneRangeSyncing || !rsiChart || !r || r.from == null || r.to == null) return;
       paneRangeSyncing = true;
       try {
         rsiChart.timeScale().setVisibleLogicalRange({ from: r.from, to: r.to });
+      } catch (_) {}
+      paneRangeSyncing = false;
+    });
+    rsiChart.timeScale().subscribeVisibleLogicalRangeChange(function (r) {
+      scheduleDrawTrendlines();
+      if (paneRangeSyncing || !mainChart || !r || r.from == null || r.to == null) return;
+      if (typeof mainChart.timeScale().setVisibleLogicalRange !== 'function') return;
+      paneRangeSyncing = true;
+      try {
+        mainChart.timeScale().setVisibleLogicalRange({ from: r.from, to: r.to });
       } catch (_) {}
       paneRangeSyncing = false;
     });
