@@ -68,8 +68,8 @@ export function mountStockChartPage() {
   var chartResizeDebounceTimer = null;
 
   var indicators = [
-    { id: uid(), type: 'SMA', period: 21, color: '#f59e0b', series: null },
-    { id: uid(), type: 'SMA', period: 14, color: '#60a5fa', series: null }
+    { id: uid(), type: 'SMA', period: 21, color: '#f59e0b', lineWidth: 2, style: 'solid', series: null, glowSeries: null, cachedPts: [] },
+    { id: uid(), type: 'SMA', period: 14, color: '#60a5fa', lineWidth: 2, style: 'solid', series: null, glowSeries: null, cachedPts: [] }
   ];
 
   var trendlines = [];
@@ -80,10 +80,28 @@ export function mountStockChartPage() {
   var tlPreviewPx = null;
   var tlDraftMoveBound = null;
   var selectedTlId = null;
+  var selectedLevelId = null;
+  var selectedIndId = null;
+  /** Active vertical drag for a horizontal price level (pointer capture on main wrap). */
+  var levelDrag = null;
+  var LEVEL_HIT_PX = 8;
+  var IND_HIT_PX = 10;
+  var mainWrapOverlayBound = false;
+  var mainWrapPdCapture = null;
+  var mainWrapClickCaptureHandler = null;
+  var mainWrapCtxMenu = null;
+  var lastMainCtxPriceHint = null;
+  var lastMainCtxClientX = 0;
+  var lastMainCtxClientY = 0;
+  var levelDragMoveDoc = null;
+  var levelDragEndDoc = null;
   var TL_HIT_PX = 10;
   /** Pixel radius to grab start/end handles when reshaping with right-drag. */
   var TL_HANDLE_HIT_PX = 14;
   var tlRmbDrag = null;
+  var tlDragDocMove = null;
+  var tlDragDocEnd = null;
+  var tlDragDocBound = false;
   var tlSuppressSelectClick = false;
   /** After first anchor on pointerdown, ignore the following click (mouseup) so the line is not finished in one press. */
   var tlSuppressNextDrawClick = false;
@@ -152,6 +170,13 @@ export function mountStockChartPage() {
         var wid = wrap.clientWidth;
         if (hitTestTrendlineIds(px, py, wid) != null) return true;
       }
+    }
+    if (chartAllowsObjectSelection()) {
+      var rectW = wrap.getBoundingClientRect();
+      var pwx = ev.clientX - rectW.left;
+      var pwy = ev.clientY - rectW.top;
+      var wwid = wrap.clientWidth;
+      if (hitTestTrendlineIds(pwx, pwy, wwid) != null) return true;
     }
     return false;
   }
@@ -376,9 +401,17 @@ export function mountStockChartPage() {
     var ind = document.getElementById('sc-ind-panel');
     var lvl = document.getElementById('sc-lvl-panel');
     var tp = getTooltipPanel();
+    var tlP = document.getElementById('sc-tl-props-panel');
+    var lvlE = document.getElementById('sc-lvl-edit-panel');
+    var indE = document.getElementById('sc-ind-edit-panel');
+    var addM = document.getElementById('sc-add-ctx-menu');
     if (except !== 'ind' && ind) ind.hidden = true;
     if (except !== 'lvl' && lvl) lvl.hidden = true;
     if (except !== 'tooltip' && tp) tp.hidden = true;
+    if (except !== 'tlprops' && tlP) tlP.hidden = true;
+    if (except !== 'lvlprops' && lvlE) lvlE.hidden = true;
+    if (except !== 'indprops' && indE) indE.hidden = true;
+    if (except !== 'addctx' && addM) addM.hidden = true;
   }
 
   function replaceChartUrlInterval() {
@@ -432,16 +465,10 @@ export function mountStockChartPage() {
       }
     }
     var cxBtn = document.getElementById('sc-mode-crosshair');
-    var objBtn = document.getElementById('sc-mode-objects');
     if (cxBtn) {
       var cxOn = chartInteractionMode === MODE_CROSSHAIR;
       cxBtn.classList.toggle('active', cxOn);
       cxBtn.setAttribute('aria-pressed', cxOn ? 'true' : 'false');
-    }
-    if (objBtn) {
-      var obOn = chartInteractionMode === MODE_OBJECTS;
-      objBtn.classList.toggle('active', obOn);
-      objBtn.setAttribute('aria-pressed', obOn ? 'true' : 'false');
     }
   }
 
@@ -450,19 +477,53 @@ export function mountStockChartPage() {
     try { if (rsiChart && typeof rsiChart.clearCrosshairPosition === 'function') rsiChart.clearCrosshairPosition(); } catch (_) {}
   }
 
+  function unbindTlDragDocumentListeners() {
+    if (!tlDragDocBound) return;
+    tlDragDocBound = false;
+    if (tlDragDocMove) {
+      document.removeEventListener('pointermove', tlDragDocMove, true);
+      tlDragDocMove = null;
+    }
+    if (tlDragDocEnd) {
+      document.removeEventListener('pointerup', tlDragDocEnd, true);
+      document.removeEventListener('pointercancel', tlDragDocEnd, true);
+      tlDragDocEnd = null;
+    }
+  }
+
+  function bindTlDragDocumentListeners() {
+    if (tlDragDocBound) return;
+    tlDragDocBound = true;
+    tlDragDocMove = function (e) { onTlDragPointerMoveGlob(e); };
+    tlDragDocEnd = function (e) { onTlDragPointerEndGlob(e); };
+    document.addEventListener('pointermove', tlDragDocMove, true);
+    document.addEventListener('pointerup', tlDragDocEnd, true);
+    document.addEventListener('pointercancel', tlDragDocEnd, true);
+  }
+
   function endTlRmbDrag() {
     var had = !!tlRmbDrag;
     var pid = tlRmbDrag && tlRmbDrag.pointerId;
-    var canvasEl = getTlCanvas();
-    if (pid != null && canvasEl && typeof canvasEl.releasePointerCapture === 'function') {
-      try { canvasEl.releasePointerCapture(pid); } catch (_) {}
+    var capEl = (tlRmbDrag && tlRmbDrag.captureEl) || getTlCanvas();
+    if (pid != null && capEl && typeof capEl.releasePointerCapture === 'function') {
+      try { capEl.releasePointerCapture(pid); } catch (_) {}
     }
+    unbindTlDragDocumentListeners();
     tlRmbDrag = null;
     if (had) scheduleSaveAnnotations();
   }
 
-  function leaveObjectsInteractionCleanup() {
+  function leaveObjectsExclusiveState() {
     endTlRmbDrag();
+    if (levelDrag && levelDrag.wrapEl) {
+      try {
+        if (typeof levelDrag.wrapEl.releasePointerCapture === 'function') {
+          levelDrag.wrapEl.releasePointerCapture(levelDrag.pointerId);
+        }
+      } catch (_) {}
+    }
+    levelDrag = null;
+    unbindLevelDragDoc();
     tlAnchors = [];
     tlSuppressNextDrawClick = false;
     tlSuppressSelectClick = false;
@@ -477,7 +538,15 @@ export function mountStockChartPage() {
     }
     tlAnchorPulse = null;
     tlPreviewPx = null;
+  }
+
+  function clearObjectSelections() {
     selectedTlId = null;
+    selectedLevelId = null;
+    selectedIndId = null;
+    syncIndicatorSelectionVisuals();
+    drawTrendlines();
+    renderChips();
   }
 
   function setChartInteractionMode(desired) {
@@ -485,7 +554,10 @@ export function mountStockChartPage() {
     if (next === chartInteractionMode) return;
     var prev = chartInteractionMode;
     if (prev === MODE_OBJECTS && next !== MODE_OBJECTS) {
-      leaveObjectsInteractionCleanup();
+      leaveObjectsExclusiveState();
+    }
+    if (next === MODE_NONE) {
+      clearObjectSelections();
     }
     if (next !== MODE_CROSSHAIR) {
       clearCrosshairBothCharts();
@@ -498,9 +570,48 @@ export function mountStockChartPage() {
   }
 
   function setSelectedTrendline(id) {
-    selectedTlId = id || null;
+    if (id) {
+      selectedTlId = id;
+      selectedLevelId = null;
+      selectedIndId = null;
+    } else {
+      selectedTlId = null;
+    }
+    syncIndicatorSelectionVisuals();
     drawTrendlines();
     renderChips();
+  }
+
+  function setSelectedLevel(id) {
+    if (id) {
+      selectedLevelId = id;
+      selectedTlId = null;
+      selectedIndId = null;
+    } else {
+      selectedLevelId = null;
+    }
+    syncIndicatorSelectionVisuals();
+    drawTrendlines();
+    renderChips();
+  }
+
+  function setSelectedInd(id) {
+    if (id) {
+      selectedIndId = id;
+      selectedTlId = null;
+      selectedLevelId = null;
+    } else {
+      selectedIndId = null;
+    }
+    syncIndicatorSelectionVisuals();
+    drawTrendlines();
+    renderChips();
+  }
+
+  function chartAllowsObjectSelection() {
+    return chartInteractionMode === MODE_NONE ||
+      chartInteractionMode === MODE_CROSSHAIR ||
+      chartInteractionMode === MODE_OBJECTS;
   }
 
   function deleteSelectedTrendline() {
@@ -512,6 +623,789 @@ export function mountStockChartPage() {
     scheduleSaveAnnotations();
     drawTrendlines();
     renderChips();
+  }
+
+  function findLevelById(id) {
+    for (var i = 0; i < levels.length; i++) {
+      if (levels[i].id === id) return levels[i];
+    }
+    return null;
+  }
+
+  function deleteSelectedLevel() {
+    if (!selectedLevelId) return;
+    var id = selectedLevelId;
+    levels = levels.filter(function (x) { return x.id !== id; });
+    if (levelPriceLines[id]) {
+      try { candleSeries.removePriceLine(levelPriceLines[id]); } catch (_) {}
+      delete levelPriceLines[id];
+    }
+    selectedLevelId = null;
+    scheduleSaveAnnotations();
+    renderChips();
+  }
+
+  function deleteSelectedInd() {
+    if (!selectedIndId) return;
+    var sid = selectedIndId;
+    indicators.forEach(function (ind) {
+      if (ind.id === sid && ind.series && mainChart) {
+        try { mainChart.removeSeries(ind.series); } catch (_) {}
+        ind.series = null;
+      }
+      if (ind.id === sid && ind.glowSeries && mainChart) {
+        try { mainChart.removeSeries(ind.glowSeries); } catch (_) {}
+        ind.glowSeries = null;
+      }
+    });
+    indicators = indicators.filter(function (x) { return x.id !== sid; });
+    selectedIndId = null;
+    syncIndicatorSelectionVisuals();
+    refreshIndicators();
+    renderChips();
+    updateIndAddButton();
+  }
+
+  function unbindLevelDragDoc() {
+    if (levelDragMoveDoc) {
+      document.removeEventListener('pointermove', levelDragMoveDoc, true);
+      levelDragMoveDoc = null;
+    }
+    if (levelDragEndDoc) {
+      document.removeEventListener('pointerup', levelDragEndDoc, true);
+      document.removeEventListener('pointercancel', levelDragEndDoc, true);
+      levelDragEndDoc = null;
+    }
+  }
+
+  function wrapPixelFromClient(clientX, clientY) {
+    var wrap = document.getElementById('sc-main-wrap');
+    if (!wrap) return null;
+    var rect = wrap.getBoundingClientRect();
+    return { px: clientX - rect.left, py: clientY - rect.top, wid: wrap.clientWidth, wrap: wrap };
+  }
+
+  function hitTestLevelId(px, py) {
+    if (!candleSeries || !levels.length) return null;
+    var best = null;
+    var bestD = LEVEL_HIT_PX + 1;
+    for (var i = 0; i < levels.length; i++) {
+      var lv = levels[i];
+      var y = candleSeries.priceToCoordinate(Number(lv.price));
+      if (y == null || !isFinite(y)) continue;
+      var d = Math.abs(py - y);
+      if (d <= LEVEL_HIT_PX && d < bestD) {
+        bestD = d;
+        best = lv.id;
+      }
+    }
+    return best;
+  }
+
+  function seriesValueAtTime(pts, t) {
+    if (!pts || !pts.length || t == null) return null;
+    var st = chartTimeToUnixSec(t);
+    if (!isFinite(st)) return null;
+    var i;
+    for (i = 0; i < pts.length; i++) {
+      var sti = chartTimeToUnixSec(pts[i].time);
+      if (isFinite(sti) && sti >= st) break;
+    }
+    if (i >= pts.length) {
+      var last = pts[pts.length - 1];
+      return last && last.value != null ? Number(last.value) : null;
+    }
+    if (i === 0) {
+      return pts[0].value != null ? Number(pts[0].value) : null;
+    }
+    var p0 = pts[i - 1];
+    var p1 = pts[i];
+    var s0 = chartTimeToUnixSec(p0.time);
+    var s1 = chartTimeToUnixSec(p1.time);
+    if (!isFinite(s0) || !isFinite(s1) || Math.abs(s1 - s0) < 1e-9) {
+      return p1.value != null ? Number(p1.value) : null;
+    }
+    var alpha = (st - s0) / (s1 - s0);
+    alpha = Math.max(0, Math.min(1, alpha));
+    var v0 = Number(p0.value);
+    var v1 = Number(p1.value);
+    if (!isFinite(v0) || !isFinite(v1)) return isFinite(v1) ? v1 : v0;
+    return v0 + (v1 - v0) * alpha;
+  }
+
+  function hitTestIndicatorId(px, py) {
+    if (!mainChart || !candleSeries) return null;
+    var t = coordinateToTimeExtrapolated(px);
+    if (t == null) return null;
+    var best = null;
+    var bestD = IND_HIT_PX + 1;
+    for (var i = 0; i < indicators.length; i++) {
+      var ind = indicators[i];
+      if (!ind.series || !ind.cachedPts || !ind.cachedPts.length) continue;
+      var v = seriesValueAtTime(ind.cachedPts, t);
+      if (v == null || !isFinite(v)) continue;
+      var y = ind.series.priceToCoordinate(v);
+      if (y == null || !isFinite(y)) continue;
+      var d = Math.abs(py - y);
+      if (d <= IND_HIT_PX && d < bestD) {
+        bestD = d;
+        best = ind.id;
+      }
+    }
+    return best;
+  }
+
+  function levelPriceFreeExcept(price, exceptId) {
+    var k = levelPriceKey(price);
+    for (var i = 0; i < levels.length; i++) {
+      if (levels[i].id === exceptId) continue;
+      if (levelPriceKey(levels[i].price) === k) return false;
+    }
+    return true;
+  }
+
+  function applyLevelPriceLineVisual(lv) {
+    if (!candleSeries || !lv) return;
+    var id = lv.id;
+    var pl = levelPriceLines[id];
+    if (!pl) return;
+    try {
+      pl.applyOptions({
+        price: Number(lv.price),
+        color: lv.color || '#22c55e',
+        lineWidth: Math.max(1, Number(lv.width) || 1),
+        lineStyle: styleToLw(lv.style || 'dashed'),
+        axisLabelVisible: true,
+        title: (lv.label || '').slice(0, 24)
+      });
+    } catch (_) {
+      try { candleSeries.removePriceLine(pl); } catch (__) {}
+      delete levelPriceLines[id];
+      try {
+        levelPriceLines[id] = candleSeries.createPriceLine({
+          price: Number(lv.price),
+          color: lv.color || '#22c55e',
+          lineWidth: Math.max(1, Number(lv.width) || 1),
+          lineStyle: styleToLw(lv.style || 'dashed'),
+          axisLabelVisible: true,
+          title: (lv.label || '').slice(0, 24)
+        });
+      } catch (___) {}
+    }
+  }
+
+  function tryBeginTrendlineDragFromPointerDown(ev, px, py, wid, captureEl) {
+    if (!chartAllowsObjectSelection() || !mainChart || !candleSeries || tlAnchors.length) return false;
+    if (tlRmbDrag) return false;
+    if (ev.button !== 0 && ev.button !== 2) return false;
+    var tlHit = hitTestTrendlineIds(px, py, wid);
+    if (!tlHit) return false;
+    setSelectedTrendline(tlHit);
+    var tlDrag = findTrendlineById(tlHit);
+    if (!tlDrag) return false;
+    var whichEnd = hitTestTrendlineHandle(px, py, tlDrag);
+    if (whichEnd != null) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      var fixedOther = whichEnd === 1
+        ? { time: tlDrag.time2, price: tlDrag.price2 }
+        : { time: tlDrag.time1, price: tlDrag.price1 };
+      tlRmbDrag = {
+        mode: 'endpoint',
+        whichEnd: whichEnd,
+        fixedOther: fixedOther,
+        tlId: tlHit,
+        pointerId: ev.pointerId,
+        button: ev.button,
+        didMove: false,
+        downPx: px,
+        downPy: py,
+        captureEl: captureEl || null
+      };
+      try {
+        if (captureEl && typeof captureEl.setPointerCapture === 'function') {
+          captureEl.setPointerCapture(ev.pointerId);
+        }
+      } catch (_) {}
+      bindTlDragDocumentListeners();
+      onTlRmbDragMove(ev);
+      return true;
+    }
+    if (hitTestTrendlineParallelBody(px, py, tlDrag, wid)) {
+      var ep = getTrendlinePixelEndpoints(tlDrag, wid);
+      if (!ep) return false;
+      ev.preventDefault();
+      ev.stopPropagation();
+      var grab = projectPointToSegment(px, py, ep.x1, ep.y1, ep.x2, ep.y2);
+      tlRmbDrag = {
+        mode: 'move',
+        tlId: tlHit,
+        ep0: { x1: ep.x1, y1: ep.y1, x2: ep.x2, y2: ep.y2 },
+        gx: grab.x,
+        gy: grab.y,
+        pointerId: ev.pointerId,
+        button: ev.button,
+        didMove: false,
+        downPx: px,
+        downPy: py,
+        captureEl: captureEl || null
+      };
+      try {
+        if (captureEl && typeof captureEl.setPointerCapture === 'function') {
+          captureEl.setPointerCapture(ev.pointerId);
+        }
+      } catch (_) {}
+      bindTlDragDocumentListeners();
+      return true;
+    }
+    ev.preventDefault();
+    ev.stopPropagation();
+    return true;
+  }
+
+  function onLevelDragPointerMove(ev) {
+    if (!levelDrag || ev.pointerId !== levelDrag.pointerId || !candleSeries) return;
+    var wp = wrapPixelFromClient(ev.clientX, ev.clientY);
+    if (!wp) return;
+    var price = coordinateToPriceExtrapolated(wp.py);
+    if (price == null || !isFinite(price)) return;
+    if (!levelPriceFreeExcept(price, levelDrag.id)) return;
+    var lv = findLevelById(levelDrag.id);
+    if (!lv) return;
+    lv.price = price;
+    applyLevelPriceLineVisual(lv);
+    scheduleDrawTrendlines();
+  }
+
+  function onLevelDragPointerEnd(ev) {
+    if (!levelDrag || ev.pointerId !== levelDrag.pointerId) return;
+    try {
+      if (levelDrag.wrapEl && typeof levelDrag.wrapEl.releasePointerCapture === 'function') {
+        levelDrag.wrapEl.releasePointerCapture(ev.pointerId);
+      }
+    } catch (_) {}
+    levelDrag = null;
+    unbindLevelDragDoc();
+    scheduleSaveAnnotations();
+    scheduleDrawTrendlines();
+  }
+
+  function bindLevelDragDocumentListeners() {
+    if (levelDragMoveDoc) return;
+    levelDragMoveDoc = function (e) { onLevelDragPointerMove(e); };
+    levelDragEndDoc = function (e) { onLevelDragPointerEnd(e); };
+    document.addEventListener('pointermove', levelDragMoveDoc, true);
+    document.addEventListener('pointerup', levelDragEndDoc, true);
+    document.addEventListener('pointercancel', levelDragEndDoc, true);
+  }
+
+  function mainWrapPointerDownCapture(ev) {
+    if (!mainChart || !candleSeries) return;
+    var wrap = document.getElementById('sc-main-wrap');
+    if (!wrap || !wrap.contains(ev.target)) return;
+    if (ev.target.closest && ev.target.closest('.sc-panel')) return;
+    var wp = wrapPixelFromClient(ev.clientX, ev.clientY);
+    if (!wp) return;
+    var px = wp.px;
+    var py = wp.py;
+    var wid = wp.wid;
+
+    if (chartAllowsObjectSelection() && ev.button === 0 && !tlRmbDrag && tlAnchors.length === 0) {
+      var lid = hitTestLevelId(px, py);
+      if (lid) {
+        var hitTl = hitTestTrendlineIds(px, py, wid);
+        if (!hitTl) {
+          setSelectedLevel(lid);
+          ev.preventDefault();
+          ev.stopPropagation();
+          levelDrag = { id: lid, pointerId: ev.pointerId, wrapEl: wrap };
+          try {
+            if (typeof wrap.setPointerCapture === 'function') wrap.setPointerCapture(ev.pointerId);
+          } catch (_) {}
+          bindLevelDragDocumentListeners();
+          return;
+        }
+      }
+    }
+
+    if (chartAllowsObjectSelection()) {
+      if (tryBeginTrendlineDragFromPointerDown(ev, px, py, wid, wrap)) return;
+    }
+
+    if (chartAllowsObjectSelection() && ev.button === 0 && !tlRmbDrag && tlAnchors.length === 0) {
+      var iid = hitTestIndicatorId(px, py);
+      if (iid) {
+        setSelectedInd(iid);
+        ev.preventDefault();
+        ev.stopPropagation();
+        return;
+      }
+    }
+  }
+
+  function handleMainWrapClickCapture(ev) {
+    if (!mainChart || !candleSeries || !chartAllowsObjectSelection()) return;
+    if (ev.detail !== 1) return;
+    var wrap = document.getElementById('sc-main-wrap');
+    if (!wrap || !wrap.contains(ev.target)) return;
+    if (ev.target.closest && ev.target.closest('.sc-panel')) return;
+    if (tlAnchors.length === 1 && chartInteractionMode === MODE_OBJECTS) return;
+    if (tlSuppressSelectClick) return;
+    var wp = wrapPixelFromClient(ev.clientX, ev.clientY);
+    if (!wp) return;
+    var px = wp.px;
+    var py = wp.py;
+    var wid = wp.wid;
+    if (hitTestTrendlineIds(px, py, wid)) return;
+    if (hitTestLevelId(px, py)) return;
+    if (hitTestIndicatorId(px, py)) return;
+    clearObjectSelections();
+  }
+
+  function positionPanelAtClient(panel, clientX, clientY) {
+    if (!panel) return;
+    var pad = 8;
+    panel.style.left = Math.min(window.innerWidth - panel.offsetWidth - pad, Math.max(pad, clientX)) + 'px';
+    panel.style.top = Math.min(window.innerHeight - panel.offsetHeight - pad, Math.max(pad, clientY)) + 'px';
+  }
+
+  function syncTrendlinePropsPanel() {
+    var p = document.getElementById('sc-tl-props-panel');
+    if (!p) return;
+    var tl = selectedTlId ? findTrendlineById(selectedTlId) : null;
+    var color = document.getElementById('sc-tl-prop-color');
+    var width = document.getElementById('sc-tl-prop-width');
+    var style = document.getElementById('sc-tl-prop-style');
+    var ext = document.getElementById('sc-tl-prop-ext');
+    var lab = document.getElementById('sc-tl-prop-label');
+    if (!tl) {
+      p.hidden = true;
+      return;
+    }
+    if (color) color.value = tl.color || '#f59e0b';
+    if (width) width.value = String(Math.max(1, Number(tl.width) || 1));
+    if (style) style.value = tl.style === 'dashed' ? 'dashed' : (tl.style === 'dotted' ? 'dotted' : 'solid');
+    if (ext) ext.checked = !!tl.extended;
+    if (lab) lab.value = tl.label || '';
+  }
+
+  function syncLevelEditPanel() {
+    var p = document.getElementById('sc-lvl-edit-panel');
+    if (!p) return;
+    var lv = selectedLevelId ? findLevelById(selectedLevelId) : null;
+    var price = document.getElementById('sc-lvl-edit-price');
+    var lab = document.getElementById('sc-lvl-edit-label');
+    var color = document.getElementById('sc-lvl-edit-color');
+    var style = document.getElementById('sc-lvl-edit-style');
+    var width = document.getElementById('sc-lvl-edit-width');
+    if (!lv) {
+      p.hidden = true;
+      return;
+    }
+    if (price) price.value = String(lv.price);
+    if (lab) lab.value = lv.label || '';
+    if (color) color.value = lv.color || '#22c55e';
+    if (style) style.value = lv.style || 'dashed';
+    if (width) width.value = String(Math.max(1, Number(lv.width) || 1));
+  }
+
+  function syncIndEditPanel() {
+    var p = document.getElementById('sc-ind-edit-panel');
+    if (!p) return;
+    var ind = null;
+    if (selectedIndId) {
+      for (var i = 0; i < indicators.length; i++) {
+        if (indicators[i].id === selectedIndId) { ind = indicators[i]; break; }
+      }
+    }
+    var typ = document.getElementById('sc-ind-edit-type');
+    var per = document.getElementById('sc-ind-edit-period');
+    var color = document.getElementById('sc-ind-edit-color');
+    var width = document.getElementById('sc-ind-edit-width');
+    var style = document.getElementById('sc-ind-edit-style');
+    if (!ind) {
+      p.hidden = true;
+      return;
+    }
+    if (typ) typ.textContent = ind.type + ' ' + ind.period;
+    if (per) per.value = String(ind.period);
+    if (color) color.value = ind.color || '#f59e0b';
+    if (width) width.value = String(Math.max(1, Number(ind.lineWidth) || 2));
+    if (style) style.value = ind.style || 'solid';
+  }
+
+  function buildObjectPropertyPanels() {
+    var page = document.querySelector('.sc-page');
+    if (!page || document.getElementById('sc-tl-props-panel')) return;
+
+    function mkPanel(id, title) {
+      var el = document.createElement('div');
+      el.id = id;
+      el.className = 'sc-panel';
+      el.hidden = true;
+      el.setAttribute('role', 'dialog');
+      el.setAttribute('aria-modal', 'true');
+      var h = document.createElement('h3');
+      h.textContent = title;
+      el.appendChild(h);
+      page.appendChild(el);
+      return el;
+    }
+
+    var tlP = mkPanel('sc-tl-props-panel', 'Trendline');
+    tlP.innerHTML = '<h3 id="sc-tl-props-title">Trendline</h3>' +
+      '<div class="sc-panel-row"><label>Color</label><input type="color" id="sc-tl-prop-color"></div>' +
+      '<div class="sc-panel-row"><label>Width</label><input type="number" id="sc-tl-prop-width" min="1" max="6" step="1"></div>' +
+      '<div class="sc-panel-row"><label>Style</label><select id="sc-tl-prop-style"><option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option></select></div>' +
+      '<div class="sc-panel-row"><label><input type="checkbox" id="sc-tl-prop-ext"> Extended</label></div>' +
+      '<div class="sc-panel-row"><label>Label</label><input type="text" id="sc-tl-prop-label" maxlength="48"></div>' +
+      '<div class="sc-panel-btns"><button type="button" class="sc-btn-primary" id="sc-tl-prop-apply">Apply</button>' +
+      '<button type="button" class="sc-btn-secondary" id="sc-tl-prop-close">Close</button></div>';
+    tlP.querySelector('#sc-tl-prop-apply').addEventListener('click', function () {
+      var tl = selectedTlId ? findTrendlineById(selectedTlId) : null;
+      if (!tl) return;
+      tl.color = (document.getElementById('sc-tl-prop-color') || {}).value || tl.color;
+      tl.width = Math.max(1, parseInt(document.getElementById('sc-tl-prop-width').value, 10) || 1);
+      tl.style = (document.getElementById('sc-tl-prop-style') || {}).value || 'solid';
+      tl.extended = !!(document.getElementById('sc-tl-prop-ext') || {}).checked;
+      tl.label = (document.getElementById('sc-tl-prop-label') || {}).value || '';
+      scheduleSaveAnnotations();
+      drawTrendlines();
+      tlP.hidden = true;
+    });
+    tlP.querySelector('#sc-tl-prop-close').addEventListener('click', function () {
+      tlP.hidden = true;
+    });
+
+    var lvP = mkPanel('sc-lvl-edit-panel', 'Edit level');
+    lvP.innerHTML = '<h3 id="sc-lvl-edit-title">Horizontal level</h3>' +
+      '<div class="sc-panel-row"><label>Price</label><input type="number" id="sc-lvl-edit-price" step="any"></div>' +
+      '<div class="sc-panel-row"><label>Label</label><input type="text" id="sc-lvl-edit-label" maxlength="48"></div>' +
+      '<div class="sc-panel-row"><label>Color</label><input type="color" id="sc-lvl-edit-color"></div>' +
+      '<div class="sc-panel-row"><label>Style</label><select id="sc-lvl-edit-style"><option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option></select></div>' +
+      '<div class="sc-panel-row"><label>Width</label><input type="number" id="sc-lvl-edit-width" min="1" max="6" step="1"></div>' +
+      '<div class="sc-panel-btns"><button type="button" class="sc-btn-primary" id="sc-lvl-edit-apply">Apply</button>' +
+      '<button type="button" class="sc-btn-secondary" id="sc-lvl-edit-close">Close</button></div>';
+    lvP.querySelector('#sc-lvl-edit-apply').addEventListener('click', function () {
+      var lv = selectedLevelId ? findLevelById(selectedLevelId) : null;
+      if (!lv) return;
+      var raw = (document.getElementById('sc-lvl-edit-price') || {}).value;
+      var price = parseFloat(String(raw).replace(/,/g, ''));
+      if (!isFinite(price)) return;
+      if (!levelPriceFreeExcept(price, lv.id)) return;
+      lv.price = price;
+      lv.label = (document.getElementById('sc-lvl-edit-label') || {}).value || '';
+      lv.color = (document.getElementById('sc-lvl-edit-color') || {}).value || lv.color;
+      lv.style = (document.getElementById('sc-lvl-edit-style') || {}).value || 'dashed';
+      lv.width = Math.max(1, parseInt(document.getElementById('sc-lvl-edit-width').value, 10) || 1);
+      applyLevelPriceLineVisual(lv);
+      scheduleSaveAnnotations();
+      renderChips();
+      lvP.hidden = true;
+    });
+    lvP.querySelector('#sc-lvl-edit-close').addEventListener('click', function () {
+      lvP.hidden = true;
+    });
+
+    var inP = mkPanel('sc-ind-edit-panel', 'Edit indicator');
+    inP.innerHTML = '<h3 id="sc-ind-edit-title">Indicator</h3>' +
+      '<div class="sc-panel-row"><label>Type</label><span id="sc-ind-edit-type"></span></div>' +
+      '<div class="sc-panel-row"><label>Period</label><input type="number" id="sc-ind-edit-period" min="2" max="200"></div>' +
+      '<div class="sc-panel-row"><label>Color</label><input type="color" id="sc-ind-edit-color"></div>' +
+      '<div class="sc-panel-row"><label>Width</label><input type="number" id="sc-ind-edit-width" min="1" max="6" step="1"></div>' +
+      '<div class="sc-panel-row"><label>Style</label><select id="sc-ind-edit-style"><option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option></select></div>' +
+      '<div class="sc-panel-btns"><button type="button" class="sc-btn-primary" id="sc-ind-edit-apply">Apply</button>' +
+      '<button type="button" class="sc-btn-secondary" id="sc-ind-edit-close">Close</button></div>';
+    inP.querySelector('#sc-ind-edit-apply').addEventListener('click', function () {
+      var ind = null;
+      if (selectedIndId) {
+        for (var j = 0; j < indicators.length; j++) {
+          if (indicators[j].id === selectedIndId) { ind = indicators[j]; break; }
+        }
+      }
+      if (!ind || !ind.series) return;
+      var per = Math.max(2, Math.min(200, parseInt(document.getElementById('sc-ind-edit-period').value, 10) || ind.period));
+      ind.period = per;
+      ind.color = (document.getElementById('sc-ind-edit-color') || {}).value || ind.color;
+      ind.lineWidth = Math.max(1, parseInt(document.getElementById('sc-ind-edit-width').value, 10) || 2);
+      ind.style = (document.getElementById('sc-ind-edit-style') || {}).value || 'solid';
+      try {
+        ind.series.applyOptions({
+          color: ind.color,
+          lineWidth: ind.lineWidth,
+          lineStyle: styleToLw(ind.style)
+        });
+      } catch (_) {}
+      refreshIndicators();
+      renderChips();
+      inP.hidden = true;
+    });
+    inP.querySelector('#sc-ind-edit-close').addEventListener('click', function () {
+      inP.hidden = true;
+    });
+  }
+
+  function addIndicatorFromContext(type) {
+    if (indicators.length >= MAX_MAIN_INDICATORS) return;
+    var t = type === 'EMA' ? 'EMA' : 'SMA';
+    var color = t === 'EMA' ? '#22d3ee' : '#f59e0b';
+    var newId = uid();
+    indicators.push({
+      id: newId,
+      type: t,
+      period: 20,
+      color: color,
+      lineWidth: 2,
+      style: 'solid',
+      series: null,
+      glowSeries: null,
+      cachedPts: []
+    });
+    refreshIndicators();
+    renderChips();
+    updateIndAddButton();
+    setSelectedInd(newId);
+  }
+
+  function openLevelAddPanelAt(clientX, clientY, priceHint) {
+    var lvlPanel = document.getElementById('sc-lvl-panel');
+    if (!lvlPanel) return;
+    closeAllPanels('lvl');
+    setLvlError('');
+    lvlPanel.hidden = false;
+    positionPanelAtClient(lvlPanel, clientX, clientY);
+    var inp = document.getElementById('sc-lvl-price');
+    if (inp) {
+      if (priceHint != null && isFinite(priceHint)) inp.value = String(Number(priceHint).toFixed(2));
+      setTimeout(function () { try { inp.focus(); } catch (_) {} }, 0);
+    }
+  }
+
+  function showMainContextMenu(clientX, clientY, priceHint, includeAddOptions) {
+    var menu = document.getElementById('sc-add-ctx-menu');
+    if (!menu) return;
+    lastMainCtxClientX = clientX;
+    lastMainCtxClientY = clientY;
+    lastMainCtxPriceHint = isFinite(priceHint) ? Number(priceHint) : null;
+    var addSec = document.getElementById('sc-add-ctx-menu-add-sec');
+    var addSep = document.getElementById('sc-add-ctx-menu-add-sep');
+    var showAdd = !!includeAddOptions;
+    if (addSec) addSec.hidden = !showAdd;
+    if (addSep) addSep.hidden = !showAdd;
+    closeAllPanels('addctx');
+    menu.hidden = false;
+    positionPanelAtClient(menu, clientX, clientY);
+  }
+
+  function getMainChartScreenshotCanvas() {
+    if (mainChart && typeof mainChart.takeScreenshot === 'function') {
+      try { return mainChart.takeScreenshot(); } catch (_) {}
+    }
+    var host = document.getElementById('sc-main-chart');
+    if (!host) return null;
+    var c = host.querySelector('canvas');
+    return c || null;
+  }
+
+  function saveChartImageFromContext() {
+    var c = getMainChartScreenshotCanvas();
+    if (!c) return;
+    var filename = 'stock-chart-' + (TOKEN || 'snapshot') + '.png';
+    try {
+      c.toBlob(function (blob) {
+        if (!blob) return;
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 0);
+      }, 'image/png');
+      return;
+    } catch (_) {}
+    try {
+      var a2 = document.createElement('a');
+      a2.href = c.toDataURL('image/png');
+      a2.download = filename;
+      document.body.appendChild(a2);
+      a2.click();
+      a2.remove();
+    } catch (_) {}
+  }
+
+  function copyChartImageFromContext() {
+    var c = getMainChartScreenshotCanvas();
+    if (!c) return;
+    if (!navigator.clipboard || typeof navigator.clipboard.write !== 'function' || typeof ClipboardItem === 'undefined') {
+      try { navigator.clipboard && navigator.clipboard.writeText && navigator.clipboard.writeText(location.href); } catch (_) {}
+      return;
+    }
+    try {
+      c.toBlob(function (blob) {
+        if (!blob) return;
+        try {
+          navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        } catch (_) {}
+      }, 'image/png');
+    } catch (_) {}
+  }
+
+  function inspectChartFromContext() {
+    showStatus('Inspect: press F12 or Ctrl+Shift+I.');
+    setTimeout(function () { hideStatus(); }, 1600);
+  }
+
+  function buildDefaultAddContextMenu() {
+    var page = document.querySelector('.sc-page');
+    if (!page || document.getElementById('sc-add-ctx-menu')) return;
+    var menu = document.createElement('div');
+    menu.id = 'sc-add-ctx-menu';
+    menu.className = 'sc-panel';
+    menu.hidden = true;
+    menu.style.minWidth = '180px';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', 'Add chart object');
+
+    function addMenuBtn(parent, label, handler) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'sc-btn-secondary';
+      b.style.width = '100%';
+      b.style.textAlign = 'left';
+      b.style.marginBottom = '6px';
+      b.textContent = label;
+      b.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        menu.hidden = true;
+        handler();
+      });
+      parent.appendChild(b);
+    }
+
+    function addMenuSep() {
+      var sep = document.createElement('div');
+      sep.id = 'sc-add-ctx-menu-add-sep';
+      sep.style.height = '1px';
+      sep.style.margin = '4px 0 8px';
+      sep.style.background = 'var(--border)';
+      menu.appendChild(sep);
+    }
+
+    var addSec = document.createElement('div');
+    addSec.id = 'sc-add-ctx-menu-add-sec';
+    menu.appendChild(addSec);
+
+    addMenuBtn(addSec, 'Add Level', function () {
+      openLevelAddPanelAt(lastMainCtxClientX, lastMainCtxClientY, lastMainCtxPriceHint);
+    });
+    addMenuBtn(addSec, 'Add Trendline', function () {
+      closeAllPanels(null);
+      if (chartInteractionMode !== MODE_OBJECTS) setChartInteractionMode(MODE_OBJECTS);
+      setSelectedTrendline(null);
+    });
+    addMenuBtn(addSec, 'Add SMA', function () {
+      addIndicatorFromContext('SMA');
+    });
+    addMenuBtn(addSec, 'Add EMA', function () {
+      addIndicatorFromContext('EMA');
+    });
+    addMenuSep();
+    addMenuBtn(menu, 'Save Image', function () {
+      saveChartImageFromContext();
+    });
+    addMenuBtn(menu, 'Copy', function () {
+      copyChartImageFromContext();
+    });
+    addMenuBtn(menu, 'Inspect (F12)', function () {
+      inspectChartFromContext();
+    });
+
+    page.appendChild(menu);
+  }
+
+  function openObjectContextPanels(ev) {
+    if (!chartAllowsObjectSelection() || !mainChart || !candleSeries) return;
+    var wrap = document.getElementById('sc-main-wrap');
+    if (!wrap || !wrap.contains(ev.target)) return;
+    if (ev.target.closest && ev.target.closest('.sc-panel')) return;
+    var wp = wrapPixelFromClient(ev.clientX, ev.clientY);
+    if (!wp) return;
+    var px = wp.px;
+    var py = wp.py;
+    var wid = wp.wid;
+    var tlHit = hitTestTrendlineIds(px, py, wid);
+    if (tlHit) {
+      setSelectedTrendline(tlHit);
+      syncTrendlinePropsPanel();
+      var p = document.getElementById('sc-tl-props-panel');
+      if (p) {
+        closeAllPanels('tlprops');
+        p.hidden = false;
+        positionPanelAtClient(p, ev.clientX, ev.clientY);
+      }
+      ev.preventDefault();
+      return;
+    }
+    var lvlHit = hitTestLevelId(px, py);
+    if (lvlHit) {
+      setSelectedLevel(lvlHit);
+      syncLevelEditPanel();
+      var pl = document.getElementById('sc-lvl-edit-panel');
+      if (pl) {
+        closeAllPanels('lvlprops');
+        pl.hidden = false;
+        positionPanelAtClient(pl, ev.clientX, ev.clientY);
+      }
+      ev.preventDefault();
+      return;
+    }
+    var indHit = hitTestIndicatorId(px, py);
+    if (indHit) {
+      setSelectedInd(indHit);
+      syncIndEditPanel();
+      var pi = document.getElementById('sc-ind-edit-panel');
+      if (pi) {
+        closeAllPanels('indprops');
+        pi.hidden = false;
+        positionPanelAtClient(pi, ev.clientX, ev.clientY);
+      }
+      ev.preventDefault();
+      return;
+    }
+
+    if (chartInteractionMode === MODE_NONE || chartInteractionMode === MODE_CROSSHAIR) {
+      var priceHint = coordinateToPriceExtrapolated(py);
+      showMainContextMenu(ev.clientX, ev.clientY, priceHint, chartInteractionMode === MODE_NONE);
+      ev.preventDefault();
+    }
+  }
+
+  function bindMainWrapOverlayInteraction() {
+    var wrap = document.getElementById('sc-main-wrap');
+    if (!wrap || mainWrapOverlayBound) return;
+    mainWrapOverlayBound = true;
+    mainWrapPdCapture = function (e) { mainWrapPointerDownCapture(e); };
+    mainWrapClickCaptureHandler = function (e) { handleMainWrapClickCapture(e); };
+    mainWrapCtxMenu = function (e) { openObjectContextPanels(e); };
+    wrap.addEventListener('pointerdown', mainWrapPdCapture, true);
+    wrap.addEventListener('click', mainWrapClickCaptureHandler, true);
+    wrap.addEventListener('contextmenu', mainWrapCtxMenu, true);
+  }
+
+  function unbindMainWrapOverlayInteraction() {
+    var wrap = document.getElementById('sc-main-wrap');
+    if (!wrap || !mainWrapOverlayBound) return;
+    mainWrapOverlayBound = false;
+    if (mainWrapPdCapture) wrap.removeEventListener('pointerdown', mainWrapPdCapture, true);
+    if (mainWrapClickCaptureHandler) wrap.removeEventListener('click', mainWrapClickCaptureHandler, true);
+    if (mainWrapCtxMenu) wrap.removeEventListener('contextmenu', mainWrapCtxMenu, true);
+    mainWrapPdCapture = null;
+    mainWrapClickCaptureHandler = null;
+    mainWrapCtxMenu = null;
+    unbindLevelDragDoc();
+    levelDrag = null;
   }
 
   function isTypingTarget(el) {
@@ -741,6 +1635,7 @@ export function mountStockChartPage() {
 
   // ── Charts lifecycle ─────────────────────────────────────────────────────
   function destroyCharts() {
+    unbindMainWrapOverlayInteraction();
     unbindMainChartTrendlineDomSync();
     unbindPaneDoubleClickZoomReset();
     clearStaleCheck();
@@ -778,7 +1673,7 @@ export function mountStockChartPage() {
     volSeries = null;
     rsiLineSeries = null;
     rsiObLine = rsiOsLine = rsiMidLine = null;
-    indicators.forEach(function (ind) { ind.series = null; });
+    indicators.forEach(function (ind) { ind.series = null; ind.glowSeries = null; });
     levelPriceLines = {};
   }
 
@@ -902,6 +1797,7 @@ export function mountStockChartPage() {
     applyChartInteractionMode();
     bindMainChartTrendlineDomSync();
     bindPaneDoubleClickZoomReset();
+    bindMainWrapOverlayInteraction();
   }
 
   // ── Annotations API ───────────────────────────────────────────────────────
@@ -920,6 +1816,7 @@ export function mountStockChartPage() {
         levels = Array.isArray(body.levels) ? body.levels.slice() : [];
         trendlines.forEach(function (tl) {
           if (tl.extended === undefined) tl.extended = false;
+          if (!tl.style) tl.style = 'solid';
           if (!tl.id) tl.id = uid();
         });
       })
@@ -952,6 +1849,72 @@ export function mountStockChartPage() {
     if (s === 'dotted') return 1;
     if (s === 'dashed' || s === 'largeDashed') return 2;
     return 0;
+  }
+
+  function indicatorGlowColor(color) {
+    if (typeof color !== 'string') return 'rgba(255,255,255,.28)';
+    var c = color.trim();
+    if (c.charAt(0) !== '#') return 'rgba(255,255,255,.28)';
+    var h = c.slice(1);
+    if (h.length === 3) {
+      h = h.charAt(0) + h.charAt(0) + h.charAt(1) + h.charAt(1) + h.charAt(2) + h.charAt(2);
+    }
+    if (!/^[0-9a-fA-F]{6}$/.test(h)) return 'rgba(255,255,255,.28)';
+    var r = parseInt(h.slice(0, 2), 16);
+    var g = parseInt(h.slice(2, 4), 16);
+    var b = parseInt(h.slice(4, 6), 16);
+    return 'rgba(' + r + ',' + g + ',' + b + ',.33)';
+  }
+
+  function syncIndicatorSelectionVisuals() {
+    if (!mainChart) return;
+    indicators.forEach(function (ind) {
+      var lw = Math.max(1, Math.min(8, Number(ind.lineWidth) || 2));
+      var ls = styleToLw(ind.style || 'solid');
+      var selected = selectedIndId != null && selectedIndId === ind.id && chartAllowsObjectSelection();
+      if (ind.series) {
+        try {
+          ind.series.applyOptions({
+            color: ind.color || '#f59e0b',
+            lineWidth: lw,
+            lineStyle: ls,
+            priceLineVisible: false,
+            lastValueVisible: true
+          });
+        } catch (_) {}
+      }
+      if (selected) {
+        if (!ind.glowSeries) {
+          try {
+            ind.glowSeries = mainChart.addLineSeries({
+              color: indicatorGlowColor(ind.color),
+              lineWidth: Math.min(16, lw + 5),
+              lineStyle: 0,
+              priceLineVisible: false,
+              lastValueVisible: false,
+              crosshairMarkerVisible: false
+            });
+            if (ind.cachedPts && ind.cachedPts.length) ind.glowSeries.setData(ind.cachedPts);
+          } catch (_) {
+            ind.glowSeries = null;
+          }
+        } else {
+          try {
+            ind.glowSeries.applyOptions({
+              color: indicatorGlowColor(ind.color),
+              lineWidth: Math.min(16, lw + 5),
+              lineStyle: 0,
+              priceLineVisible: false,
+              lastValueVisible: false,
+              crosshairMarkerVisible: false
+            });
+          } catch (_) {}
+        }
+      } else if (ind.glowSeries) {
+        try { mainChart.removeSeries(ind.glowSeries); } catch (_) {}
+        ind.glowSeries = null;
+      }
+    });
   }
 
   /** Match OHLC / snap dedupe granularity so "same price" is consistent. */
@@ -1007,21 +1970,31 @@ export function mountStockChartPage() {
         try { mainChart.removeSeries(ind.series); } catch (_) {}
         ind.series = null;
       }
+      if (ind.glowSeries) {
+        try { mainChart.removeSeries(ind.glowSeries); } catch (_) {}
+        ind.glowSeries = null;
+      }
     });
 
     var bars = barsForIndicators();
     indicators.forEach(function (ind) {
       var pts = ind.type === 'EMA' ? calcEMA(bars, ind.period) : calcSMA(bars, ind.period);
       if (!pts.length) return;
+      ind.cachedPts = pts;
+      var lw = Math.max(1, Math.min(8, Number(ind.lineWidth) || 2));
+      var ls = styleToLw(ind.style || 'solid');
       var ser = mainChart.addLineSeries({
-        color: ind.color,
-        lineWidth: 2,
+        color: ind.color || '#f59e0b',
+        lineWidth: lw,
+        lineStyle: ls,
         priceLineVisible: false,
         lastValueVisible: true
       });
       ser.setData(pts);
       ind.series = ser;
     });
+
+    syncIndicatorSelectionVisuals();
 
     cachedRsiPoints = calcRSI(bars, RSI_PERIOD);
     rsiLineSeries.setData(cachedRsiPoints);
@@ -1048,9 +2021,13 @@ export function mountStockChartPage() {
     indicators.forEach(function (ind) {
       if (!ind.series) return;
       var pts = ind.type === 'EMA' ? calcEMA(bars, ind.period) : calcSMA(bars, ind.period);
+      ind.cachedPts = pts;
       var lp = pts[pts.length - 1];
       if (lp) {
         try { ind.series.update(lp); } catch (_) {}
+        if (ind.glowSeries) {
+          try { ind.glowSeries.update(lp); } catch (_) {}
+        }
       }
     });
     
@@ -1297,6 +2274,14 @@ export function mountStockChartPage() {
           tgt.closest('select') || tgt.closest('textarea') || tgt.closest('.sc-panel'))) {
         return;
       }
+      var wrap = document.getElementById('sc-main-wrap');
+      if (wrap && mainChart && candleSeries) {
+        var r = wrap.getBoundingClientRect();
+        var px = ev.clientX - r.left;
+        var py = ev.clientY - r.top;
+        var wid = wrap.clientWidth;
+        if (hitTestTrendlineIds(px, py, wid) || hitTestLevelId(px, py) || hitTestIndicatorId(px, py)) return;
+      }
       if (!crosshairLastSnap || crosshairLastSnap.price == null || !isFinite(crosshairLastSnap.price)) return;
       if (!candleSeries) return;
       if (hasLevelAtPrice(crosshairLastSnap.price)) return;
@@ -1383,7 +2368,8 @@ export function mountStockChartPage() {
   }
 
   function needsTrendlineScalePoll() {
-    return trendlines.length > 0 || tlAnchors.length > 0 || selectedTlId != null || tlAnchorPulse != null;
+    return trendlines.length > 0 || tlAnchors.length > 0 || selectedTlId != null || tlAnchorPulse != null ||
+      levelDrag != null || selectedLevelId != null || selectedIndId != null;
   }
 
   function tlDisarmDocumentPointerSync() {
@@ -1609,7 +2595,7 @@ export function mountStockChartPage() {
       }
       ctx.strokeStyle = tl.color || '#f59e0b';
       ctx.lineWidth = sel ? lw + 2 : lw;
-      ctx.setLineDash(tl.style === 'dashed' ? [6, 4] : []);
+      ctx.setLineDash(tl.style === 'dashed' ? [6, 4] : (tl.style === 'dotted' ? [2, 4] : []));
       ctx.beginPath();
       ctx.moveTo(ep.x1, ep.y1);
       ctx.lineTo(ep.x2, ep.y2);
@@ -1712,40 +2698,38 @@ export function mountStockChartPage() {
     scheduleDrawTrendlines();
   }
 
+  function onTlDragPointerMoveGlob(ev) {
+    if (!tlRmbDrag || ev.pointerId !== tlRmbDrag.pointerId) return;
+    var p = canvasPixelFromClient(ev.clientX, ev.clientY);
+    if (p && (Math.abs(p.x - tlRmbDrag.downPx) > 1.5 || Math.abs(p.y - tlRmbDrag.downPy) > 1.5)) {
+      tlRmbDrag.didMove = true;
+    }
+    onTlRmbDragMove(ev);
+  }
+
+  function onTlDragPointerEndGlob(ev) {
+    if (!tlRmbDrag || ev.pointerId !== tlRmbDrag.pointerId) return;
+    if (tlRmbDrag.didMove && tlRmbDrag.button === 0) tlSuppressSelectClick = true;
+    endTlRmbDrag();
+  }
+
   function bindTrendlineCanvas() {
     var canvas = getTlCanvas();
     if (!canvas || canvas.dataset.scTlBound === '1') return;
     canvas.dataset.scTlBound = '1';
 
     canvas.addEventListener('contextmenu', function (ev) {
-      if (chartInteractionMode !== MODE_OBJECTS || !mainChart || !selectedTlId) return;
+      if (!chartAllowsObjectSelection() || !mainChart) return;
       var rect = canvas.getBoundingClientRect();
       var px = ev.clientX - rect.left;
       var py = ev.clientY - rect.top;
       var wrap = document.getElementById('sc-main-wrap');
       var wid = wrap ? wrap.clientWidth : 0;
-      var selTl = findTrendlineById(selectedTlId);
+      var selTl = selectedTlId ? findTrendlineById(selectedTlId) : null;
       var onHandle = selTl && hitTestTrendlineHandle(px, py, selTl);
       var hit = hitTestTrendlineIds(px, py, wid);
       if (onHandle || hit === selectedTlId || !!tlRmbDrag) ev.preventDefault();
     });
-
-    var onTlDragPointerMove = function (ev) {
-      if (!tlRmbDrag || ev.pointerId !== tlRmbDrag.pointerId) return;
-      var p = canvasPixelFromClient(ev.clientX, ev.clientY);
-      if (p && (Math.abs(p.x - tlRmbDrag.downPx) > 1.5 || Math.abs(p.y - tlRmbDrag.downPy) > 1.5)) {
-        tlRmbDrag.didMove = true;
-      }
-      onTlRmbDragMove(ev);
-    };
-    var onTlDragPointerEnd = function (ev) {
-      if (!tlRmbDrag || ev.pointerId !== tlRmbDrag.pointerId) return;
-      if (tlRmbDrag.didMove && tlRmbDrag.button === 0) tlSuppressSelectClick = true;
-      endTlRmbDrag();
-    };
-    canvas.addEventListener('pointermove', onTlDragPointerMove);
-    canvas.addEventListener('pointerup', onTlDragPointerEnd);
-    canvas.addEventListener('pointercancel', onTlDragPointerEnd);
 
     canvas.addEventListener('pointerdown', function (ev) {
       var rect = canvas.getBoundingClientRect();
@@ -1753,62 +2737,6 @@ export function mountStockChartPage() {
       var py = ev.clientY - rect.top;
       var wrap = document.getElementById('sc-main-wrap');
       var wid = wrap ? wrap.clientWidth : 0;
-
-      if (chartInteractionMode === MODE_OBJECTS && mainChart && candleSeries && tlAnchors.length === 0 && selectedTlId) {
-        if (ev.button !== 0 && ev.button !== 2) return;
-        if (tlRmbDrag) return;
-        var tlDrag = findTrendlineById(selectedTlId);
-        if (!tlDrag) return;
-        var whichEnd = hitTestTrendlineHandle(px, py, tlDrag);
-        if (whichEnd != null) {
-          ev.preventDefault();
-          var fixedOther = whichEnd === 1
-            ? { time: tlDrag.time2, price: tlDrag.price2 }
-            : { time: tlDrag.time1, price: tlDrag.price1 };
-          tlRmbDrag = {
-            mode: 'endpoint',
-            whichEnd: whichEnd,
-            fixedOther: fixedOther,
-            tlId: selectedTlId,
-            pointerId: ev.pointerId,
-            button: ev.button,
-            didMove: false,
-            downPx: px,
-            downPy: py
-          };
-          try {
-            if (typeof canvas.setPointerCapture === 'function') {
-              canvas.setPointerCapture(ev.pointerId);
-            }
-          } catch (_) {}
-          onTlRmbDragMove(ev);
-          return;
-        }
-        if (hitTestTrendlineParallelBody(px, py, tlDrag, wid)) {
-          var ep = getTrendlinePixelEndpoints(tlDrag, wid);
-          if (!ep) return;
-          ev.preventDefault();
-          var grab = projectPointToSegment(px, py, ep.x1, ep.y1, ep.x2, ep.y2);
-          tlRmbDrag = {
-            mode: 'move',
-            tlId: selectedTlId,
-            ep0: { x1: ep.x1, y1: ep.y1, x2: ep.x2, y2: ep.y2 },
-            gx: grab.x,
-            gy: grab.y,
-            pointerId: ev.pointerId,
-            button: ev.button,
-            didMove: false,
-            downPx: px,
-            downPy: py
-          };
-          try {
-            if (typeof canvas.setPointerCapture === 'function') {
-              canvas.setPointerCapture(ev.pointerId);
-            }
-          } catch (_) {}
-          return;
-        }
-      }
 
       if (chartInteractionMode === MODE_OBJECTS && mainChart && candleSeries && tlAnchors.length === 0) {
         if (ev.button !== 0) return;
@@ -1829,9 +2757,9 @@ export function mountStockChartPage() {
     });
 
     canvas.addEventListener('click', function (ev) {
-      if (chartInteractionMode !== MODE_OBJECTS || !mainChart || !candleSeries) return;
+      if (!mainChart || !candleSeries) return;
 
-      if (tlAnchors.length === 1) {
+      if (chartInteractionMode === MODE_OBJECTS && tlAnchors.length === 1) {
         if (tlSuppressSelectClick) {
           tlSuppressSelectClick = false;
           ev.stopPropagation();
@@ -1866,13 +2794,12 @@ export function mountStockChartPage() {
           price2: pt.price,
           color: '#f59e0b',
           width: 1,
+          style: 'solid',
           label: '',
           extended: !!ev.shiftKey
         });
         scheduleSaveAnnotations();
-        applyChartInteractionMode();
-        drawTrendlines();
-        renderChips();
+        setChartInteractionMode(MODE_NONE);
         if (tlAnchorPulse) {
           tlPulseTimer = setTimeout(function () {
             tlPulseTimer = null;
@@ -1883,6 +2810,8 @@ export function mountStockChartPage() {
         ev.stopPropagation();
         return;
       }
+
+      if (!chartAllowsObjectSelection()) return;
 
       if (tlSuppressSelectClick) {
         tlSuppressSelectClick = false;
@@ -2170,9 +3099,15 @@ export function mountStockChartPage() {
         try { mainChart.removeSeries(ind.series); } catch (_) {}
         ind.series = null;
       }
+      if (ind.glowSeries && mainChart) {
+        try { mainChart.removeSeries(ind.glowSeries); } catch (_) {}
+        ind.glowSeries = null;
+      }
     });
     indicators = [];
     selectedTlId = null;
+    selectedLevelId = null;
+    selectedIndId = null;
     trendlines = [];
     drawTrendlines();
     levels = [];
@@ -2190,8 +3125,14 @@ export function mountStockChartPage() {
     indicators.forEach(function (ind) {
       var chip = document.createElement('span');
       chip.className = 'sc-chip';
+      if (ind.id === selectedIndId) chip.classList.add('sc-obj-selected');
       chip.innerHTML = ind.type + ' ' + ind.period +
         '<span class="sc-chip-remove" data-ind="' + ind.id + '">\u00d7</span>';
+      chip.addEventListener('click', function (e) {
+        if (e.target.closest && e.target.closest('.sc-chip-remove')) return;
+        if (!chartAllowsObjectSelection()) return;
+        setSelectedInd(ind.id === selectedIndId ? null : ind.id);
+      });
       chip.querySelector('.sc-chip-remove').addEventListener('click', function (e) {
         e.stopPropagation();
         // Detach chart series before dropping this row from `indicators`; otherwise
@@ -2200,7 +3141,13 @@ export function mountStockChartPage() {
           try { mainChart.removeSeries(ind.series); } catch (_) {}
           ind.series = null;
         }
+        if (ind.glowSeries && mainChart) {
+          try { mainChart.removeSeries(ind.glowSeries); } catch (_) {}
+          ind.glowSeries = null;
+        }
         indicators = indicators.filter(function (x) { return x.id !== ind.id; });
+        if (selectedIndId === ind.id) selectedIndId = null;
+        syncIndicatorSelectionVisuals();
         refreshIndicators();
         renderChips();
       });
@@ -2216,7 +3163,7 @@ export function mountStockChartPage() {
         '<span class="sc-chip-remove" data-tlid="' + tl.id + '">\u00d7</span>';
       chip.addEventListener('click', function (e) {
         if (e.target.closest && e.target.closest('.sc-chip-remove')) return;
-        if (chartInteractionMode !== MODE_OBJECTS) {
+        if (!chartAllowsObjectSelection()) {
           setChartInteractionMode(MODE_OBJECTS);
         }
         setSelectedTrendline(tl.id === selectedTlId ? null : tl.id);
@@ -2238,11 +3185,18 @@ export function mountStockChartPage() {
     levels.forEach(function (lv) {
       var chip = document.createElement('span');
       chip.className = 'sc-chip';
+      if (lv.id === selectedLevelId) chip.classList.add('sc-obj-selected');
       chip.innerHTML = 'Lv ' + fmtNum(lv.price, 2) +
         '<span class="sc-chip-remove" data-lvid="' + (lv.id || '') + '">\u00d7</span>';
+      chip.addEventListener('click', function (e) {
+        if (e.target.closest && e.target.closest('.sc-chip-remove')) return;
+        if (!chartAllowsObjectSelection()) return;
+        setSelectedLevel(lv.id === selectedLevelId ? null : lv.id);
+      });
       chip.querySelector('.sc-chip-remove').addEventListener('click', function (e) {
         e.stopPropagation();
         var id = lv.id;
+        if (selectedLevelId === id) selectedLevelId = null;
         levels = levels.filter(function (x) { return x.id !== id; });
         if (levelPriceLines[id]) {
           try { candleSeries.removePriceLine(levelPriceLines[id]); } catch (_) {}
@@ -2357,22 +3311,25 @@ export function mountStockChartPage() {
 
   function isPanelOpenTrigger(el) {
     if (!el || !el.closest) return false;
-    return !!el.closest('#sc-add-ind') || !!el.closest('#sc-add-lvl') || !!el.closest('#sc-tooltip-btn');
+    return !!el.closest('#sc-tooltip-btn');
   }
 
   function setupGlobalUiHandlers() {
     document.addEventListener('keydown', function (ev) {
       if (ev.key === 'Escape') {
         closeAllPanels(null);
-        if (chartInteractionMode === MODE_OBJECTS) {
+        if (chartInteractionMode === MODE_OBJECTS || chartInteractionMode === MODE_CROSSHAIR) {
           setChartInteractionMode(MODE_NONE);
         }
         return;
       }
-      if ((ev.key === 'Delete' || ev.key === 'Backspace') && chartInteractionMode === MODE_OBJECTS && selectedTlId) {
+      if ((ev.key === 'Delete' || ev.key === 'Backspace') && chartAllowsObjectSelection()) {
         if (isTypingTarget(ev.target)) return;
         ev.preventDefault();
-        deleteSelectedTrendline();
+        if (selectedTlId) deleteSelectedTrendline();
+        else if (selectedLevelId) deleteSelectedLevel();
+        else if (selectedIndId) deleteSelectedInd();
+        return;
       }
     });
 
@@ -2387,6 +3344,8 @@ export function mountStockChartPage() {
   function setupUI() {
     syncIntervalButtons();
     buildTooltipSettingsPanel();
+    buildObjectPropertyPanels();
+    buildDefaultAddContextMenu();
     bindTrendlineCanvas();
     setupGlobalUiHandlers();
 
@@ -2404,17 +3363,7 @@ export function mountStockChartPage() {
       });
     });
 
-    var addInd = document.getElementById('sc-add-ind');
     var indPanel = document.getElementById('sc-ind-panel');
-    if (addInd && indPanel) {
-      addInd.addEventListener('click', function (ev) {
-        ev.stopPropagation();
-        closeAllPanels('ind');
-        indPanel.hidden = false;
-        var sel = document.getElementById('sc-ind-type');
-        if (sel) setTimeout(function () { try { sel.focus(); } catch (_) {} }, 0);
-      });
-    }
     document.getElementById('sc-ind-cancel') && document.getElementById('sc-ind-cancel').addEventListener('click', function () {
       if (indPanel) indPanel.hidden = true;
     });
@@ -2423,25 +3372,14 @@ export function mountStockChartPage() {
       var typ = (document.getElementById('sc-ind-type') || {}).value || 'SMA';
       var period = Math.max(2, Math.min(200, parseInt(document.getElementById('sc-ind-period').value, 10) || 20));
       var color = (document.getElementById('sc-ind-color') || {}).value || '#f59e0b';
-      indicators.push({ id: uid(), type: typ, period: period, color: color, series: null });
+      indicators.push({ id: uid(), type: typ, period: period, color: color, lineWidth: 2, style: 'solid', series: null, glowSeries: null, cachedPts: [] });
       if (indPanel) indPanel.hidden = true;
       refreshIndicators();
       renderChips();
       updateIndAddButton();
     });
 
-    var addLvl = document.getElementById('sc-add-lvl');
     var lvlPanel = document.getElementById('sc-lvl-panel');
-    if (addLvl && lvlPanel) {
-      addLvl.addEventListener('click', function (ev) {
-        ev.stopPropagation();
-        closeAllPanels('lvl');
-        setLvlError('');
-        lvlPanel.hidden = false;
-        var inp = document.getElementById('sc-lvl-price');
-        if (inp) setTimeout(function () { try { inp.focus(); } catch (_) {} }, 0);
-      });
-    }
     document.getElementById('sc-lvl-cancel') && document.getElementById('sc-lvl-cancel').addEventListener('click', function () {
       if (lvlPanel) lvlPanel.hidden = true;
       setLvlError('');
@@ -2477,15 +3415,6 @@ export function mountStockChartPage() {
         setChartInteractionMode(MODE_CROSSHAIR);
       });
     }
-    var objModeBtn = document.getElementById('sc-mode-objects');
-    if (objModeBtn) {
-      objModeBtn.addEventListener('click', function (ev) {
-        ev.stopPropagation();
-        closeAllPanels(null);
-        setChartInteractionMode(MODE_OBJECTS);
-      });
-    }
-
     var volCb = document.getElementById('sc-show-vol');
     if (volCb) {
       volCb.checked = showVolume;
