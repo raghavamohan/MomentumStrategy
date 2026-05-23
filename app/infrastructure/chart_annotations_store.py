@@ -30,6 +30,18 @@ Structure::
                     "label": "Support"
                 },
                 ...
+            ],
+            "indicators": [
+                {
+                    "id": "uuid-string",
+                    "type": "SMA",
+                    "period": 21,
+                    "color": "#f59e0b",
+                    "lineWidth": 2,
+                    "style": "solid",
+                    "visible": true
+                },
+                ...
             ]
         }
     }
@@ -87,20 +99,31 @@ def load(token: int) -> dict[str, Any]:
     with _lock:
         data = _load_all()
     entry = data.get(str(token), {})
-    return {
+    result: dict[str, Any] = {
         "trendlines": list(entry.get("trendlines") or []),
         "levels": list(entry.get("levels") or []),
     }
+    if "indicators" in entry:
+        result["indicators"] = list(entry.get("indicators") or [])
+    return result
 
 
-def save(token: int, trendlines: list[dict], levels: list[dict]) -> None:
+def save(
+    token: int,
+    trendlines: list[dict],
+    levels: list[dict],
+    indicators: list[dict] | None = None,
+) -> None:
     """Persist annotations for ``token``, replacing any previous data."""
     with _lock:
         data = _load_all()
-        data[str(token)] = {
+        payload: dict[str, Any] = {
             "trendlines": list(trendlines or []),
             "levels": list(levels or []),
         }
+        if indicators is not None:
+            payload["indicators"] = list(indicators or [])
+        data[str(token)] = payload
         _save_all(data)
 
 

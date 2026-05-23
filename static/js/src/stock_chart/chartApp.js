@@ -6,6 +6,7 @@ import {
   RSI_SHOW_KEY,
   RSI_PERIOD,
   MAX_MAIN_INDICATORS,
+  DEFAULT_MAIN_INDICATORS,
   SAVE_DEBOUNCE_MS,
   WS_RECONNECT_MS,
   STALE_TICK_MS,
@@ -67,10 +68,66 @@ export function mountStockChartPage() {
   var chartResizeObs = null;
   var chartResizeDebounceTimer = null;
 
-  var indicators = [
-    { id: uid(), type: 'SMA', period: 21, color: '#f59e0b', lineWidth: 2, style: 'solid', series: null, glowSeries: null, cachedPts: [] },
-    { id: uid(), type: 'SMA', period: 14, color: '#60a5fa', lineWidth: 2, style: 'solid', series: null, glowSeries: null, cachedPts: [] }
-  ];
+  function uid() { return Math.random().toString(36).slice(2); }
+
+  function createDefaultIndicators() {
+    return DEFAULT_MAIN_INDICATORS.map(function (cfg) {
+      return {
+        id: uid(),
+        type: cfg.type,
+        period: cfg.period,
+        color: cfg.color,
+        lineWidth: cfg.lineWidth,
+        style: cfg.style,
+        series: null,
+        glowSeries: null,
+        cachedPts: []
+      };
+    });
+  }
+
+  function serializeIndicatorsForSave() {
+    return indicators.map(function (ind) {
+      return {
+        id: ind.id || uid(),
+        type: ind.type === 'EMA' ? 'EMA' : 'SMA',
+        period: Math.max(2, Math.min(200, parseInt(ind.period, 10) || 20)),
+        color: ind.color || '#f59e0b',
+        lineWidth: Math.max(1, Math.min(8, Number(ind.lineWidth) || 2)),
+        style: ind.style || 'solid',
+        visible: ind.visible !== false
+      };
+    });
+  }
+
+  function hydrateIndicatorsFromSave(rows) {
+    if (!Array.isArray(rows) || !rows.length) return [];
+    return rows.slice(0, MAX_MAIN_INDICATORS).map(function (row) {
+      return {
+        id: typeof row.id === 'string' && row.id ? row.id : uid(),
+        type: row.type === 'EMA' ? 'EMA' : 'SMA',
+        period: Math.max(2, Math.min(200, parseInt(row.period, 10) || 20)),
+        color: typeof row.color === 'string' && row.color ? row.color : '#f59e0b',
+        lineWidth: Math.max(1, Math.min(8, Number(row.lineWidth) || 2)),
+        style: row.style || 'solid',
+        visible: row.visible !== false,
+        series: null,
+        glowSeries: null,
+        cachedPts: []
+      };
+    });
+  }
+
+  function annotationsPayloadForSave() {
+    return {
+      instrument_token: TOKEN,
+      trendlines: trendlines,
+      levels: levels,
+      indicators: serializeIndicatorsForSave()
+    };
+  }
+
+  var indicators = createDefaultIndicators();
 
   var trendlines = [];
   var levels = [];
@@ -88,6 +145,8 @@ export function mountStockChartPage() {
   var levelDrag = null;
   var LEVEL_HIT_PX = 8;
   var IND_HIT_PX = 10;
+  /** When two indicators are equally close, prefer the one drawn on top. */
+  var IND_HIT_TIE_PX = 0.75;
   var mainWrapOverlayBound = false;
   var mainWrapPdCapture = null;
   var mainWrapClickCaptureHandler = null;
@@ -283,8 +342,6 @@ export function mountStockChartPage() {
     } catch (_) {}
     paneRangeSyncing = false;
   }
-
-  function uid() { return Math.random().toString(36).slice(2); }
 
   // ── Tooltip prefs (localStorage) ─────────────────────────────────────────
   var defaultTooltipPrefs = {
@@ -692,6 +749,7 @@ export function mountStockChartPage() {
     refreshIndicators();
     renderChips();
     updateIndAddButton();
+    scheduleSaveAnnotations();
   }
 
   function unbindLevelDragDoc() {
@@ -761,26 +819,43 @@ export function mountStockChartPage() {
     return v0 + (v1 - v0) * alpha;
   }
 
+  function indicatorDrawZIndex(i) {
+    var ind = indicators[i];
+    var z = i;
+    if (selectedIndId === ind.id && ind.glowSeries && ind.visible !== false) {
+      z += indicators.length;
+    }
+    return z;
+  }
+
   function hitTestIndicatorId(px, py) {
     if (!mainChart || !candleSeries) return null;
     var t = coordinateToTimeExtrapolated(px);
     if (t == null) return null;
-    var best = null;
-    var bestD = IND_HIT_PX + 1;
+    var candidates = [];
     for (var i = 0; i < indicators.length; i++) {
       var ind = indicators[i];
-      if (!ind.series || !ind.cachedPts || !ind.cachedPts.length) continue;
+      if (!ind.series || ind.visible === false || !ind.cachedPts || !ind.cachedPts.length) continue;
       var v = seriesValueAtTime(ind.cachedPts, t);
       if (v == null || !isFinite(v)) continue;
       var y = ind.series.priceToCoordinate(v);
       if (y == null || !isFinite(y)) continue;
       var d = Math.abs(py - y);
-      if (d <= IND_HIT_PX && d < bestD) {
-        bestD = d;
-        best = ind.id;
+      var lw = Math.max(1, Math.min(8, Number(ind.lineWidth) || 2));
+      var hitPx = IND_HIT_PX + lw / 2;
+      if (selectedIndId === ind.id && ind.glowSeries) {
+        hitPx += Math.min(16, lw + 5) / 2;
+      }
+      if (d <= hitPx) {
+        candidates.push({ id: ind.id, d: d, z: indicatorDrawZIndex(i) });
       }
     }
-    return best;
+    if (!candidates.length) return null;
+    candidates.sort(function (a, b) {
+      if (Math.abs(a.d - b.d) > IND_HIT_TIE_PX) return a.d - b.d;
+      return b.z - a.z;
+    });
+    return candidates[0].id;
   }
 
   function levelPriceFreeExcept(price, exceptId) {
@@ -1097,6 +1172,7 @@ export function mountStockChartPage() {
       tl.label = (document.getElementById('sc-tl-prop-label') || {}).value || '';
       scheduleSaveAnnotations();
       drawTrendlines();
+      renderChips();
       tlP.hidden = true;
     });
     tlP.querySelector('#sc-tl-prop-close').addEventListener('click', function () {
@@ -1165,6 +1241,7 @@ export function mountStockChartPage() {
       } catch (_) {}
       refreshIndicators();
       renderChips();
+      scheduleSaveAnnotations();
       inP.hidden = true;
     });
     inP.querySelector('#sc-ind-edit-close').addEventListener('click', function () {
@@ -1196,6 +1273,7 @@ export function mountStockChartPage() {
     refreshIndicators();
     renderChips();
     updateIndAddButton();
+    scheduleSaveAnnotations();
     setSelectedInd(newId);
   }
 
@@ -1847,6 +1925,9 @@ export function mountStockChartPage() {
       .then(function (body) {
         trendlines = Array.isArray(body.trendlines) ? body.trendlines.slice() : [];
         levels = Array.isArray(body.levels) ? body.levels.slice() : [];
+        if (Object.prototype.hasOwnProperty.call(body, 'indicators') && Array.isArray(body.indicators)) {
+          indicators = hydrateIndicatorsFromSave(body.indicators);
+        }
         trendlines.forEach(function (tl) {
           if (tl.extended === undefined) tl.extended = false;
           if (!tl.style) tl.style = 'solid';
@@ -1864,18 +1945,19 @@ export function mountStockChartPage() {
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(function () {
       saveTimer = null;
-      if (!TOKEN) return;
-      fetch('/dashboard/chart-annotations', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({
-          instrument_token: TOKEN,
-          trendlines: trendlines,
-          levels: levels
-        })
-      }).catch(function () {});
+      flushSaveAnnotations();
     }, SAVE_DEBOUNCE_MS);
+  }
+
+  function flushSaveAnnotations() {
+    if (!TOKEN) return;
+    fetch('/dashboard/chart-annotations', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(annotationsPayloadForSave()),
+      keepalive: true
+    }).catch(function () {});
   }
 
   function styleToLw(s) {
@@ -1884,22 +1966,43 @@ export function mountStockChartPage() {
     return 0;
   }
 
+  function normalizeHexColor(color, fallback) {
+    fallback = fallback || '#94a3b8';
+    if (typeof color !== 'string') return fallback;
+    var h = color.trim();
+    if (h.charAt(0) !== '#') return fallback;
+    var hex = h.slice(1);
+    if (hex.length === 3) {
+      hex = hex.charAt(0) + hex.charAt(0) + hex.charAt(1) + hex.charAt(1) + hex.charAt(2) + hex.charAt(2);
+    }
+    if (!/^[0-9a-fA-F]{6}$/.test(hex)) return fallback;
+    return '#' + hex.toLowerCase();
+  }
+
+  function rgbaFromHex(hex, alpha) {
+    var norm = normalizeHexColor(hex);
+    var h = norm.slice(1);
+    var r = parseInt(h.slice(0, 2), 16);
+    var g = parseInt(h.slice(2, 4), 16);
+    var b = parseInt(h.slice(4, 6), 16);
+    return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+  }
+
+  function applyChipObjectColor(chip, color, fallback) {
+    var hex = normalizeHexColor(color, fallback);
+    chip.style.borderColor = hex;
+    chip.style.background = rgbaFromHex(hex, 0.14);
+    chip.style.setProperty('--sc-chip-color', hex);
+    chip.style.setProperty('--sc-chip-glow', rgbaFromHex(hex, 0.38));
+  }
+
   function indicatorGlowColor(color) {
     if (typeof color !== 'string') return 'rgba(255,255,255,.28)';
     var h = color.trim();
     if (h.startsWith('hsl')) {
       return h.replace('hsl', 'hsla').replace(')', ', 0.33)');
     }
-    if (h.charAt(0) !== '#') return 'rgba(255,255,255,.28)';
-    var hex = h.slice(1);
-    if (hex.length === 3) {
-      hex = hex.charAt(0) + hex.charAt(0) + hex.charAt(1) + hex.charAt(1) + hex.charAt(2) + hex.charAt(2);
-    }
-    if (!/^[0-9a-fA-F]{6}$/.test(hex)) return 'rgba(255,255,255,.28)';
-    var r = parseInt(hex.slice(0, 2), 16);
-    var g = parseInt(hex.slice(2, 4), 16);
-    var b = parseInt(hex.slice(4, 6), 16);
-    return 'rgba(' + r + ',' + g + ',' + b + ',.33)';
+    return rgbaFromHex(color, 0.33);
   }
 
   function syncIndicatorSelectionVisuals() {
@@ -3262,7 +3365,7 @@ export function mountStockChartPage() {
   }
 
   /** Remove every chip-backed overlay: MAs/EMAs, trendlines, and horizontal levels. */
-  function clearAllChips() {
+  function removeAllIndicatorSeries() {
     indicators.forEach(function (ind) {
       if (ind.series && mainChart) {
         try { mainChart.removeSeries(ind.series); } catch (_) {}
@@ -3273,15 +3376,49 @@ export function mountStockChartPage() {
         ind.glowSeries = null;
       }
     });
-    indicators = [];
+  }
+
+  function clearTrendlinesAndLevels() {
     selectedTlId = null;
     selectedLevelId = null;
-    selectedIndId = null;
     trendlines = [];
     drawTrendlines();
     levels = [];
     clearLevelPriceLines();
     scheduleSaveAnnotations();
+  }
+
+  function isDefaultChartState() {
+    if (trendlines.length || levels.length) return false;
+    if (indicators.length !== DEFAULT_MAIN_INDICATORS.length) return false;
+    for (var i = 0; i < DEFAULT_MAIN_INDICATORS.length; i++) {
+      var def = DEFAULT_MAIN_INDICATORS[i];
+      var ind = indicators[i];
+      if (!ind) return false;
+      if (ind.type !== def.type || ind.period !== def.period) return false;
+      if ((ind.color || '') !== def.color) return false;
+      if ((Number(ind.lineWidth) || 2) !== def.lineWidth) return false;
+      if ((ind.style || 'solid') !== def.style) return false;
+      if (ind.visible === false) return false;
+    }
+    return true;
+  }
+
+  function clearAllChips() {
+    removeAllIndicatorSeries();
+    indicators = [];
+    selectedIndId = null;
+    clearTrendlinesAndLevels();
+    refreshIndicators();
+    renderChips();
+  }
+
+  /** Restore SMA 21/14 and remove trendlines, levels, and any extra indicators. */
+  function resetToDefaultIndicators() {
+    removeAllIndicatorSeries();
+    indicators = createDefaultIndicators();
+    selectedIndId = null;
+    clearTrendlinesAndLevels();
     refreshIndicators();
     renderChips();
   }
@@ -3295,11 +3432,13 @@ export function mountStockChartPage() {
       var chip = document.createElement('span');
       chip.className = 'sc-chip';
       if (ind.id === selectedIndId) chip.classList.add('sc-obj-selected');
+      applyChipObjectColor(chip, ind.color, '#f59e0b');
 
       var isVisible = ind.visible !== false;
+      if (!isVisible) chip.style.opacity = '0.55';
       var eyeHtml = '<span class="sc-chip-toggle-vis" style="cursor:pointer;margin-right:6px;opacity:' + (isVisible ? '1' : '0.4') + '" title="' + (isVisible ? 'Hide' : 'Show') + '">\uD83D\uDC41</span>';
 
-      chip.innerHTML = eyeHtml + ind.type + ' ' + ind.period +
+      chip.innerHTML = '<span class="sc-chip-color-dot" aria-hidden="true"></span>' + eyeHtml + ind.type + ' ' + ind.period +
         '<span class="sc-chip-remove" data-ind="' + ind.id + '">\u00d7</span>';
 
       chip.addEventListener('click', function (e) {
@@ -3318,6 +3457,7 @@ export function mountStockChartPage() {
         if (ind.glowSeries) {
           try { ind.glowSeries.applyOptions({ visible: ind.visible && selectedIndId === ind.id }); } catch (_) {}
         }
+        scheduleSaveAnnotations();
         renderChips();
       });
 
@@ -3337,6 +3477,7 @@ export function mountStockChartPage() {
         if (selectedIndId === ind.id) selectedIndId = null;
         syncIndicatorSelectionVisuals();
         refreshIndicators();
+        scheduleSaveAnnotations();
         renderChips();
       });
       host.appendChild(chip);
@@ -3345,9 +3486,9 @@ export function mountStockChartPage() {
     trendlines.forEach(function (tl, idx) {
       var chip = document.createElement('span');
       chip.className = 'sc-chip';
-      chip.style.opacity = '0.9';
       if (tl.id === selectedTlId) chip.classList.add('sc-tl-selected');
-      chip.innerHTML = 'TL ' + (idx + 1) +
+      applyChipObjectColor(chip, tl.color, '#f59e0b');
+      chip.innerHTML = '<span class="sc-chip-color-dot" aria-hidden="true"></span>TL ' + (idx + 1) +
         '<span class="sc-chip-remove" data-tlid="' + tl.id + '">\u00d7</span>';
       chip.addEventListener('click', function (e) {
         if (e.target.closest && e.target.closest('.sc-chip-remove')) return;
@@ -3374,7 +3515,8 @@ export function mountStockChartPage() {
       var chip = document.createElement('span');
       chip.className = 'sc-chip';
       if (lv.id === selectedLevelId) chip.classList.add('sc-obj-selected');
-      chip.innerHTML = 'Lv ' + fmtNum(lv.price, 2) +
+      applyChipObjectColor(chip, lv.color, '#22c55e');
+      chip.innerHTML = '<span class="sc-chip-color-dot" aria-hidden="true"></span>Lv ' + fmtNum(lv.price, 2) +
         '<span class="sc-chip-remove" data-lvid="' + (lv.id || '') + '">\u00d7</span>';
       chip.addEventListener('click', function (e) {
         if (e.target.closest && e.target.closest('.sc-chip-remove')) return;
@@ -3400,7 +3542,23 @@ export function mountStockChartPage() {
       host.appendChild(chip);
     });
 
-    if (indicators.length || trendlines.length || levels.length) {
+    var hasOverlays = indicators.length || trendlines.length || levels.length;
+
+    if (!isDefaultChartState()) {
+      var resetDefaultsBtn = document.createElement('button');
+      resetDefaultsBtn.type = 'button';
+      resetDefaultsBtn.className = 'sc-chip-reset-defaults';
+      resetDefaultsBtn.textContent = 'Reset defaults';
+      resetDefaultsBtn.setAttribute('aria-label', 'Reset chart to default SMA 21 and SMA 14 indicators');
+      resetDefaultsBtn.title = 'Remove trendlines and levels, and restore default SMA 21 and SMA 14 indicators';
+      resetDefaultsBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        resetToDefaultIndicators();
+      });
+      host.appendChild(resetDefaultsBtn);
+    }
+
+    if (hasOverlays) {
       var clearAllBtn = document.createElement('button');
       clearAllBtn.type = 'button';
       clearAllBtn.className = 'sc-chip-clear-all';
@@ -3570,6 +3728,7 @@ export function mountStockChartPage() {
       refreshIndicators();
       renderChips();
       updateIndAddButton();
+      scheduleSaveAnnotations();
     });
 
     var lvlPanel = document.getElementById('sc-lvl-panel');
@@ -3676,6 +3835,11 @@ export function mountStockChartPage() {
     applyRsiVisibility();
 
     window.addEventListener('beforeunload', function () {
+      if (saveTimer) {
+        clearTimeout(saveTimer);
+        saveTimer = null;
+      }
+      flushSaveAnnotations();
       clearStaleCheck();
       closeWS();
     });

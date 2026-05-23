@@ -1,12 +1,12 @@
-"""REST API for chart annotations (trendlines + horizontal levels) per stock.
+"""REST API for chart annotations (trendlines, levels, indicators) per stock.
 
 Endpoints
 ---------
 GET  /dashboard/chart-annotations?instrument_token=TOKEN
-     Returns saved trendlines and levels for a stock.
+     Returns saved trendlines, levels, and indicators for a stock.
 
 POST /dashboard/chart-annotations
-     Body: {"instrument_token": int, "trendlines": [...], "levels": [...]}
+     Body: {"instrument_token": int, "trendlines": [...], "levels": [...], "indicators": [...]}
      Replaces all annotations for the token.
 
 DELETE /dashboard/chart-annotations?instrument_token=TOKEN
@@ -34,6 +34,7 @@ class AnnotationSaveRequest(BaseModel):
     instrument_token: int = Field(..., ge=1)
     trendlines: list[dict[str, Any]] = Field(default_factory=list)
     levels: list[dict[str, Any]] = Field(default_factory=list)
+    indicators: list[dict[str, Any]] = Field(default_factory=list)
 
 
 @router.get("/dashboard/chart-annotations")
@@ -41,7 +42,7 @@ async def get_chart_annotations(
     request: Request,
     instrument_token: int = Query(..., ge=1),
 ) -> JSONResponse:
-    """Return saved trendlines and levels for a stock."""
+    """Return saved trendlines, levels, and indicators for a stock."""
     if not authorized_browser_or_api(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     if kite_for_request() is None:
@@ -77,6 +78,7 @@ async def save_chart_annotations(
             body.instrument_token,
             trendlines=body.trendlines,
             levels=body.levels,
+            indicators=body.indicators,
         )
     except Exception as exc:
         logger.exception("chart-annotations POST failed: %s", exc)

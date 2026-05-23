@@ -4,6 +4,12 @@ export const TP_STORAGE_KEY = 'sc_chart_tooltip_prefs';
 export const RSI_SHOW_KEY = 'sc_chart_show_rsi';
 export const RSI_PERIOD = 14;
 export const MAX_MAIN_INDICATORS = 10;
+
+/** Default SMA overlays shown on a fresh chart load. */
+export const DEFAULT_MAIN_INDICATORS = [
+  { type: 'SMA', period: 21, color: '#f59e0b', lineWidth: 2, style: 'solid' },
+  { type: 'SMA', period: 14, color: '#60a5fa', lineWidth: 2, style: 'solid' }
+];
 export const SAVE_DEBOUNCE_MS = 500;
 export const WS_RECONNECT_MS = 4000;
 export const STALE_TICK_MS = 90000;
