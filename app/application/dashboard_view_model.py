@@ -53,6 +53,27 @@ KITE_PORTFOLIO_PERMISSION_USER_MESSAGE = (
 )
 
 
+def _positive_quote_price(raw: object) -> float | None:
+    """Return a positive float from a Kite quote field, or None when unusable."""
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _quote_prev_close(data: dict[str, Any]) -> float | None:
+    ohlc = data.get("ohlc") or {}
+    return _positive_quote_price(ohlc.get("close"))
+
+
+def _quote_display_ltp(data: dict[str, Any]) -> float | None:
+    """Prefer live REST LTP; fall back to prior close when LTP is missing or zero."""
+    return _positive_quote_price(data.get("last_price")) or _quote_prev_close(data)
+
+
 def dashboard_timing_mark(
     timings: list[tuple[str, float]],
     stage: str,
@@ -295,23 +316,8 @@ async def build_dashboard_view_model(
         token = int(data.get("instrument_token") or 0)
         if token > 0:
             index_tokens.add(token)
-        ohlc = data.get("ohlc") or {}
-        raw_prev = ohlc.get("close")
-        prev_close: float | None = None
-        if raw_prev is not None:
-            try:
-                prev_close = float(raw_prev)
-            except (TypeError, ValueError):
-                prev_close = None
-        raw_ltp = data.get("last_price")
-        rest_ltp: float | None = None
-        if raw_ltp is not None:
-            try:
-                rest_ltp = float(raw_ltp)
-            except (TypeError, ValueError):
-                rest_ltp = None
-        # When the quote API omits last_price (e.g. pre-open / stale cache), still show prior close.
-        display_ltp = rest_ltp if rest_ltp is not None else prev_close
+        prev_close = _quote_prev_close(data)
+        display_ltp = _quote_display_ltp(data)
         display = str(data.get("tradingsymbol") or ts or env_label)
         index_quotes_bootstrap.append(
             {
@@ -344,8 +350,15 @@ async def build_dashboard_view_model(
 
     for row in index_quotes_bootstrap:
         tok = int(row.get("token") or 0)
-        if tok > 0 and tok in live_ltp_by_token:
-            row["ltp"] = live_ltp_by_token[tok]
+        if tok <= 0:
+            continue
+        live_ltp = _positive_quote_price(live_ltp_by_token.get(tok))
+        if live_ltp is not None:
+            row["ltp"] = live_ltp
+        elif row.get("ltp") is None:
+            prev_close = _positive_quote_price(row.get("prevClose"))
+            if prev_close is not None:
+                row["ltp"] = prev_close
 
     equity_holdings = sorted(
         (

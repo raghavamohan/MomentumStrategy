@@ -1078,6 +1078,43 @@
       return Number.isFinite(n) ? n : NaN;
     }
 
+    function positivePrice(v) {
+      const n = numOrNaN(v);
+      return Number.isFinite(n) && n > 0 ? n : NaN;
+    }
+
+    function indexQuoteItemKey(item) {
+      const rawTok = item.token;
+      const tok = rawTok != null && rawTok !== '' ? String(rawTok) : '';
+      if (tok) {
+        return { kind: 'token', value: tok };
+      }
+      const label = item.label != null ? String(item.label) : '';
+      if (label) {
+        return { kind: 'label', value: label };
+      }
+      return null;
+    }
+
+    function indexQuoteWrapSelector(key) {
+      if (!key) {
+        return null;
+      }
+      if (key.kind === 'token') {
+        return '[data-index-token="' + key.value + '"]';
+      }
+      return '[data-index-label="' + key.value.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]';
+    }
+
+    function forEachIndexQuoteWrap(item, fn) {
+      const key = indexQuoteItemKey(item);
+      const sel = indexQuoteWrapSelector(key);
+      if (!sel || !indexQuotesBar) {
+        return;
+      }
+      indexQuotesBar.querySelectorAll(sel).forEach(fn);
+    }
+
     function renderOneIndexQuote(titleEl, changeEl, label, ltp, prevClose) {
       if (!titleEl || !changeEl) {
         return;
@@ -1094,10 +1131,10 @@
         titleEl.appendChild(valueEl);
       }
       labelEl.textContent = label + ':';
-      const prevRaw = prevClose;
-      const prev = prevRaw != null && prevRaw !== '' ? Number(prevRaw) : NaN;
-      const ltpFinite = Number.isFinite(ltp);
-      const displayLtp = ltpFinite ? ltp : Number.isFinite(prev) && prev > 0 ? prev : NaN;
+      const prev = positivePrice(prevClose);
+      const ltpPositive = positivePrice(ltp);
+      const ltpFinite = Number.isFinite(ltpPositive);
+      const displayLtp = ltpFinite ? ltpPositive : prev;
 
       if (!Number.isFinite(displayLtp)) {
         valueEl.textContent = '--';
@@ -1108,7 +1145,7 @@
 
       valueEl.textContent = formatInr(displayLtp);
 
-      if (!Number.isFinite(prev) || prev <= 0) {
+      if (!Number.isFinite(prev)) {
         changeEl.textContent = '';
         changeEl.className = 'nifty-change';
         return;
@@ -1120,12 +1157,12 @@
         return;
       }
 
-      const chg = ltp - prev;
+      const chg = ltpPositive - prev;
       const pct = (chg / prev) * 100;
-      const same = Math.round(ltp * 100) === Math.round(prev * 100);
+      const same = Math.round(ltpPositive * 100) === Math.round(prev * 100);
       let tone = 'flat';
       if (!same) {
-        tone = ltp > prev ? 'up' : 'down';
+        tone = ltpPositive > prev ? 'up' : 'down';
       }
 
       const chgStr = (chg > 0 ? '+' : '') + formatInr(chg);
@@ -1147,10 +1184,11 @@
         }
         const wrap = document.createElement('span');
         wrap.className = 'index-quote-item';
-        const rawTok = item.token;
-        const tok = rawTok != null && rawTok !== '' ? String(rawTok) : '';
-        if (tok) {
-          wrap.setAttribute('data-index-token', tok);
+        const key = indexQuoteItemKey(item);
+        if (key && key.kind === 'token') {
+          wrap.setAttribute('data-index-token', key.value);
+        } else if (key && key.kind === 'label') {
+          wrap.setAttribute('data-index-label', key.value);
         }
         const title = document.createElement('span');
         title.className = 'index-quote-title';
@@ -1248,15 +1286,10 @@
       }
       const idx = bootstrap.indexQuotes || [];
       idx.forEach(function (item) {
-        const rawTok = item.token;
-        const tok = rawTok != null && rawTok !== '' ? String(rawTok) : '';
-        if (!tok) {
-          return;
-        }
         const label = item.label != null ? String(item.label) : '';
         const ltp = numOrNaN(item.ltp);
         const prev = item.prevClose;
-        indexQuotesBar.querySelectorAll('[data-index-token="' + tok + '"]').forEach(function (wrap) {
+        forEachIndexQuoteWrap(item, function (wrap) {
           const title = wrap.querySelector('.index-quote-title');
           const chg = wrap.querySelector('.nifty-change');
           renderOneIndexQuote(title, chg, label, ltp, prev);
@@ -2069,11 +2102,14 @@
       });
       const idx = bootstrap.indexQuotes || [];
       idx.forEach(function (item) {
-        const rawTok = item.token;
-        const tok = rawTok != null && rawTok !== '' ? String(rawTok) : '';
-        if (tok && Object.prototype.hasOwnProperty.call(ltpMap, tok)) {
+        const key = indexQuoteItemKey(item);
+        if (!key || key.kind !== 'token') {
+          return;
+        }
+        const tok = key.value;
+        if (Object.prototype.hasOwnProperty.call(ltpMap, tok)) {
           const p = Number(ltpMap[tok]);
-          if (Number.isFinite(p)) {
+          if (Number.isFinite(p) && p > 0) {
             item.ltp = p;
           }
         }

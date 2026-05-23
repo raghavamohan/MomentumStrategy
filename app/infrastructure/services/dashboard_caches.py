@@ -55,6 +55,28 @@ def today_cache_token() -> str:
     return current_effective_day_ist(cutoff_hour=9)
 
 
+def _quote_cache_entry_usable(entry: dict[str, Any] | None) -> bool:
+    """True when a cached quote row has enough data to reuse for the day."""
+    if not entry:
+        return False
+    raw_ltp = entry.get("last_price")
+    if raw_ltp is not None:
+        try:
+            if float(raw_ltp) > 0:
+                return True
+        except (TypeError, ValueError):
+            pass
+    ohlc = entry.get("ohlc") or {}
+    raw_prev = ohlc.get("close")
+    if raw_prev is not None:
+        try:
+            if float(raw_prev) > 0:
+                return True
+        except (TypeError, ValueError):
+            pass
+    return False
+
+
 def get_cached_quotes(kite, quote_keys: list[str]) -> dict[str, Any]:
     """Return quote payload from in-memory day cache, fetching only misses."""
     global _QUOTE_CACHE_DAY
@@ -65,7 +87,11 @@ def get_cached_quotes(kite, quote_keys: list[str]) -> dict[str, Any]:
         if _QUOTE_CACHE_DAY != day:
             _QUOTE_CACHE_DAY = day
             _QUOTE_CACHE.clear()
-        cached = {k: _QUOTE_CACHE.get(k, {}) for k in quote_keys if k in _QUOTE_CACHE}
+        cached = {
+            k: _QUOTE_CACHE[k]
+            for k in quote_keys
+            if k in _QUOTE_CACHE and _quote_cache_entry_usable(_QUOTE_CACHE.get(k))
+        }
     missing = [k for k in quote_keys if k not in cached]
     if not missing:
         return cached
