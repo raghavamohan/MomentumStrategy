@@ -75,6 +75,7 @@ export function mountStockChartPage() {
   var trendlines = [];
   var levels = [];
   var levelPriceLines = {};
+  var levelGlowPriceLines = {};
   var saveTimer = null;
   var tlAnchors = [];
   var tlPreviewPx = null;
@@ -545,6 +546,7 @@ export function mountStockChartPage() {
     selectedLevelId = null;
     selectedIndId = null;
     syncIndicatorSelectionVisuals();
+    syncLevelSelectionVisuals();
     drawTrendlines();
     renderChips();
   }
@@ -578,6 +580,7 @@ export function mountStockChartPage() {
       selectedTlId = null;
     }
     syncIndicatorSelectionVisuals();
+    syncLevelSelectionVisuals();
     drawTrendlines();
     renderChips();
   }
@@ -591,6 +594,7 @@ export function mountStockChartPage() {
       selectedLevelId = null;
     }
     syncIndicatorSelectionVisuals();
+    syncLevelSelectionVisuals();
     drawTrendlines();
     renderChips();
   }
@@ -604,6 +608,7 @@ export function mountStockChartPage() {
       selectedIndId = null;
     }
     syncIndicatorSelectionVisuals();
+    syncLevelSelectionVisuals();
     drawTrendlines();
     renderChips();
   }
@@ -639,6 +644,10 @@ export function mountStockChartPage() {
     if (levelPriceLines[id]) {
       try { candleSeries.removePriceLine(levelPriceLines[id]); } catch (_) {}
       delete levelPriceLines[id];
+    }
+    if (levelGlowPriceLines[id]) {
+      try { candleSeries.removePriceLine(levelGlowPriceLines[id]); } catch (_) {}
+      delete levelGlowPriceLines[id];
     }
     selectedLevelId = null;
     scheduleSaveAnnotations();
@@ -769,27 +778,23 @@ export function mountStockChartPage() {
     var id = lv.id;
     var pl = levelPriceLines[id];
     if (!pl) return;
+    var baseLw = Math.max(1, Number(lv.width) || 1);
+    var selected = id === selectedLevelId && chartAllowsObjectSelection();
+    var opts = {
+      price: Number(lv.price),
+      color: lv.color || '#22c55e',
+      lineWidth: selected ? baseLw + 2 : baseLw,
+      lineStyle: styleToLw(lv.style || 'dashed'),
+      axisLabelVisible: true,
+      title: (lv.label || '').slice(0, 24)
+    };
     try {
-      pl.applyOptions({
-        price: Number(lv.price),
-        color: lv.color || '#22c55e',
-        lineWidth: Math.max(1, Number(lv.width) || 1),
-        lineStyle: styleToLw(lv.style || 'dashed'),
-        axisLabelVisible: true,
-        title: (lv.label || '').slice(0, 24)
-      });
+      pl.applyOptions(opts);
     } catch (_) {
       try { candleSeries.removePriceLine(pl); } catch (__) {}
       delete levelPriceLines[id];
       try {
-        levelPriceLines[id] = candleSeries.createPriceLine({
-          price: Number(lv.price),
-          color: lv.color || '#22c55e',
-          lineWidth: Math.max(1, Number(lv.width) || 1),
-          lineStyle: styleToLw(lv.style || 'dashed'),
-          axisLabelVisible: true,
-          title: (lv.label || '').slice(0, 24)
-        });
+        levelPriceLines[id] = candleSeries.createPriceLine(opts);
       } catch (___) {}
     }
   }
@@ -874,6 +879,7 @@ export function mountStockChartPage() {
     if (!lv) return;
     lv.price = price;
     applyLevelPriceLineVisual(lv);
+    syncLevelSelectionVisuals();
     scheduleDrawTrendlines();
   }
 
@@ -1099,6 +1105,7 @@ export function mountStockChartPage() {
       lv.style = (document.getElementById('sc-lvl-edit-style') || {}).value || 'dashed';
       lv.width = Math.max(1, parseInt(document.getElementById('sc-lvl-edit-width').value, 10) || 1);
       applyLevelPriceLineVisual(lv);
+      syncLevelSelectionVisuals();
       scheduleSaveAnnotations();
       renderChips();
       lvP.hidden = true;
@@ -1675,6 +1682,7 @@ export function mountStockChartPage() {
     rsiObLine = rsiOsLine = rsiMidLine = null;
     indicators.forEach(function (ind) { ind.series = null; ind.glowSeries = null; });
     levelPriceLines = {};
+    levelGlowPriceLines = {};
   }
 
   function initCharts() {
@@ -1930,7 +1938,63 @@ export function mountStockChartPage() {
     return false;
   }
 
+  function clearLevelGlowPriceLines() {
+    if (!candleSeries) {
+      levelGlowPriceLines = {};
+      return;
+    }
+    Object.keys(levelGlowPriceLines).forEach(function (id) {
+      var pl = levelGlowPriceLines[id];
+      try { candleSeries.removePriceLine(pl); } catch (_) {}
+    });
+    levelGlowPriceLines = {};
+  }
+
+  function syncLevelSelectionVisuals() {
+    if (!candleSeries) return;
+    var allow = chartAllowsObjectSelection();
+    Object.keys(levelGlowPriceLines).forEach(function (id) {
+      if (!allow || id !== selectedLevelId) {
+        try { candleSeries.removePriceLine(levelGlowPriceLines[id]); } catch (_) {}
+        delete levelGlowPriceLines[id];
+      }
+    });
+    levels.forEach(function (lv) {
+      if (levelPriceLines[lv.id]) applyLevelPriceLineVisual(lv);
+    });
+    if (!allow || !selectedLevelId) return;
+    var lv = findLevelById(selectedLevelId);
+    if (!lv) return;
+    var id = lv.id;
+    var baseLw = Math.max(1, Number(lv.width) || 1);
+    var glowOpts = {
+      price: Number(lv.price),
+      color: indicatorGlowColor(lv.color || '#22c55e'),
+      lineWidth: Math.min(16, baseLw + 5),
+      lineStyle: 0,
+      axisLabelVisible: false,
+      title: ''
+    };
+    var glow = levelGlowPriceLines[id];
+    if (!glow) {
+      try {
+        levelGlowPriceLines[id] = candleSeries.createPriceLine(glowOpts);
+      } catch (_) {}
+    } else {
+      try {
+        glow.applyOptions(glowOpts);
+      } catch (_) {
+        try { candleSeries.removePriceLine(glow); } catch (__) {}
+        delete levelGlowPriceLines[id];
+        try {
+          levelGlowPriceLines[id] = candleSeries.createPriceLine(glowOpts);
+        } catch (___) {}
+      }
+    }
+  }
+
   function clearLevelPriceLines() {
+    clearLevelGlowPriceLines();
     if (!candleSeries) return;
     Object.keys(levelPriceLines).forEach(function (id) {
       var pl = levelPriceLines[id];
@@ -1955,6 +2019,7 @@ export function mountStockChartPage() {
       });
       levelPriceLines[id] = pl;
     });
+    syncLevelSelectionVisuals();
   }
 
   function barsForIndicators() {
@@ -3201,6 +3266,10 @@ export function mountStockChartPage() {
         if (levelPriceLines[id]) {
           try { candleSeries.removePriceLine(levelPriceLines[id]); } catch (_) {}
           delete levelPriceLines[id];
+        }
+        if (levelGlowPriceLines[id]) {
+          try { candleSeries.removePriceLine(levelGlowPriceLines[id]); } catch (_) {}
+          delete levelGlowPriceLines[id];
         }
         scheduleSaveAnnotations();
         renderChips();
