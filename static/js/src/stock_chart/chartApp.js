@@ -2265,13 +2265,24 @@ export function mountStockChartPage() {
    * Uses (time, snapped price) dedupe — param.point.y follows the mouse, so comparing it to
    * priceToCoordinate(snapped) would force setCrosshairPosition every event and break the chart.
    */
+  function releaseCrosshairSyncGuardDeferred(expectedGuard) {
+    queueMicrotask(function () {
+      if (crosshairSyncGuard === expectedGuard) crosshairSyncGuard = 0;
+    });
+  }
+
   function tryApplyMainCrosshairOhlcSnap(param) {
     if (chartInteractionMode !== MODE_CROSSHAIR || crosshairOhlcSnapGuard) return;
-    if (!param || !param.point || param.time === undefined || param.time === null) {
+    if (!param || !param.point) {
       crosshairOhlcSnapApplied = null;
       return;
     }
-    var bar = candleAtTime(param.time);
+    var tUse = mainCrosshairDataTime(param);
+    if (tUse === undefined || tUse === null) {
+      crosshairOhlcSnapApplied = null;
+      return;
+    }
+    var bar = candleForCrosshairTime(tUse);
     if (!bar) {
       crosshairOhlcSnapApplied = null;
       return;
@@ -2287,28 +2298,31 @@ export function mountStockChartPage() {
 
     var prev = crosshairOhlcSnapApplied;
     var keySnap = levelPriceKey(snapped);
-    if (prev && (prev.time === param.time || String(prev.time) === String(param.time)) &&
-        levelPriceKey(prev.price) === keySnap) {
+    if (prev && (prev.time === tUse || String(prev.time) === String(tUse)) &&
+        levelPriceKey(prev.price) === keySnap &&
+        Math.abs(yRef - newY) < 0.5) {
       return;
     }
 
-    crosshairOhlcSnapApplied = { time: param.time, price: snapped };
+    crosshairOhlcSnapApplied = { time: tUse, price: snapped };
     crosshairOhlcSnapGuard = 1;
     try {
-      mainChart.setCrosshairPosition(snapped, param.time, candleSeries);
+      mainChart.setCrosshairPosition(snapped, tUse, candleSeries);
     } catch (_) {}
     crosshairOhlcSnapGuard = 0;
   }
 
   function updateCrosshairLastSnap(param) {
     crosshairLastSnap = null;
-    if (chartInteractionMode !== MODE_CROSSHAIR || !param || !param.point || param.time == null) return;
-    var bar = candleAtTime(param.time);
+    if (chartInteractionMode !== MODE_CROSSHAIR || !param || !param.point) return;
+    var tUse = mainCrosshairDataTime(param);
+    if (tUse == null) return;
+    var bar = candleForCrosshairTime(tUse);
     if (!bar) return;
     var yRef = param.point.y;
     var snapped = snapMainCrosshairPriceForBar(bar, param, yRef);
     if (snapped != null && isFinite(snapped)) {
-      crosshairLastSnap = { time: param.time, price: snapped };
+      crosshairLastSnap = { time: tUse, price: snapped };
     }
   }
 
@@ -2378,12 +2392,15 @@ export function mountStockChartPage() {
       return;
     }
     crosshairSyncGuard = 1;
-    ensureRsiTimeScaleVisualMatchesMain();
-    var tUse = mainCrosshairDataTime(param);
-    var rv = rsiValueForCrosshairTime(tUse);
-    if (rv != null) rsiChart.setCrosshairPosition(rv, tUse, rsiLineSeries);
-    else rsiChart.clearCrosshairPosition();
-    crosshairSyncGuard = 0;
+    try {
+      ensureRsiTimeScaleVisualMatchesMain();
+      var tUse = mainCrosshairDataTime(param);
+      var rv = rsiValueForCrosshairTime(tUse);
+      if (rv != null) rsiChart.setCrosshairPosition(rv, tUse, rsiLineSeries);
+      else rsiChart.clearCrosshairPosition();
+    } finally {
+      releaseCrosshairSyncGuardDeferred(1);
+    }
   }
 
   function syncMainCrosshairFromRsi(param) {
@@ -2399,17 +2416,28 @@ export function mountStockChartPage() {
       return;
     }
     crosshairSyncGuard = 2;
-    var tUse = rsiCrosshairDataTime(param);
-    var b = candleForCrosshairTime(tUse);
-    if (b) {
-      var yClose = candleSeries.priceToCoordinate(Number(b.close));
-      var wrap = document.getElementById('sc-main-wrap');
-      var yHint = yClose != null && isFinite(yClose) ? yClose : (wrap ? wrap.clientHeight * 0.5 : 200);
-      var snapped = snapMainCrosshairPriceForBar(b, { time: tUse, point: { y: yHint } }, yHint);
-      if (snapped == null) snapped = Number(b.close);
-      mainChart.setCrosshairPosition(snapped, tUse, candleSeries);
-    } else mainChart.clearCrosshairPosition();
-    crosshairSyncGuard = 0;
+    try {
+      var tUse = rsiCrosshairDataTime(param);
+      var b = candleForCrosshairTime(tUse);
+      if (b) {
+        var yHint = null;
+        if (crosshairOhlcSnapApplied && crosshairOhlcSnapApplied.price != null) {
+          var ySnap = candleSeries.priceToCoordinate(Number(crosshairOhlcSnapApplied.price));
+          if (ySnap != null && isFinite(ySnap)) yHint = ySnap;
+        }
+        if (yHint == null) {
+          var yClose = candleSeries.priceToCoordinate(Number(b.close));
+          var wrap = document.getElementById('sc-main-wrap');
+          yHint = yClose != null && isFinite(yClose) ? yClose : (wrap ? wrap.clientHeight * 0.5 : 200);
+        }
+        var snapped = snapMainCrosshairPriceForBar(b, { time: tUse, point: { y: yHint } }, yHint);
+        if (snapped == null) snapped = Number(b.close);
+        crosshairOhlcSnapApplied = { time: tUse, price: snapped };
+        mainChart.setCrosshairPosition(snapped, tUse, candleSeries);
+      } else mainChart.clearCrosshairPosition();
+    } finally {
+      releaseCrosshairSyncGuardDeferred(2);
+    }
   }
 
   // ── Trendlines (canvas) ───────────────────────────────────────────────────
