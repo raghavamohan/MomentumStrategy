@@ -93,12 +93,14 @@
     </div>
     <div class="sc-controls">
       <button type="button" class="sc-control-btn" id="sc-mode-crosshair" aria-pressed="false" title="Crosshair: snap vertically to OHLC and MAs at the bar under the cursor; click the chart to place a horizontal level. Turn off for pan/zoom and right-click add actions (Level, Trendline, SMA, EMA).">Crosshair</button>
-      <button type="button" class="sc-control-btn" id="sc-btn-sma" title="Add SMA Indicator">+ SMA</button>
-      <button type="button" class="sc-control-btn" id="sc-btn-ema" title="Add EMA Indicator">+ EMA</button>
-      <button type="button" class="sc-control-btn" id="sc-btn-fib-ind" title="Add Rolling Fibonacci Indicator">+ Fib Bands</button>
-      <button type="button" class="sc-control-btn" id="sc-btn-trendline" aria-pressed="false" title="Add Trendline (click 2 anchor points)">+ Trendline</button>
-      <button type="button" class="sc-control-btn" id="sc-btn-fib-draw" aria-pressed="false" title="Add Fibonacci Retracement (click 2 anchor points)">+ Fib Retrac</button>
-      <button type="button" class="sc-control-btn" id="sc-btn-level" aria-pressed="false" title="Add Horizontal Level (click to place)">+ Level</button>
+      <button type="button" class="sc-control-btn sc-add-ind-btn" data-ind-type="SMA" title="Add SMA Indicator">+ SMA</button>
+      <button type="button" class="sc-control-btn sc-add-ind-btn" data-ind-type="EMA" title="Add EMA Indicator">+ EMA</button>
+      <button type="button" class="sc-control-btn sc-add-ind-btn" data-ind-type="FIB" title="Add Rolling Fibonacci Indicator">+ Fib Bands</button>
+      <button type="button" class="sc-control-btn sc-add-ind-btn" data-ind-type="SUPERTREND" title="Add SuperTrend Indicator">+ SuperTrend</button>
+      <button type="button" class="sc-control-btn sc-draw-btn" data-draw-type="TRENDLINE" aria-pressed="false" title="Add Trendline (click 2 anchor points)">+ Trendline</button>
+      <button type="button" class="sc-control-btn sc-draw-btn" data-draw-type="FIB" aria-pressed="false" title="Add Fibonacci Retracement (click 2 anchor points)">+ Fib Retrac</button>
+      <button type="button" class="sc-control-btn sc-draw-btn" data-draw-type="PARALLEL_CHANNEL" aria-pressed="false" title="Add Parallel Channel (click 3 anchor points)">+ Channel</button>
+      <button type="button" class="sc-control-btn sc-draw-btn" data-draw-type="LEVEL" aria-pressed="false" title="Add Horizontal Level (click to place)">+ Level</button>
       <label class="sc-control-btn" style="cursor:pointer">
         <input type="checkbox" id="sc-show-vol" checked style="margin-right:4px">Vol
       </label>

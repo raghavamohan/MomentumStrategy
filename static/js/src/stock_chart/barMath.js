@@ -1,58 +1,6 @@
 /** Pure bar / time / indicator helpers (no chart instances). */
 
-export function calcSMA(bars, period) {
-  var out = [];
-  for (var i = 0; i < bars.length; i++) {
-    if (i < period - 1) continue;
-    var sum = 0;
-    for (var j = i - period + 1; j <= i; j++) sum += bars[j].close;
-    out.push({ time: bars[i].time, value: sum / period });
-  }
-  return out;
-}
 
-export function calcEMA(bars, period) {
-  var out = [], k = 2 / (period + 1), ema = 0, started = false;
-  for (var i = 0; i < bars.length; i++) {
-    if (i < period - 1) continue;
-    if (!started) {
-      var s = 0;
-      for (var j = 0; j < period; j++) s += bars[j].close;
-      ema = s / period;
-      started = true;
-    } else ema = bars[i].close * k + ema * (1 - k);
-    out.push({ time: bars[i].time, value: ema });
-  }
-  return out;
-}
-
-/**
- * RSI(period) with leading whitespace so the RSI series has one slot per
- * candle bar. Same logical bar count + same `rightOffset` lets the two
- * charts share a 1:1 visible-logical-range mirror with no clamping.
- */
-export function calcRSI(bars, period) {
-  var out = [];
-  var prefixCount = Math.min(period, bars.length);
-  for (var k = 0; k < prefixCount; k++) {
-    out.push({ time: bars[k].time });
-  }
-  if (bars.length < period + 1) return out;
-  var gains = 0, losses = 0;
-  for (var i = 1; i <= period; i++) {
-    var d = bars[i].close - bars[i - 1].close;
-    if (d >= 0) gains += d; else losses -= d;
-  }
-  var ag = gains / period, al = losses / period;
-  out.push({ time: bars[period].time, value: al === 0 ? 100 : 100 - 100 / (1 + ag / al) });
-  for (var i = period + 1; i < bars.length; i++) {
-    var d2 = bars[i].close - bars[i - 1].close;
-    ag = (ag * (period - 1) + Math.max(d2, 0)) / period;
-    al = (al * (period - 1) + Math.max(-d2, 0)) / period;
-    out.push({ time: bars[i].time, value: al === 0 ? 100 : 100 - 100 / (1 + ag / al) });
-  }
-  return out;
-}
 
 /** UTC ms for a bar's session (daily string uses noon IST). */
 export function barToUtcMs(b) {
@@ -174,25 +122,4 @@ export function unixSecToChartTime(sec, refBar) {
   return Math.floor(sec);
 }
 
-export function calcRollingFib(bars, period) {
-  var out = { l0: [], l236: [], l382: [], l500: [], l618: [], l786: [], l1000: [] };
-  for (var i = 0; i < bars.length; i++) {
-    if (i < period - 1) continue;
-    var maxH = -Infinity;
-    var minL = Infinity;
-    for (var j = i - period + 1; j <= i; j++) {
-      if (bars[j].high > maxH) maxH = bars[j].high;
-      if (bars[j].low < minL) minL = bars[j].low;
-    }
-    var diff = maxH - minL;
-    var t = bars[i].time;
-    out.l0.push({ time: t, value: minL });
-    out.l236.push({ time: t, value: minL + diff * 0.236 });
-    out.l382.push({ time: t, value: minL + diff * 0.382 });
-    out.l500.push({ time: t, value: minL + diff * 0.500 });
-    out.l618.push({ time: t, value: minL + diff * 0.618 });
-    out.l786.push({ time: t, value: minL + diff * 0.786 });
-    out.l1000.push({ time: t, value: maxH });
-  }
-  return out;
-}
+
