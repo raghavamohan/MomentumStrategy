@@ -1175,7 +1175,11 @@ export function mountStockChartPage() {
   function addIndicatorFromContext(type) {
     if (indicators.length >= MAX_MAIN_INDICATORS) return;
     var t = type === 'EMA' ? 'EMA' : 'SMA';
-    var color = t === 'EMA' ? '#22d3ee' : '#f59e0b';
+    var IND_COLORS = [
+      '#f59e0b', '#60a5fa', '#34d399', '#f472b6', '#c084fc',
+      '#fb923c', '#2dd4bf', '#fbbf24', '#a78bfa', '#38bdf8'
+    ];
+    var color = IND_COLORS[indicators.length % IND_COLORS.length];
     var newId = uid();
     indicators.push({
       id: newId,
@@ -1186,7 +1190,8 @@ export function mountStockChartPage() {
       style: 'solid',
       series: null,
       glowSeries: null,
-      cachedPts: []
+      cachedPts: [],
+      visible: true
     });
     refreshIndicators();
     renderChips();
@@ -1881,16 +1886,19 @@ export function mountStockChartPage() {
 
   function indicatorGlowColor(color) {
     if (typeof color !== 'string') return 'rgba(255,255,255,.28)';
-    var c = color.trim();
-    if (c.charAt(0) !== '#') return 'rgba(255,255,255,.28)';
-    var h = c.slice(1);
-    if (h.length === 3) {
-      h = h.charAt(0) + h.charAt(0) + h.charAt(1) + h.charAt(1) + h.charAt(2) + h.charAt(2);
+    var h = color.trim();
+    if (h.startsWith('hsl')) {
+      return h.replace('hsl', 'hsla').replace(')', ', 0.33)');
     }
-    if (!/^[0-9a-fA-F]{6}$/.test(h)) return 'rgba(255,255,255,.28)';
-    var r = parseInt(h.slice(0, 2), 16);
-    var g = parseInt(h.slice(2, 4), 16);
-    var b = parseInt(h.slice(4, 6), 16);
+    if (h.charAt(0) !== '#') return 'rgba(255,255,255,.28)';
+    var hex = h.slice(1);
+    if (hex.length === 3) {
+      hex = hex.charAt(0) + hex.charAt(0) + hex.charAt(1) + hex.charAt(1) + hex.charAt(2) + hex.charAt(2);
+    }
+    if (!/^[0-9a-fA-F]{6}$/.test(hex)) return 'rgba(255,255,255,.28)';
+    var r = parseInt(hex.slice(0, 2), 16);
+    var g = parseInt(hex.slice(2, 4), 16);
+    var b = parseInt(hex.slice(4, 6), 16);
     return 'rgba(' + r + ',' + g + ',' + b + ',.33)';
   }
 
@@ -1907,11 +1915,12 @@ export function mountStockChartPage() {
             lineWidth: lw,
             lineStyle: ls,
             priceLineVisible: false,
-            lastValueVisible: true
+            lastValueVisible: true,
+            visible: ind.visible !== false
           });
         } catch (_) {}
       }
-      if (selected) {
+      if (selected && ind.visible !== false) {
         if (!ind.glowSeries) {
           try {
             ind.glowSeries = mainChart.addLineSeries({
@@ -2073,7 +2082,8 @@ export function mountStockChartPage() {
         lineWidth: lw,
         lineStyle: ls,
         priceLineVisible: false,
-        lastValueVisible: true
+        lastValueVisible: true,
+        visible: ind.visible !== false
       });
       ser.setData(pts);
       ind.series = ser;
@@ -3285,13 +3295,32 @@ export function mountStockChartPage() {
       var chip = document.createElement('span');
       chip.className = 'sc-chip';
       if (ind.id === selectedIndId) chip.classList.add('sc-obj-selected');
-      chip.innerHTML = ind.type + ' ' + ind.period +
+
+      var isVisible = ind.visible !== false;
+      var eyeHtml = '<span class="sc-chip-toggle-vis" style="cursor:pointer;margin-right:6px;opacity:' + (isVisible ? '1' : '0.4') + '" title="' + (isVisible ? 'Hide' : 'Show') + '">\uD83D\uDC41</span>';
+
+      chip.innerHTML = eyeHtml + ind.type + ' ' + ind.period +
         '<span class="sc-chip-remove" data-ind="' + ind.id + '">\u00d7</span>';
+
       chip.addEventListener('click', function (e) {
         if (e.target.closest && e.target.closest('.sc-chip-remove')) return;
+        if (e.target.closest && e.target.closest('.sc-chip-toggle-vis')) return;
         if (!chartAllowsObjectSelection()) return;
         setSelectedInd(ind.id === selectedIndId ? null : ind.id);
       });
+
+      chip.querySelector('.sc-chip-toggle-vis').addEventListener('click', function (e) {
+        e.stopPropagation();
+        ind.visible = (ind.visible === false) ? true : false;
+        if (ind.series) {
+          try { ind.series.applyOptions({ visible: ind.visible }); } catch (_) {}
+        }
+        if (ind.glowSeries) {
+          try { ind.glowSeries.applyOptions({ visible: ind.visible && selectedIndId === ind.id }); } catch (_) {}
+        }
+        renderChips();
+      });
+
       chip.querySelector('.sc-chip-remove').addEventListener('click', function (e) {
         e.stopPropagation();
         // Detach chart series before dropping this row from `indicators`; otherwise

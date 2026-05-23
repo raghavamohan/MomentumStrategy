@@ -3,7 +3,7 @@
 export const TP_STORAGE_KEY = 'sc_chart_tooltip_prefs';
 export const RSI_SHOW_KEY = 'sc_chart_show_rsi';
 export const RSI_PERIOD = 14;
-export const MAX_MAIN_INDICATORS = 3;
+export const MAX_MAIN_INDICATORS = 10;
 export const SAVE_DEBOUNCE_MS = 500;
 export const WS_RECONNECT_MS = 4000;
 export const STALE_TICK_MS = 90000;
