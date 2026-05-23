@@ -14,11 +14,13 @@ import {
   CHART_OPTS,
   MODE_NONE,
   MODE_CROSSHAIR,
-  MODE_OBJECTS
+  MODE_OBJECTS,
+  FIB_LEVELS
 } from './constants.js';
 import {
   calcSMA,
   calcEMA,
+  calcRollingFib,
   calcRSI,
   aggregateBars,
   toTime,
@@ -81,7 +83,10 @@ export function mountStockChartPage() {
         style: cfg.style,
         series: null,
         glowSeries: null,
-        cachedPts: []
+        cachedPts: [],
+        seriesArr: [],
+        cachedPtsArr: null,
+        fibGlowSeriesArr: []
       };
     });
   }
@@ -90,7 +95,7 @@ export function mountStockChartPage() {
     return indicators.map(function (ind) {
       return {
         id: ind.id || uid(),
-        type: ind.type === 'EMA' ? 'EMA' : 'SMA',
+        type: ind.type === 'FIB' ? 'FIB' : (ind.type === 'EMA' ? 'EMA' : 'SMA'),
         period: Math.max(2, Math.min(200, parseInt(ind.period, 10) || 20)),
         color: ind.color || '#f59e0b',
         lineWidth: Math.max(1, Math.min(8, Number(ind.lineWidth) || 2)),
@@ -105,7 +110,7 @@ export function mountStockChartPage() {
     return rows.slice(0, MAX_MAIN_INDICATORS).map(function (row) {
       return {
         id: typeof row.id === 'string' && row.id ? row.id : uid(),
-        type: row.type === 'EMA' ? 'EMA' : 'SMA',
+        type: row.type === 'FIB' ? 'FIB' : (row.type === 'EMA' ? 'EMA' : 'SMA'),
         period: Math.max(2, Math.min(200, parseInt(row.period, 10) || 20)),
         color: typeof row.color === 'string' && row.color ? row.color : '#f59e0b',
         lineWidth: Math.max(1, Math.min(8, Number(row.lineWidth) || 2)),
@@ -113,7 +118,10 @@ export function mountStockChartPage() {
         visible: row.visible !== false,
         series: null,
         glowSeries: null,
-        cachedPts: []
+        cachedPts: [],
+        seriesArr: [],
+        cachedPtsArr: null,
+        fibGlowSeriesArr: []
       };
     });
   }
@@ -136,6 +144,7 @@ export function mountStockChartPage() {
   var saveTimer = null;
   var tlAnchors = [];
   var drawingLevel = false;
+  var drawingFib = false;
   var tlPreviewPx = null;
   var tlDraftMoveBound = null;
   var selectedTlId = null;
@@ -159,6 +168,8 @@ export function mountStockChartPage() {
   var TL_HIT_PX = 10;
   /** Pixel radius to grab start/end handles when reshaping with right-drag. */
   var TL_HANDLE_HIT_PX = 14;
+  /** Rolling Fib band series keys (high → low). */
+  var FIB_BAND_KEYS = ['l1000', 'l786', 'l618', 'l500', 'l382', 'l236', 'l0'];
   var tlRmbDrag = null;
   var tlDragDocMove = null;
   var tlDragDocEnd = null;
@@ -504,11 +515,17 @@ export function mountStockChartPage() {
 
   function updateExplicitButtonsState() {
     var tlBtn = document.getElementById('sc-btn-trendline');
+    var fibBtn = document.getElementById('sc-btn-fib-draw');
     var lvlBtn = document.getElementById('sc-btn-level');
     if (tlBtn) {
-      var tlOn = chartInteractionMode === MODE_OBJECTS && !drawingLevel;
+      var tlOn = chartInteractionMode === MODE_OBJECTS && !drawingLevel && !drawingFib;
       tlBtn.classList.toggle('active', tlOn);
       tlBtn.setAttribute('aria-pressed', tlOn ? 'true' : 'false');
+    }
+    if (fibBtn) {
+      var fibOn = chartInteractionMode === MODE_OBJECTS && drawingFib;
+      fibBtn.classList.toggle('active', fibOn);
+      fibBtn.setAttribute('aria-pressed', fibOn ? 'true' : 'false');
     }
     if (lvlBtn) {
       var lvlOn = chartInteractionMode === MODE_OBJECTS && drawingLevel;
@@ -536,7 +553,7 @@ export function mountStockChartPage() {
       canvas.classList.remove('object-interact-mode', 'drawing-tl');
       if (chartInteractionMode === MODE_OBJECTS) {
         canvas.classList.add('object-interact-mode');
-        if (tlAnchors.length === 1 || drawingLevel) canvas.classList.add('drawing-tl');
+        if (tlAnchors.length === 1 || drawingLevel || drawingFib) canvas.classList.add('drawing-tl');
       }
     }
     var cxBtn = document.getElementById('sc-mode-crosshair');
@@ -602,6 +619,7 @@ export function mountStockChartPage() {
     unbindLevelDragDoc();
     tlAnchors = [];
     drawingLevel = false;
+    drawingFib = false;
     tlSuppressNextDrawClick = false;
     tlSuppressSelectClick = false;
     detachTlDraftPreviewListeners();
@@ -734,14 +752,7 @@ export function mountStockChartPage() {
     if (!selectedIndId) return;
     var sid = selectedIndId;
     indicators.forEach(function (ind) {
-      if (ind.id === sid && ind.series && mainChart) {
-        try { mainChart.removeSeries(ind.series); } catch (_) {}
-        ind.series = null;
-      }
-      if (ind.id === sid && ind.glowSeries && mainChart) {
-        try { mainChart.removeSeries(ind.glowSeries); } catch (_) {}
-        ind.glowSeries = null;
-      }
+      if (ind.id === sid) detachIndicatorSeries(ind);
     });
     indicators = indicators.filter(function (x) { return x.id !== sid; });
     selectedIndId = null;
@@ -822,10 +833,58 @@ export function mountStockChartPage() {
   function indicatorDrawZIndex(i) {
     var ind = indicators[i];
     var z = i;
-    if (selectedIndId === ind.id && ind.glowSeries && ind.visible !== false) {
+    if (selectedIndId === ind.id && ind.visible !== false &&
+        (ind.glowSeries || (ind.type === 'FIB' && ind.fibGlowSeriesArr && ind.fibGlowSeriesArr.length))) {
       z += indicators.length;
     }
     return z;
+  }
+
+  function fibBandColorMap(ind) {
+    return {
+      l1000: ind.color || '#f59e0b',
+      l786: '#94a3b8',
+      l618: '#22c55e',
+      l500: '#ef4444',
+      l382: '#3b82f6',
+      l236: '#a855f7',
+      l0: ind.color || '#f59e0b'
+    };
+  }
+
+  function indicatorHitPx(ind, selected) {
+    var lw = Math.max(1, Math.min(8, Number(ind.lineWidth) || 2));
+    var hitPx = IND_HIT_PX + lw / 2;
+    if (selected) {
+      if (ind.type === 'FIB') hitPx += lw / 2 + 2;
+      else if (ind.glowSeries) hitPx += Math.min(16, lw + 5) / 2;
+    }
+    return hitPx;
+  }
+
+  function hitTestFibIndicatorId(ind, px, py, t, i) {
+    if (!ind.seriesArr || !ind.seriesArr.length || !ind.cachedPtsArr) return null;
+    var bestD = IND_HIT_PX + 1;
+    var hit = false;
+    var selected = selectedIndId === ind.id;
+    var hitPx = indicatorHitPx(ind, selected);
+    for (var fi = 0; fi < FIB_BAND_KEYS.length; fi++) {
+      var lvl = FIB_BAND_KEYS[fi];
+      var pts = ind.cachedPtsArr[lvl];
+      if (!pts || !pts.length) continue;
+      var v = seriesValueAtTime(pts, t);
+      if (v == null || !isFinite(v)) continue;
+      var ser = ind.seriesArr[fi];
+      if (!ser) continue;
+      var y = ser.priceToCoordinate(v);
+      if (y == null || !isFinite(y)) continue;
+      var d = Math.abs(py - y);
+      if (d <= hitPx && d < bestD) {
+        bestD = d;
+        hit = true;
+      }
+    }
+    return hit ? { id: ind.id, d: bestD, z: indicatorDrawZIndex(i) } : null;
   }
 
   function hitTestIndicatorId(px, py) {
@@ -835,17 +894,19 @@ export function mountStockChartPage() {
     var candidates = [];
     for (var i = 0; i < indicators.length; i++) {
       var ind = indicators[i];
-      if (!ind.series || ind.visible === false || !ind.cachedPts || !ind.cachedPts.length) continue;
+      if (ind.visible === false) continue;
+      if (ind.type === 'FIB') {
+        var fibHit = hitTestFibIndicatorId(ind, px, py, t, i);
+        if (fibHit) candidates.push(fibHit);
+        continue;
+      }
+      if (!ind.series || !ind.cachedPts || !ind.cachedPts.length) continue;
       var v = seriesValueAtTime(ind.cachedPts, t);
       if (v == null || !isFinite(v)) continue;
       var y = ind.series.priceToCoordinate(v);
       if (y == null || !isFinite(y)) continue;
       var d = Math.abs(py - y);
-      var lw = Math.max(1, Math.min(8, Number(ind.lineWidth) || 2));
-      var hitPx = IND_HIT_PX + lw / 2;
-      if (selectedIndId === ind.id && ind.glowSeries) {
-        hitPx += Math.min(16, lw + 5) / 2;
-      }
+      var hitPx = indicatorHitPx(ind, selectedIndId === ind.id);
       if (d <= hitPx) {
         candidates.push({ id: ind.id, d: d, z: indicatorDrawZIndex(i) });
       }
@@ -1010,7 +1071,7 @@ export function mountStockChartPage() {
     var py = wp.py;
     var wid = wp.wid;
 
-    if (chartAllowsObjectSelection() && ev.button === 0 && !tlRmbDrag && tlAnchors.length === 0 && !drawingLevel) {
+    if (chartAllowsObjectSelection() && ev.button === 0 && !tlRmbDrag && tlAnchors.length === 0 && !drawingLevel && !drawingFib) {
       var lid = hitTestLevelId(px, py);
       if (lid) {
         var hitTl = hitTestTrendlineIds(px, py, wid);
@@ -1032,10 +1093,10 @@ export function mountStockChartPage() {
       if (tryBeginTrendlineDragFromPointerDown(ev, px, py, wid, wrap)) return;
     }
 
-    if (chartAllowsObjectSelection() && ev.button === 0 && !tlRmbDrag && tlAnchors.length === 0 && !drawingLevel) {
+    if (chartAllowsObjectSelection() && ev.button === 0 && !tlRmbDrag && tlAnchors.length === 0 && !drawingLevel && !drawingFib) {
       var iid = hitTestIndicatorId(px, py);
       if (iid) {
-        setSelectedInd(iid);
+        setSelectedInd(iid === selectedIndId ? null : iid);
         ev.preventDefault();
         ev.stopPropagation();
         return;
@@ -1051,6 +1112,7 @@ export function mountStockChartPage() {
     if (ev.target.closest && ev.target.closest('.sc-panel')) return;
     if (tlAnchors.length === 1 && chartInteractionMode === MODE_OBJECTS) return;
     if (drawingLevel && chartInteractionMode === MODE_OBJECTS) return;
+    if (drawingFib && chartInteractionMode === MODE_OBJECTS) return;
     if (tlSuppressSelectClick) return;
     var wp = wrapPixelFromClient(ev.clientX, ev.clientY);
     if (!wp) return;
@@ -1129,7 +1191,14 @@ export function mountStockChartPage() {
       return;
     }
     if (typ) typ.textContent = ind.type + ' ' + ind.period;
-    if (per) per.value = String(ind.period);
+    if (per) {
+      per.value = String(ind.period);
+      var perRow = per.closest('.sc-panel-row');
+      var perLbl = perRow ? perRow.querySelector('label') : null;
+      if (perLbl) {
+        perLbl.textContent = ind.type === 'FIB' ? 'Lookback (candles)' : 'Period';
+      }
+    }
     if (color) color.value = ind.color || '#f59e0b';
     if (width) width.value = String(Math.max(1, Number(ind.lineWidth) || 2));
     if (style) style.value = ind.style || 'solid';
@@ -1226,20 +1295,25 @@ export function mountStockChartPage() {
           if (indicators[j].id === selectedIndId) { ind = indicators[j]; break; }
         }
       }
-      if (!ind || !ind.series) return;
+      if (!ind) return;
       var per = Math.max(2, Math.min(200, parseInt(document.getElementById('sc-ind-edit-period').value, 10) || ind.period));
       ind.period = per;
       ind.color = (document.getElementById('sc-ind-edit-color') || {}).value || ind.color;
       ind.lineWidth = Math.max(1, parseInt(document.getElementById('sc-ind-edit-width').value, 10) || 2);
       ind.style = (document.getElementById('sc-ind-edit-style') || {}).value || 'solid';
-      try {
-        ind.series.applyOptions({
-          color: ind.color,
-          lineWidth: ind.lineWidth,
-          lineStyle: styleToLw(ind.style)
-        });
-      } catch (_) {}
-      refreshIndicators();
+      if (ind.type === 'FIB') {
+        refreshIndicators();
+      } else {
+        if (!ind.series) return;
+        try {
+          ind.series.applyOptions({
+            color: ind.color,
+            lineWidth: ind.lineWidth,
+            lineStyle: styleToLw(ind.style)
+          });
+        } catch (_) {}
+        refreshIndicators();
+      }
       renderChips();
       scheduleSaveAnnotations();
       inP.hidden = true;
@@ -1251,7 +1325,7 @@ export function mountStockChartPage() {
 
   function addIndicatorFromContext(type) {
     if (indicators.length >= MAX_MAIN_INDICATORS) return;
-    var t = type === 'EMA' ? 'EMA' : 'SMA';
+    var t = type === 'EMA' ? 'EMA' : (type === 'FIB' ? 'FIB' : 'SMA');
     var IND_COLORS = [
       '#f59e0b', '#60a5fa', '#34d399', '#f472b6', '#c084fc',
       '#fb923c', '#2dd4bf', '#fbbf24', '#a78bfa', '#38bdf8'
@@ -1268,13 +1342,15 @@ export function mountStockChartPage() {
       series: null,
       glowSeries: null,
       cachedPts: [],
+      seriesArr: [],
+      cachedPtsArr: null,
+      fibGlowSeriesArr: [],
       visible: true
     });
     refreshIndicators();
     renderChips();
     updateIndAddButton();
     scheduleSaveAnnotations();
-    setSelectedInd(newId);
   }
 
   function openLevelAddPanelAt(clientX, clientY, priceHint) {
@@ -1420,6 +1496,22 @@ export function mountStockChartPage() {
     });
     addMenuBtn(addSec, 'Add EMA', function () {
       addIndicatorFromContext('EMA');
+    });
+    addMenuBtn(addSec, 'Add Fib Bands', function () {
+      addIndicatorFromContext('FIB');
+    });
+    addMenuBtn(addSec, 'Add Fib Retracement', function () {
+      closeAllPanels(null);
+      drawingLevel = false;
+      drawingFib = true;
+      tlAnchors = [];
+      if (chartInteractionMode !== MODE_OBJECTS) {
+        setChartInteractionMode(MODE_OBJECTS);
+      } else {
+        applyChartInteractionMode();
+        updateExplicitButtonsState();
+      }
+      setSelectedTrendline(null);
     });
     addMenuSep();
     addMenuBtn(menu, 'Save Image', function () {
@@ -1932,6 +2024,7 @@ export function mountStockChartPage() {
           if (tl.extended === undefined) tl.extended = false;
           if (!tl.style) tl.style = 'solid';
           if (!tl.id) tl.id = uid();
+          if (!tl.type) tl.type = 'trendline';
         });
       })
       .catch(function () {
@@ -2005,12 +2098,84 @@ export function mountStockChartPage() {
     return rgbaFromHex(color, 0.33);
   }
 
+  /** Remove all Lightweight Charts series owned by one indicator row. */
+  function detachIndicatorSeries(ind) {
+    if (!ind || !mainChart) return;
+    if (ind.series) {
+      try { mainChart.removeSeries(ind.series); } catch (_) {}
+      ind.series = null;
+    }
+    if (ind.glowSeries) {
+      try { mainChart.removeSeries(ind.glowSeries); } catch (_) {}
+      ind.glowSeries = null;
+    }
+    if (ind.seriesArr && ind.seriesArr.length) {
+      ind.seriesArr.forEach(function (s) {
+        try { mainChart.removeSeries(s); } catch (_) {}
+      });
+      ind.seriesArr = [];
+    }
+    if (ind.fibGlowSeriesArr && ind.fibGlowSeriesArr.length) {
+      ind.fibGlowSeriesArr.forEach(function (s) {
+        try { mainChart.removeSeries(s); } catch (_) {}
+      });
+      ind.fibGlowSeriesArr = [];
+    }
+  }
+
   function syncIndicatorSelectionVisuals() {
     if (!mainChart) return;
     indicators.forEach(function (ind) {
       var lw = Math.max(1, Math.min(8, Number(ind.lineWidth) || 2));
       var ls = styleToLw(ind.style || 'solid');
       var selected = selectedIndId != null && selectedIndId === ind.id && chartAllowsObjectSelection();
+      if (ind.type === 'FIB' && ind.seriesArr && ind.seriesArr.length) {
+        var fibLw = Math.max(1, Math.min(8, Number(ind.lineWidth) || 1));
+        var fibLs = styleToLw(ind.style || 'solid');
+        var fibColors = fibBandColorMap(ind);
+        ind.seriesArr.forEach(function (s, idx) {
+          var lvl = FIB_BAND_KEYS[idx];
+          try {
+            s.applyOptions({
+              color: fibColors[lvl] || ind.color || '#f59e0b',
+              lineWidth: fibLw,
+              lineStyle: fibLs,
+              priceLineVisible: false,
+              lastValueVisible: true,
+              visible: ind.visible !== false
+            });
+          } catch (_) {}
+        });
+        if (!ind.fibGlowSeriesArr) ind.fibGlowSeriesArr = [];
+        if (!selected || ind.visible === false) {
+          if (ind.fibGlowSeriesArr.length) {
+            ind.fibGlowSeriesArr.forEach(function (g) {
+              try { mainChart.removeSeries(g); } catch (_) {}
+            });
+            ind.fibGlowSeriesArr = [];
+          }
+          return;
+        }
+        if (!ind.fibGlowSeriesArr.length && ind.cachedPtsArr) {
+          FIB_BAND_KEYS.forEach(function (lvl) {
+            var pts = ind.cachedPtsArr[lvl];
+            if (!pts || !pts.length) return;
+            try {
+              var glow = mainChart.addLineSeries({
+                color: indicatorGlowColor(fibColors[lvl] || ind.color),
+                lineWidth: Math.min(16, fibLw + 5),
+                lineStyle: 0,
+                priceLineVisible: false,
+                lastValueVisible: false,
+                crosshairMarkerVisible: false
+              });
+              glow.setData(pts);
+              ind.fibGlowSeriesArr.push(glow);
+            } catch (_) {}
+          });
+        }
+        return;
+      }
       if (ind.series) {
         try {
           ind.series.applyOptions({
@@ -2163,18 +2328,33 @@ export function mountStockChartPage() {
     if (!mainChart || !candleSeries || !rsiLineSeries) return;
 
     indicators.forEach(function (ind) {
-      if (ind.series) {
-        try { mainChart.removeSeries(ind.series); } catch (_) {}
-        ind.series = null;
-      }
-      if (ind.glowSeries) {
-        try { mainChart.removeSeries(ind.glowSeries); } catch (_) {}
-        ind.glowSeries = null;
-      }
+      detachIndicatorSeries(ind);
     });
 
     var bars = barsForIndicators();
     indicators.forEach(function (ind) {
+      if (ind.type === 'FIB') {
+        var ptsObj = calcRollingFib(bars, ind.period);
+        ind.cachedPtsArr = ptsObj;
+        if (!ptsObj.l0.length) return;
+        var lw = Math.max(1, Math.min(8, Number(ind.lineWidth) || 1));
+        var ls = styleToLw(ind.style || 'solid');
+        ind.seriesArr = [];
+        var colorMap = fibBandColorMap(ind);
+        FIB_BAND_KEYS.forEach(function (lvl) {
+          var ser = mainChart.addLineSeries({
+            color: colorMap[lvl],
+            lineWidth: lw,
+            lineStyle: ls,
+            priceLineVisible: false,
+            lastValueVisible: true,
+            visible: ind.visible !== false
+          });
+          ser.setData(ptsObj[lvl]);
+          ind.seriesArr.push(ser);
+        });
+        return;
+      }
       var pts = ind.type === 'EMA' ? calcEMA(bars, ind.period) : calcSMA(bars, ind.period);
       if (!pts.length) return;
       ind.cachedPts = pts;
@@ -2217,6 +2397,21 @@ export function mountStockChartPage() {
     }
 
     indicators.forEach(function (ind) {
+      if (ind.type === 'FIB') {
+        if (!ind.seriesArr) return;
+        var ptsObj = calcRollingFib(bars, ind.period);
+        ind.cachedPtsArr = ptsObj;
+        FIB_BAND_KEYS.forEach(function (lvl, i) {
+          var lp = ptsObj[lvl][ptsObj[lvl].length - 1];
+          if (lp && ind.seriesArr[i]) {
+            try { ind.seriesArr[i].update(lp); } catch (_) {}
+          }
+          if (lp && ind.fibGlowSeriesArr && ind.fibGlowSeriesArr[i]) {
+            try { ind.fibGlowSeriesArr[i].update(lp); } catch (_) {}
+          }
+        });
+        return;
+      }
       if (!ind.series) return;
       var pts = ind.type === 'EMA' ? calcEMA(bars, ind.period) : calcSMA(bars, ind.period);
       ind.cachedPts = pts;
@@ -2781,6 +2976,26 @@ export function mountStockChartPage() {
     var bestD = TL_HIT_PX + 1;
     for (var i = 0; i < trendlines.length; i++) {
       var tl = trendlines[i];
+      if (tl.type === 'fib') {
+        var ap = getTrendlineAnchorPixels(tl);
+        if (!ap) continue;
+        var diffY = ap.y2 - ap.y1;
+        var fibs = FIB_LEVELS || [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+        for (var fi = 0; fi < fibs.length; fi++) {
+          var yy = ap.y1 + diffY * fibs[fi];
+          var dFib = Math.abs(py - yy);
+          if (dFib <= TL_HIT_PX && dFib < bestD) {
+            bestD = dFib;
+            best = tl.id;
+          }
+        }
+        var dDiag = distPointToSegment(px, py, ap.x1, ap.y1, ap.x2, ap.y2);
+        if (dDiag <= TL_HIT_PX && dDiag < bestD) {
+          bestD = dDiag;
+          best = tl.id;
+        }
+        continue;
+      }
       var ep = getTrendlinePixelEndpoints(tl, w);
       if (!ep) continue;
       var d = distPointToSegment(px, py, ep.x1, ep.y1, ep.x2, ep.y2);
@@ -2790,6 +3005,49 @@ export function mountStockChartPage() {
       }
     }
     return best;
+  }
+
+  function drawFibRetracementLevels(ctx, x1, y1, x2, y2, w, opts) {
+    opts = opts || {};
+    var sel = !!opts.selected;
+    var lw = Math.max(1, Number(opts.width) || 1);
+    var diffY = y2 - y1;
+    var fibs = FIB_LEVELS || [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+    var colorMap = ['#f59e0b', '#a855f7', '#3b82f6', '#ef4444', '#22c55e', '#94a3b8', '#f59e0b'];
+
+    ctx.strokeStyle = sel ? 'rgba(255,255,255,.35)' : 'rgba(148,163,184,.25)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    fibs.forEach(function (pct, i) {
+      var yy = y1 + diffY * pct;
+      if (sel) {
+        ctx.strokeStyle = 'rgba(255,255,255,.28)';
+        ctx.lineWidth = lw + 8;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(0, yy);
+        ctx.lineTo(w, yy);
+        ctx.stroke();
+      }
+      ctx.strokeStyle = sel ? 'rgba(255,255,255,.85)' : rgbaFromHex(colorMap[i] || '#f59e0b', 0.55);
+      ctx.lineWidth = sel ? lw + 1 : lw;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(0, yy);
+      ctx.lineTo(w, yy);
+      ctx.stroke();
+      if (opts.showLabels !== false) {
+        ctx.fillStyle = ctx.strokeStyle;
+        ctx.font = '10px sans-serif';
+        ctx.fillText((pct * 100).toFixed(1) + '%', 10, yy - 4);
+      }
+    });
   }
 
   function drawTrendlines() {
@@ -2810,6 +3068,20 @@ export function mountStockChartPage() {
       if (!ep) return;
       var lw = Math.max(1, Number(tl.width) || 1);
       var sel = tl.id === selectedTlId;
+      if (tl.type === 'fib') {
+        var apFib = getTrendlineAnchorPixels(tl);
+        if (!apFib) return;
+        drawFibRetracementLevels(ctx, apFib.x1, apFib.y1, apFib.x2, apFib.y2, w, {
+          selected: sel,
+          width: lw,
+          color: tl.color
+        });
+        if (sel) {
+          drawAnchorMarker(ctx, apFib.x1, apFib.y1);
+          drawAnchorMarker(ctx, apFib.x2, apFib.y2);
+        }
+        return;
+      }
       if (sel) {
         ctx.strokeStyle = 'rgba(255,255,255,.4)';
         ctx.lineWidth = lw + 8;
@@ -2843,14 +3115,22 @@ export function mountStockChartPage() {
       if (ax != null && ay != null) {
         drawAnchorMarker(ctx, ax, ay);
         if (tlPreviewPx) {
-          ctx.strokeStyle = 'rgba(250,204,21,.75)';
-          ctx.lineWidth = 2;
-          ctx.setLineDash([4, 4]);
-          ctx.beginPath();
-          ctx.moveTo(ax, ay);
-          ctx.lineTo(tlPreviewPx.x, tlPreviewPx.y);
-          ctx.stroke();
-          ctx.setLineDash([]);
+          if (drawingFib) {
+            drawFibRetracementLevels(ctx, ax, ay, tlPreviewPx.x, tlPreviewPx.y, w, {
+              selected: false,
+              width: 1,
+              showLabels: false
+            });
+          } else {
+            ctx.strokeStyle = 'rgba(250,204,21,.75)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath();
+            ctx.moveTo(ax, ay);
+            ctx.lineTo(tlPreviewPx.x, tlPreviewPx.y);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
         }
       }
     }
@@ -3058,9 +3338,15 @@ export function mountStockChartPage() {
           width: 1,
           style: 'solid',
           label: '',
-          extended: !!ev.shiftKey
+          extended: drawingFib ? false : !!ev.shiftKey,
+          type: drawingFib ? 'fib' : 'trendline'
         });
+        if (drawingFib) {
+          drawingFib = false;
+        }
+        setSelectedTrendline(null);
         scheduleSaveAnnotations();
+        scheduleDrawTrendlines();
         setChartInteractionMode(MODE_NONE);
         if (tlAnchorPulse) {
           tlPulseTimer = setTimeout(function () {
@@ -3087,7 +3373,7 @@ export function mountStockChartPage() {
       var wrap = document.getElementById('sc-main-wrap');
       var wid = wrap ? wrap.clientWidth : 0;
       var hit = hitTestTrendlineIds(px, py, wid);
-      setSelectedTrendline(hit);
+      setSelectedTrendline(hit && hit === selectedTlId ? null : hit);
       ev.stopPropagation();
     });
   }
@@ -3367,14 +3653,7 @@ export function mountStockChartPage() {
   /** Remove every chip-backed overlay: MAs/EMAs, trendlines, and horizontal levels. */
   function removeAllIndicatorSeries() {
     indicators.forEach(function (ind) {
-      if (ind.series && mainChart) {
-        try { mainChart.removeSeries(ind.series); } catch (_) {}
-        ind.series = null;
-      }
-      if (ind.glowSeries && mainChart) {
-        try { mainChart.removeSeries(ind.glowSeries); } catch (_) {}
-        ind.glowSeries = null;
-      }
+      detachIndicatorSeries(ind);
     });
   }
 
@@ -3454,9 +3733,15 @@ export function mountStockChartPage() {
         if (ind.series) {
           try { ind.series.applyOptions({ visible: ind.visible }); } catch (_) {}
         }
+        if (ind.seriesArr && ind.seriesArr.length) {
+          ind.seriesArr.forEach(function (s) {
+            try { s.applyOptions({ visible: ind.visible }); } catch (_) {}
+          });
+        }
         if (ind.glowSeries) {
           try { ind.glowSeries.applyOptions({ visible: ind.visible && selectedIndId === ind.id }); } catch (_) {}
         }
+        syncIndicatorSelectionVisuals();
         scheduleSaveAnnotations();
         renderChips();
       });
@@ -3465,14 +3750,7 @@ export function mountStockChartPage() {
         e.stopPropagation();
         // Detach chart series before dropping this row from `indicators`; otherwise
         // refreshIndicators() never sees it and orphaned line series stay on the chart.
-        if (ind.series && mainChart) {
-          try { mainChart.removeSeries(ind.series); } catch (_) {}
-          ind.series = null;
-        }
-        if (ind.glowSeries && mainChart) {
-          try { mainChart.removeSeries(ind.glowSeries); } catch (_) {}
-          ind.glowSeries = null;
-        }
+        detachIndicatorSeries(ind);
         indicators = indicators.filter(function (x) { return x.id !== ind.id; });
         if (selectedIndId === ind.id) selectedIndId = null;
         syncIndicatorSelectionVisuals();
@@ -3488,7 +3766,8 @@ export function mountStockChartPage() {
       chip.className = 'sc-chip';
       if (tl.id === selectedTlId) chip.classList.add('sc-tl-selected');
       applyChipObjectColor(chip, tl.color, '#f59e0b');
-      chip.innerHTML = '<span class="sc-chip-color-dot" aria-hidden="true"></span>TL ' + (idx + 1) +
+      var tlLabel = tl.type === 'fib' ? 'Fib' : 'TL';
+      chip.innerHTML = '<span class="sc-chip-color-dot" aria-hidden="true"></span>' + tlLabel + ' ' + (idx + 1) +
         '<span class="sc-chip-remove" data-tlid="' + tl.id + '">\u00d7</span>';
       chip.addEventListener('click', function (e) {
         if (e.target.closest && e.target.closest('.sc-chip-remove')) return;
@@ -3723,7 +4002,7 @@ export function mountStockChartPage() {
       var typ = (document.getElementById('sc-ind-type') || {}).value || 'SMA';
       var period = Math.max(2, Math.min(200, parseInt(document.getElementById('sc-ind-period').value, 10) || 20));
       var color = (document.getElementById('sc-ind-color') || {}).value || '#f59e0b';
-      indicators.push({ id: uid(), type: typ, period: period, color: color, lineWidth: 2, style: 'solid', series: null, glowSeries: null, cachedPts: [] });
+      indicators.push({ id: uid(), type: typ, period: period, color: color, lineWidth: 2, style: 'solid', series: null, glowSeries: null, cachedPts: [], seriesArr: [], cachedPtsArr: null });
       if (indPanel) indPanel.hidden = true;
       refreshIndicators();
       renderChips();
@@ -3783,16 +4062,54 @@ export function mountStockChartPage() {
         addIndicatorFromContext('EMA');
       });
     }
+    
+    var btnFibInd = document.getElementById('sc-btn-fib-ind');
+    if (btnFibInd) {
+      btnFibInd.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        closeAllPanels(null);
+        addIndicatorFromContext('FIB');
+      });
+    }
+    var btnFibDraw = document.getElementById('sc-btn-fib-draw');
+    if (btnFibDraw) {
+      btnFibDraw.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        closeAllPanels(null);
+        if (chartInteractionMode === MODE_OBJECTS && drawingFib) {
+          setChartInteractionMode(MODE_NONE);
+        } else {
+          drawingLevel = false;
+          drawingFib = true;
+          tlAnchors = [];
+          if (chartInteractionMode !== MODE_OBJECTS) {
+            setChartInteractionMode(MODE_OBJECTS);
+          } else {
+            applyChartInteractionMode();
+            updateExplicitButtonsState();
+          }
+          setSelectedTrendline(null);
+        }
+      });
+    }
+
     var btnTl = document.getElementById('sc-btn-trendline');
     if (btnTl) {
       btnTl.addEventListener('click', function (ev) {
         ev.stopPropagation();
         closeAllPanels(null);
-        if (chartInteractionMode === MODE_OBJECTS && !drawingLevel) {
+        if (chartInteractionMode === MODE_OBJECTS && !drawingLevel && !drawingFib) {
           setChartInteractionMode(MODE_NONE);
         } else {
           drawingLevel = false;
-          setChartInteractionMode(MODE_OBJECTS);
+          drawingFib = false;
+          tlAnchors = [];
+          if (chartInteractionMode !== MODE_OBJECTS) {
+            setChartInteractionMode(MODE_OBJECTS);
+          } else {
+            applyChartInteractionMode();
+            updateExplicitButtonsState();
+          }
           setSelectedTrendline(null);
         }
       });
@@ -3806,7 +4123,14 @@ export function mountStockChartPage() {
           setChartInteractionMode(MODE_NONE);
         } else {
           drawingLevel = true;
-          setChartInteractionMode(MODE_OBJECTS);
+          drawingFib = false;
+          tlAnchors = [];
+          if (chartInteractionMode !== MODE_OBJECTS) {
+            setChartInteractionMode(MODE_OBJECTS);
+          } else {
+            applyChartInteractionMode();
+            updateExplicitButtonsState();
+          }
           setSelectedLevel(null);
           attachTlDraftPreviewListeners();
           scheduleDrawTrendlines();

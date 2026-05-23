@@ -95,7 +95,9 @@
       <button type="button" class="sc-control-btn" id="sc-mode-crosshair" aria-pressed="false" title="Crosshair: snap vertically to OHLC and MAs at the bar under the cursor; click the chart to place a horizontal level. Turn off for pan/zoom and right-click add actions (Level, Trendline, SMA, EMA).">Crosshair</button>
       <button type="button" class="sc-control-btn" id="sc-btn-sma" title="Add SMA Indicator">+ SMA</button>
       <button type="button" class="sc-control-btn" id="sc-btn-ema" title="Add EMA Indicator">+ EMA</button>
+      <button type="button" class="sc-control-btn" id="sc-btn-fib-ind" title="Add Rolling Fibonacci Indicator">+ Fib Bands</button>
       <button type="button" class="sc-control-btn" id="sc-btn-trendline" aria-pressed="false" title="Add Trendline (click 2 anchor points)">+ Trendline</button>
+      <button type="button" class="sc-control-btn" id="sc-btn-fib-draw" aria-pressed="false" title="Add Fibonacci Retracement (click 2 anchor points)">+ Fib Retrac</button>
       <button type="button" class="sc-control-btn" id="sc-btn-level" aria-pressed="false" title="Add Horizontal Level (click to place)">+ Level</button>
       <label class="sc-control-btn" style="cursor:pointer">
         <input type="checkbox" id="sc-show-vol" checked style="margin-right:4px">Vol
@@ -135,7 +137,7 @@
     <h3 id="sc-ind-panel-title">Add Indicator</h3>
     <div class="sc-panel-row">
       <label>Type</label>
-      <select id="sc-ind-type"><option value="SMA">SMA</option><option value="EMA">EMA</option></select>
+      <select id="sc-ind-type"><option value="SMA">SMA</option><option value="EMA">EMA</option><option value="FIB">FIB</option></select>
     </div>
     <div class="sc-panel-row">
       <label>Period</label>
@@ -187,5 +189,5 @@
 
 {% block scripts %}
 <script src="/static/js/lightweight-charts.standalone.production.js"></script>
-<script src="/static/js/stock_chart.js?v=1.0.2"></script>
+<script src="/static/js/stock_chart.js?v=1.0.6"></script>
 {% endblock %}

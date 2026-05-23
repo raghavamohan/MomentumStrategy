@@ -173,3 +173,26 @@ export function unixSecToChartTime(sec, refBar) {
   }
   return Math.floor(sec);
 }
+
+export function calcRollingFib(bars, period) {
+  var out = { l0: [], l236: [], l382: [], l500: [], l618: [], l786: [], l1000: [] };
+  for (var i = 0; i < bars.length; i++) {
+    if (i < period - 1) continue;
+    var maxH = -Infinity;
+    var minL = Infinity;
+    for (var j = i - period + 1; j <= i; j++) {
+      if (bars[j].high > maxH) maxH = bars[j].high;
+      if (bars[j].low < minL) minL = bars[j].low;
+    }
+    var diff = maxH - minL;
+    var t = bars[i].time;
+    out.l0.push({ time: t, value: minL });
+    out.l236.push({ time: t, value: minL + diff * 0.236 });
+    out.l382.push({ time: t, value: minL + diff * 0.382 });
+    out.l500.push({ time: t, value: minL + diff * 0.500 });
+    out.l618.push({ time: t, value: minL + diff * 0.618 });
+    out.l786.push({ time: t, value: minL + diff * 0.786 });
+    out.l1000.push({ time: t, value: maxH });
+  }
+  return out;
+}
