@@ -3,6 +3,9 @@ import { indicatorRegistry } from '../indicatorRegistry.js';
 export const FibBandsIndicator = {
   id: 'FIB',
   name: 'Rolling Fibonacci Bands',
+  addLabel: 'Fib Bands',
+  periodLabel: 'Lookback (candles)',
+  bandKeys: ['l1000', 'l786', 'l618', 'l500', 'l382', 'l236', 'l0'],
   defaultOptions: { period: 20, color: '#94a3b8', lineWidth: 1, style: 'dashed' },
 
   createSeries: function(chart, options) {

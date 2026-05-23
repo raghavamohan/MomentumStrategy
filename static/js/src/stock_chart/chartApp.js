@@ -79,58 +79,168 @@ export function mountStockChartPage() {
 
   function uid() { return Math.random().toString(36).slice(2); }
 
+  var INDICATOR_RUNTIME_KEYS = {
+    series: true,
+    glowSeries: true,
+    cachedPts: true,
+    seriesArr: true,
+    cachedPtsArr: true,
+    fibGlowSeriesArr: true,
+    seriesObj: true
+  };
+
+  function normalizeIndicatorType(type) {
+    var raw = typeof type === 'string' ? type.trim() : '';
+    if (!raw) return 'SMA';
+    var upper = raw.toUpperCase();
+    if (indicatorRegistry.get(upper)) return upper;
+    if (indicatorRegistry.get(raw)) return raw;
+    return indicatorRegistry.get('SMA') ? 'SMA' : upper;
+  }
+
+  function getIndicatorPluginDefaults(type) {
+    var plugin = indicatorRegistry.get(normalizeIndicatorType(type));
+    if (plugin && plugin.defaultOptions && typeof plugin.defaultOptions === 'object') {
+      return plugin.defaultOptions;
+    }
+    return {};
+  }
+
+  function createIndicatorState(base) {
+    var row = Object.assign({}, base || {});
+    row.id = typeof row.id === 'string' && row.id ? row.id : uid();
+    row.type = normalizeIndicatorType(row.type);
+    row.period = Math.max(2, Math.min(200, parseInt(row.period, 10) || 20));
+    row.color = typeof row.color === 'string' && row.color ? row.color : '#f59e0b';
+    row.lineWidth = Math.max(1, Math.min(8, Number(row.lineWidth) || 2));
+    row.style = row.style || 'solid';
+    row.visible = row.visible !== false;
+    row.series = null;
+    row.glowSeries = null;
+    row.cachedPts = [];
+    row.seriesArr = [];
+    row.cachedPtsArr = null;
+    row.fibGlowSeriesArr = [];
+    row.seriesObj = null;
+    return row;
+  }
+
+  function getAddableIndicatorPlugins() {
+    return indicatorRegistry.getAll().filter(function (plugin) {
+      if (!plugin || !plugin.id) return false;
+      if (plugin.userAddable === false) return false;
+      if (plugin.isOscillator) return false;
+      return true;
+    });
+  }
+
+  function indicatorAddLabel(plugin) {
+    if (!plugin) return 'Indicator';
+    return plugin.addLabel || plugin.name || plugin.id;
+  }
+
+  function normalizeDrawingType(type) {
+    var raw = typeof type === 'string' ? type.trim() : '';
+    if (!raw) return 'TRENDLINE';
+    var lower = raw.toLowerCase();
+    if (lower === 'fib' || lower === 'fib_retracement') return 'FIB';
+    if (lower === 'trendline' || lower === 'tl') return 'TRENDLINE';
+    var upper = raw.toUpperCase();
+    if (drawingRegistry.get(upper)) return upper;
+    if (drawingRegistry.get(raw)) return raw;
+    return drawingRegistry.get('TRENDLINE') ? 'TRENDLINE' : upper;
+  }
+
+  function getActiveDrawType() {
+    return normalizeDrawingType(activeDrawType || 'TRENDLINE');
+  }
+
+  function setActiveDrawType(type) {
+    activeDrawType = normalizeDrawingType(type || 'TRENDLINE');
+  }
+
+  function isAltDrawingModeActive() {
+    return getActiveDrawType() !== 'TRENDLINE';
+  }
+
+  function getAddableDrawingPlugins() {
+    return drawingRegistry.getAll().filter(function (plugin) {
+      return !!(plugin && plugin.id && plugin.userAddable !== false);
+    });
+  }
+
+  function drawingAddLabel(plugin) {
+    if (!plugin) return 'Drawing';
+    return plugin.addLabel || plugin.name || plugin.id;
+  }
+
+  function beginLevelDrawing() {
+    drawingLevel = true;
+    setActiveDrawType('TRENDLINE');
+    tlAnchors = [];
+    if (chartInteractionMode !== MODE_OBJECTS) {
+      setChartInteractionMode(MODE_OBJECTS);
+    } else {
+      applyChartInteractionMode();
+      updateExplicitButtonsState();
+    }
+    setSelectedLevel(null);
+    attachTlDraftPreviewListeners();
+    scheduleDrawTrendlines();
+  }
+
+  function beginObjectDrawing(drawType) {
+    drawingLevel = false;
+    setActiveDrawType(drawType);
+    tlAnchors = [];
+    if (chartInteractionMode !== MODE_OBJECTS) {
+      setChartInteractionMode(MODE_OBJECTS);
+    } else {
+      applyChartInteractionMode();
+      updateExplicitButtonsState();
+    }
+    setSelectedTrendline(null);
+    attachTlDraftPreviewListeners();
+    scheduleDrawTrendlines();
+  }
+
   function createDefaultIndicators() {
     return DEFAULT_MAIN_INDICATORS.map(function (cfg) {
-      return {
-        id: uid(),
-        type: cfg.type,
-        period: cfg.period,
-        color: cfg.color,
-        lineWidth: cfg.lineWidth,
-        style: cfg.style,
-        series: null,
-        glowSeries: null,
-        cachedPts: [],
-        seriesArr: [],
-        cachedPtsArr: null,
-        fibGlowSeriesArr: []
-      };
+      var defaults = getIndicatorPluginDefaults(cfg.type);
+      return createIndicatorState(Object.assign({}, defaults, cfg));
     });
   }
 
   function serializeIndicatorsForSave() {
     return indicators.map(function (ind) {
-      return {
-        id: ind.id || uid(),
-        type: ind.type,
-        period: parseInt(ind.period, 10) || 20,
-        multiplier: ind.multiplier,
-        color: ind.color || '#f59e0b',
-        lineWidth: Math.max(1, Math.min(8, Number(ind.lineWidth) || 2)),
-        style: ind.style || 'solid',
-        visible: ind.visible !== false
-      };
+      var type = normalizeIndicatorType(ind.type);
+      var defaults = getIndicatorPluginDefaults(type);
+      var out = {};
+      Object.keys(ind || {}).forEach(function (key) {
+        if (INDICATOR_RUNTIME_KEYS[key]) return;
+        var value = ind[key];
+        if (value === undefined || typeof value === 'function') return;
+        out[key] = value;
+      });
+      out.id = typeof out.id === 'string' && out.id ? out.id : uid();
+      out.type = type;
+      out.period = Math.max(2, Math.min(200, parseInt(out.period, 10) || parseInt(defaults.period, 10) || 20));
+      out.color = typeof out.color === 'string' && out.color ? out.color : (defaults.color || '#f59e0b');
+      out.lineWidth = Math.max(1, Math.min(8, Number(out.lineWidth) || Number(defaults.lineWidth) || 2));
+      out.style = out.style || defaults.style || 'solid';
+      out.visible = out.visible !== false;
+      return out;
     });
   }
 
   function hydrateIndicatorsFromSave(rows) {
     if (!Array.isArray(rows) || !rows.length) return [];
     return rows.slice(0, MAX_MAIN_INDICATORS).map(function (row) {
-      return {
-        id: typeof row.id === 'string' && row.id ? row.id : uid(),
-        type: row.type === 'FIB' ? 'FIB' : (row.type === 'EMA' ? 'EMA' : 'SMA'),
-        period: Math.max(2, Math.min(200, parseInt(row.period, 10) || 20)),
-        color: typeof row.color === 'string' && row.color ? row.color : '#f59e0b',
-        lineWidth: Math.max(1, Math.min(8, Number(row.lineWidth) || 2)),
-        style: row.style || 'solid',
-        visible: row.visible !== false,
-        series: null,
-        glowSeries: null,
-        cachedPts: [],
-        seriesArr: [],
-        cachedPtsArr: null,
-        fibGlowSeriesArr: []
-      };
+      var type = normalizeIndicatorType(row && row.type);
+      var defaults = getIndicatorPluginDefaults(type);
+      var merged = Object.assign({}, defaults, row || {});
+      merged.type = type;
+      return createIndicatorState(merged);
     });
   }
 
@@ -152,7 +262,7 @@ export function mountStockChartPage() {
   var saveTimer = null;
   var tlAnchors = [];
   var drawingLevel = false;
-  var drawingFib = false;
+  var activeDrawType = 'TRENDLINE';
   var tlPreviewPx = null;
   var tlDraftMoveBound = null;
   var selectedTlId = null;
@@ -176,8 +286,6 @@ export function mountStockChartPage() {
   var TL_HIT_PX = 10;
   /** Pixel radius to grab start/end handles when reshaping with right-drag. */
   var TL_HANDLE_HIT_PX = 14;
-  /** Rolling Fib band series keys (high → low). */
-  var FIB_BAND_KEYS = ['l1000', 'l786', 'l618', 'l500', 'l382', 'l236', 'l0'];
   var tlRmbDrag = null;
   var tlDragDocMove = null;
   var tlDragDocEnd = null;
@@ -521,24 +629,18 @@ export function mountStockChartPage() {
   }
 
   function updateExplicitButtonsState() {
-    var tlBtn = document.getElementById('sc-btn-trendline');
-    var fibBtn = document.getElementById('sc-btn-fib-draw');
-    var lvlBtn = document.getElementById('sc-btn-level');
-    if (tlBtn) {
-      var tlOn = chartInteractionMode === MODE_OBJECTS && !drawingLevel && !drawingFib;
-      tlBtn.classList.toggle('active', tlOn);
-      tlBtn.setAttribute('aria-pressed', tlOn ? 'true' : 'false');
-    }
-    if (fibBtn) {
-      var fibOn = chartInteractionMode === MODE_OBJECTS && drawingFib;
-      fibBtn.classList.toggle('active', fibOn);
-      fibBtn.setAttribute('aria-pressed', fibOn ? 'true' : 'false');
-    }
-    if (lvlBtn) {
-      var lvlOn = chartInteractionMode === MODE_OBJECTS && drawingLevel;
-      lvlBtn.classList.toggle('active', lvlOn);
-      lvlBtn.setAttribute('aria-pressed', lvlOn ? 'true' : 'false');
-    }
+    document.querySelectorAll('.sc-draw-btn').forEach(function (btn) {
+      var drawType = (btn.getAttribute('data-draw-type') || '').trim();
+      var isOn = false;
+      if (drawType === 'LEVEL') {
+        isOn = chartInteractionMode === MODE_OBJECTS && drawingLevel;
+      } else if (drawType) {
+        isOn = chartInteractionMode === MODE_OBJECTS && !drawingLevel &&
+          getActiveDrawType() === normalizeDrawingType(drawType);
+      }
+      btn.classList.toggle('active', isOn);
+      btn.setAttribute('aria-pressed', isOn ? 'true' : 'false');
+    });
   }
 
   function applyChartInteractionMode() {
@@ -560,7 +662,7 @@ export function mountStockChartPage() {
       canvas.classList.remove('object-interact-mode', 'drawing-tl');
       if (chartInteractionMode === MODE_OBJECTS) {
         canvas.classList.add('object-interact-mode');
-        if (tlAnchors.length === 1 || drawingLevel || drawingFib) canvas.classList.add('drawing-tl');
+        if (tlAnchors.length >= 1 || drawingLevel || isAltDrawingModeActive()) canvas.classList.add('drawing-tl');
       }
     }
     var cxBtn = document.getElementById('sc-mode-crosshair');
@@ -626,7 +728,7 @@ export function mountStockChartPage() {
     unbindLevelDragDoc();
     tlAnchors = [];
     drawingLevel = false;
-    drawingFib = false;
+    setActiveDrawType('TRENDLINE');
     tlSuppressNextDrawClick = false;
     tlSuppressSelectClick = false;
     detachTlDraftPreviewListeners();
@@ -648,8 +750,12 @@ export function mountStockChartPage() {
     selectedIndId = null;
     syncIndicatorSelectionVisuals();
     syncLevelSelectionVisuals();
+    syncTrendlinePropsPanel();
+    syncLevelEditPanel();
+    syncIndEditPanel();
     drawTrendlines();
     renderChips();
+    closeAllPanels(null);
   }
 
   function setChartInteractionMode(desired) {
@@ -841,10 +947,37 @@ export function mountStockChartPage() {
     var ind = indicators[i];
     var z = i;
     if (selectedIndId === ind.id && ind.visible !== false &&
-        (ind.glowSeries || (ind.type === 'FIB' && ind.fibGlowSeriesArr && ind.fibGlowSeriesArr.length))) {
+        (ind.glowSeries || (ind.fibGlowSeriesArr && ind.fibGlowSeriesArr.length))) {
       z += indicators.length;
     }
     return z;
+  }
+
+  function indicatorPluginFor(ind) {
+    if (!ind) return null;
+    return indicatorRegistry.get(ind.type);
+  }
+
+  function indicatorBandKeys(ind) {
+    var plugin = indicatorPluginFor(ind);
+    if (plugin && Array.isArray(plugin.bandKeys) && plugin.bandKeys.length) return plugin.bandKeys;
+    return null;
+  }
+
+  function isBandIndicator(ind) {
+    var keys = indicatorBandKeys(ind);
+    return !!(keys && keys.length);
+  }
+
+  function indicatorPrimaryPoints(plugin, data) {
+    if (Array.isArray(data)) return data;
+    if (plugin && typeof plugin.getPrimarySeriesData === 'function') {
+      var pts = plugin.getPrimarySeriesData(data);
+      if (Array.isArray(pts)) return pts;
+    }
+    if (data && Array.isArray(data.l1000)) return data.l1000;
+    if (data && Array.isArray(data.upData)) return data.upData;
+    return [];
   }
 
   function fibBandColorMap(ind) {
@@ -863,20 +996,22 @@ export function mountStockChartPage() {
     var lw = Math.max(1, Math.min(8, Number(ind.lineWidth) || 2));
     var hitPx = IND_HIT_PX + lw / 2;
     if (selected) {
-      if (ind.type === 'FIB') hitPx += lw / 2 + 2;
+      if (isBandIndicator(ind)) hitPx += lw / 2 + 2;
       else if (ind.glowSeries) hitPx += Math.min(16, lw + 5) / 2;
     }
     return hitPx;
   }
 
-  function hitTestFibIndicatorId(ind, px, py, t, i) {
+  function hitTestBandIndicatorId(ind, px, py, t, i) {
     if (!ind.seriesArr || !ind.seriesArr.length || !ind.cachedPtsArr) return null;
+    var keys = indicatorBandKeys(ind);
+    if (!keys || !keys.length) return null;
     var bestD = IND_HIT_PX + 1;
     var hit = false;
     var selected = selectedIndId === ind.id;
     var hitPx = indicatorHitPx(ind, selected);
-    for (var fi = 0; fi < FIB_BAND_KEYS.length; fi++) {
-      var lvl = FIB_BAND_KEYS[fi];
+    for (var fi = 0; fi < keys.length; fi++) {
+      var lvl = keys[fi];
       var pts = ind.cachedPtsArr[lvl];
       if (!pts || !pts.length) continue;
       var v = seriesValueAtTime(pts, t);
@@ -902,9 +1037,9 @@ export function mountStockChartPage() {
     for (var i = 0; i < indicators.length; i++) {
       var ind = indicators[i];
       if (ind.visible === false) continue;
-      if (ind.type === 'FIB') {
-        var fibHit = hitTestFibIndicatorId(ind, px, py, t, i);
-        if (fibHit) candidates.push(fibHit);
+      if (isBandIndicator(ind)) {
+        var bandHit = hitTestBandIndicatorId(ind, px, py, t, i);
+        if (bandHit) candidates.push(bandHit);
         continue;
       }
       if (!ind.series || !ind.cachedPts || !ind.cachedPts.length) continue;
@@ -974,9 +1109,12 @@ export function mountStockChartPage() {
     if (whichEnd != null) {
       ev.preventDefault();
       ev.stopPropagation();
-      var fixedOther = whichEnd === 1
-        ? { time: tlDrag.time2, price: tlDrag.price2 }
-        : { time: tlDrag.time1, price: tlDrag.price1 };
+      var fixedOther = null;
+      if (whichEnd === 1) {
+        fixedOther = { time: tlDrag.time2, price: tlDrag.price2 };
+      } else if (whichEnd === 2) {
+        fixedOther = { time: tlDrag.time1, price: tlDrag.price1 };
+      }
       tlRmbDrag = {
         mode: 'endpoint',
         whichEnd: whichEnd,
@@ -1003,11 +1141,27 @@ export function mountStockChartPage() {
       if (!ep) return false;
       ev.preventDefault();
       ev.stopPropagation();
+      
+      var ep0 = { x1: ep.x1, y1: ep.y1, x2: ep.x2, y2: ep.y2 };
       var grab = projectPointToSegment(px, py, ep.x1, ep.y1, ep.x2, ep.y2);
+      if (ep.x3 != null && ep.y3 != null) {
+        ep0.x3 = ep.x3;
+        ep0.y3 = ep.y3;
+        var dx = ep.x2 - ep.x1;
+        var dy = ep.y2 - ep.y1;
+        var x4 = ep.x3 + dx;
+        var y4 = ep.y3 + dy;
+        var dLower = distPointToSegment(px, py, ep.x1, ep.y1, ep.x2, ep.y2);
+        var dUpper = distPointToSegment(px, py, ep.x3, ep.y3, x4, y4);
+        if (dUpper < dLower) {
+          grab = projectPointToSegment(px, py, ep.x3, ep.y3, x4, y4);
+        }
+      }
+      
       tlRmbDrag = {
         mode: 'move',
         tlId: tlHit,
-        ep0: { x1: ep.x1, y1: ep.y1, x2: ep.x2, y2: ep.y2 },
+        ep0: ep0,
         gx: grab.x,
         gy: grab.y,
         pointerId: ev.pointerId,
@@ -1078,7 +1232,7 @@ export function mountStockChartPage() {
     var py = wp.py;
     var wid = wp.wid;
 
-    if (chartAllowsObjectSelection() && ev.button === 0 && !tlRmbDrag && tlAnchors.length === 0 && !drawingLevel && !drawingFib) {
+    if (chartAllowsObjectSelection() && ev.button === 0 && !tlRmbDrag && tlAnchors.length === 0 && !drawingLevel && !isAltDrawingModeActive()) {
       var lid = hitTestLevelId(px, py);
       if (lid) {
         var hitTl = hitTestTrendlineIds(px, py, wid);
@@ -1100,7 +1254,7 @@ export function mountStockChartPage() {
       if (tryBeginTrendlineDragFromPointerDown(ev, px, py, wid, wrap)) return;
     }
 
-    if (chartAllowsObjectSelection() && ev.button === 0 && !tlRmbDrag && tlAnchors.length === 0 && !drawingLevel && !drawingFib) {
+    if (chartAllowsObjectSelection() && ev.button === 0 && !tlRmbDrag && tlAnchors.length === 0 && !drawingLevel && !isAltDrawingModeActive()) {
       var iid = hitTestIndicatorId(px, py);
       if (iid) {
         setSelectedInd(iid === selectedIndId ? null : iid);
@@ -1119,8 +1273,11 @@ export function mountStockChartPage() {
     if (ev.target.closest && ev.target.closest('.sc-panel')) return;
     if (tlAnchors.length === 1 && chartInteractionMode === MODE_OBJECTS) return;
     if (drawingLevel && chartInteractionMode === MODE_OBJECTS) return;
-    if (drawingFib && chartInteractionMode === MODE_OBJECTS) return;
-    if (tlSuppressSelectClick) return;
+    if (isAltDrawingModeActive() && chartInteractionMode === MODE_OBJECTS) return;
+    if (tlSuppressSelectClick) {
+      tlSuppressSelectClick = false;
+      return;
+    }
     var wp = wrapPixelFromClient(ev.clientX, ev.clientY);
     if (!wp) return;
     var px = wp.px;
@@ -1203,7 +1360,8 @@ export function mountStockChartPage() {
       var perRow = per.closest('.sc-panel-row');
       var perLbl = perRow ? perRow.querySelector('label') : null;
       if (perLbl) {
-        perLbl.textContent = ind.type === 'FIB' ? 'Lookback (candles)' : 'Period';
+        var plugin = indicatorRegistry.get(ind.type);
+        perLbl.textContent = (plugin && plugin.periodLabel) ? plugin.periodLabel : 'Period';
       }
     }
     if (color) color.value = ind.color || '#f59e0b';
@@ -1308,10 +1466,7 @@ export function mountStockChartPage() {
       ind.color = (document.getElementById('sc-ind-edit-color') || {}).value || ind.color;
       ind.lineWidth = Math.max(1, parseInt(document.getElementById('sc-ind-edit-width').value, 10) || 2);
       ind.style = (document.getElementById('sc-ind-edit-style') || {}).value || 'solid';
-      if (ind.type === 'FIB') {
-        refreshIndicators();
-      } else {
-        if (!ind.series) return;
+      if (ind.series) {
         try {
           ind.series.applyOptions({
             color: ind.color,
@@ -1319,8 +1474,8 @@ export function mountStockChartPage() {
             lineStyle: styleToLw(ind.style)
           });
         } catch (_) {}
-        refreshIndicators();
       }
+      refreshIndicators();
       renderChips();
       scheduleSaveAnnotations();
       inP.hidden = true;
@@ -1330,30 +1485,21 @@ export function mountStockChartPage() {
     });
   }
 
-  function addIndicatorFromContext(type) {
+  function addIndicatorFromContext(type, overrides) {
     if (indicators.length >= MAX_MAIN_INDICATORS) return;
-    var t = type === 'EMA' ? 'EMA' : (type === 'FIB' ? 'FIB' : 'SMA');
+    var t = normalizeIndicatorType(type);
+    var plugin = indicatorRegistry.get(t);
+    if (!plugin || plugin.userAddable === false || plugin.isOscillator) return;
     var IND_COLORS = [
       '#f59e0b', '#60a5fa', '#34d399', '#f472b6', '#c084fc',
       '#fb923c', '#2dd4bf', '#fbbf24', '#a78bfa', '#38bdf8'
     ];
-    var color = IND_COLORS[indicators.length % IND_COLORS.length];
-    var newId = uid();
-    indicators.push({
-      id: newId,
+    var defaults = getIndicatorPluginDefaults(t);
+    var color = defaults.color || IND_COLORS[indicators.length % IND_COLORS.length];
+    indicators.push(createIndicatorState(Object.assign({}, defaults, {
       type: t,
-      period: 20,
-      color: color,
-      lineWidth: 2,
-      style: 'solid',
-      series: null,
-      glowSeries: null,
-      cachedPts: [],
-      seriesArr: [],
-      cachedPtsArr: null,
-      fibGlowSeriesArr: [],
-      visible: true
-    });
+      color: color
+    }, overrides || {})));
     refreshIndicators();
     renderChips();
     updateIndAddButton();
@@ -1493,32 +1639,18 @@ export function mountStockChartPage() {
     addMenuBtn(addSec, 'Add Level', function () {
       openLevelAddPanelAt(lastMainCtxClientX, lastMainCtxClientY, lastMainCtxPriceHint);
     });
-    addMenuBtn(addSec, 'Add Trendline', function () {
-      closeAllPanels(null);
-      if (chartInteractionMode !== MODE_OBJECTS) setChartInteractionMode(MODE_OBJECTS);
-      setSelectedTrendline(null);
+
+    getAddableDrawingPlugins().forEach(function (plugin) {
+      addMenuBtn(addSec, 'Add ' + drawingAddLabel(plugin), function () {
+        closeAllPanels(null);
+        beginObjectDrawing(plugin.id);
+      });
     });
-    addMenuBtn(addSec, 'Add SMA', function () {
-      addIndicatorFromContext('SMA');
-    });
-    addMenuBtn(addSec, 'Add EMA', function () {
-      addIndicatorFromContext('EMA');
-    });
-    addMenuBtn(addSec, 'Add Fib Bands', function () {
-      addIndicatorFromContext('FIB');
-    });
-    addMenuBtn(addSec, 'Add Fib Retracement', function () {
-      closeAllPanels(null);
-      drawingLevel = false;
-      drawingFib = true;
-      tlAnchors = [];
-      if (chartInteractionMode !== MODE_OBJECTS) {
-        setChartInteractionMode(MODE_OBJECTS);
-      } else {
-        applyChartInteractionMode();
-        updateExplicitButtonsState();
-      }
-      setSelectedTrendline(null);
+
+    getAddableIndicatorPlugins().forEach(function (plugin) {
+      addMenuBtn(addSec, 'Add ' + indicatorAddLabel(plugin), function () {
+        addIndicatorFromContext(plugin.id);
+      });
     });
     addMenuSep();
     addMenuBtn(menu, 'Save Image', function () {
@@ -1912,6 +2044,8 @@ export function mountStockChartPage() {
       borderVisible: false,
       wickUpColor: '#22c55e',
       wickDownColor: '#ef4444',
+      priceLineVisible: false,
+      lastValueVisible: false,
       /** Extra top margin so price lines at the bar high sit inside the pane (not clipped). */
       scaleMargins: { top: 0.14, bottom: 0.28 }
     });
@@ -2031,7 +2165,7 @@ export function mountStockChartPage() {
           if (tl.extended === undefined) tl.extended = false;
           if (!tl.style) tl.style = 'solid';
           if (!tl.id) tl.id = uid();
-          if (!tl.type) tl.type = 'trendline';
+          tl.type = normalizeDrawingType(tl.type || 'TRENDLINE');
         });
       })
       .catch(function () {
@@ -2108,6 +2242,34 @@ export function mountStockChartPage() {
   /** Remove all Lightweight Charts series owned by one indicator row. */
   function detachIndicatorSeries(ind) {
     if (!ind || !mainChart) return;
+
+    // Call custom plugin cleanup if defined
+    var plugin = indicatorRegistry.get(ind.type);
+    if (plugin && typeof plugin.destroySeries === 'function') {
+      try { plugin.destroySeries(mainChart, ind.seriesObj, ind); } catch (_) {}
+    } else {
+      // Fallback generic cleanup: remove any series found in seriesObj recursively
+      if (ind.seriesObj && typeof ind.seriesObj === 'object') {
+        function removeRecursive(obj) {
+          if (!obj) return;
+          if (typeof obj.removeSeries === 'function') return;
+          if (Array.isArray(obj)) {
+            obj.forEach(removeRecursive);
+          } else if (typeof obj === 'object') {
+            Object.keys(obj).forEach(function (k) {
+              var val = obj[k];
+              if (val && typeof val.applyOptions === 'function') {
+                try { mainChart.removeSeries(val); } catch (_) {}
+              } else if (val && typeof val === 'object') {
+                removeRecursive(val);
+              }
+            });
+          }
+        }
+        removeRecursive(ind.seriesObj);
+      }
+    }
+
     if (ind.series) {
       try { mainChart.removeSeries(ind.series); } catch (_) {}
       ind.series = null;
@@ -2128,6 +2290,7 @@ export function mountStockChartPage() {
       });
       ind.fibGlowSeriesArr = [];
     }
+    ind.seriesObj = null;
   }
 
   function syncIndicatorSelectionVisuals() {
@@ -2136,12 +2299,16 @@ export function mountStockChartPage() {
       var lw = Math.max(1, Math.min(8, Number(ind.lineWidth) || 2));
       var ls = styleToLw(ind.style || 'solid');
       var selected = selectedIndId != null && selectedIndId === ind.id && chartAllowsObjectSelection();
-      if (ind.type === 'FIB' && ind.seriesArr && ind.seriesArr.length) {
+      var plugin = indicatorRegistry.get(ind.type);
+      var bandKeys = indicatorBandKeys(ind);
+      if (plugin && typeof plugin.syncSelection === 'function') {
+        try { plugin.syncSelection(ind.seriesObj, selected, ind); } catch (_) {}
+      } else if (bandKeys && ind.seriesArr && ind.seriesArr.length) {
         var fibLw = Math.max(1, Math.min(8, Number(ind.lineWidth) || 1));
         var fibLs = styleToLw(ind.style || 'solid');
         var fibColors = fibBandColorMap(ind);
         ind.seriesArr.forEach(function (s, idx) {
-          var lvl = FIB_BAND_KEYS[idx];
+          var lvl = bandKeys[idx];
           try {
             s.applyOptions({
               color: fibColors[lvl] || ind.color || '#f59e0b',
@@ -2164,7 +2331,7 @@ export function mountStockChartPage() {
           return;
         }
         if (!ind.fibGlowSeriesArr.length && ind.cachedPtsArr) {
-          FIB_BAND_KEYS.forEach(function (lvl) {
+          bandKeys.forEach(function (lvl) {
             var pts = ind.cachedPtsArr[lvl];
             if (!pts || !pts.length) return;
             try {
@@ -2345,14 +2512,14 @@ export function mountStockChartPage() {
       
       var data = plugin.calculate(bars, ind);
       ind.cachedPtsArr = data;
-      ind.cachedPts = Array.isArray(data) ? data : (data.l1000 || data.upData);
+      ind.cachedPts = indicatorPrimaryPoints(plugin, data);
       
       var seriesObj = plugin.createSeries(mainChart, ind);
       ind.seriesObj = seriesObj;
       
       if (seriesObj.mainSeries) ind.series = seriesObj.mainSeries;
       if (seriesObj.glowSeries) ind.glowSeries = seriesObj.glowSeries;
-      if (ind.type === 'FIB') {
+      if (isBandIndicator(ind)) {
          ind.seriesArr = Object.values(seriesObj.bands || {});
          ind.fibGlowSeriesArr = Object.values(seriesObj.glowBands || {});
       }
@@ -2396,7 +2563,7 @@ export function mountStockChartPage() {
       if (!plugin || !ind.seriesObj) return;
       var data = plugin.calculate(bars, ind);
       ind.cachedPtsArr = data;
-      ind.cachedPts = Array.isArray(data) ? data : (data.l1000 || data.upData);
+      ind.cachedPts = indicatorPrimaryPoints(plugin, data);
       try {
         plugin.updateSeries(ind.seriesObj, data);
       } catch(_) {}
@@ -2875,7 +3042,12 @@ export function mountStockChartPage() {
     var x2 = timeToCoordinateExtrapolated(tl.time2);
     var y2 = candleSeries.priceToCoordinate(tl.price2);
     if (x1 == null || y1 == null || x2 == null || y2 == null) return null;
-    return { x1: x1, y1: y1, x2: x2, y2: y2 };
+    var res = { x1: x1, y1: y1, x2: x2, y2: y2 };
+    if (tl.time3 != null && tl.price3 != null) {
+      res.x3 = timeToCoordinateExtrapolated(tl.time3);
+      res.y3 = candleSeries.priceToCoordinate(tl.price3);
+    }
+    return res;
   }
 
   function getTrendlinePixelEndpoints(tl, w) {
@@ -2916,8 +3088,10 @@ export function mountStockChartPage() {
     if (!ap) return null;
     var d1 = Math.hypot(px - ap.x1, py - ap.y1);
     var d2 = Math.hypot(px - ap.x2, py - ap.y2);
-    if (d1 <= TL_HANDLE_HIT_PX && d1 <= d2) return 1;
-    if (d2 <= TL_HANDLE_HIT_PX) return 2;
+    var d3 = ap.x3 != null ? Math.hypot(px - ap.x3, py - ap.y3) : Infinity;
+    if (d1 <= TL_HANDLE_HIT_PX && d1 <= d2 && d1 <= d3) return 1;
+    if (d2 <= TL_HANDLE_HIT_PX && d2 <= d3) return 2;
+    if (d3 <= TL_HANDLE_HIT_PX) return 3;
     return null;
   }
 
@@ -2929,7 +3103,16 @@ export function mountStockChartPage() {
     if (!tl) return false;
     var ep = getTrendlinePixelEndpoints(tl, w);
     if (!ep) return false;
-    if (distPointToSegment(px, py, ep.x1, ep.y1, ep.x2, ep.y2) > TL_HIT_PX) return false;
+    var d = distPointToSegment(px, py, ep.x1, ep.y1, ep.x2, ep.y2);
+    if (ep.x3 != null && ep.y3 != null) {
+      var dx = ep.x2 - ep.x1;
+      var dy = ep.y2 - ep.y1;
+      var x4 = ep.x3 + dx;
+      var y4 = ep.y3 + dy;
+      var dUpper = distPointToSegment(px, py, ep.x3, ep.y3, x4, y4);
+      if (dUpper < d) d = dUpper;
+    }
+    if (d > TL_HIT_PX) return false;
     var h = hitTestTrendlineHandle(px, py, tl);
     if (h != null) return false;
     return true;
@@ -2964,7 +3147,8 @@ export function mountStockChartPage() {
     var bestD = TL_HIT_PX + 1;
     for (var i = 0; i < trendlines.length; i++) {
       var tl = trendlines[i];
-      if (tl.type === 'fib') {
+      var plugin = drawingRegistry.get(normalizeDrawingType(tl.type));
+      if (plugin && plugin.hitTestMode === 'horizontalLevels') {
         var ap = getTrendlineAnchorPixels(tl);
         if (!ap) continue;
         var diffY = ap.y2 - ap.y1;
@@ -2987,6 +3171,14 @@ export function mountStockChartPage() {
       var ep = getTrendlinePixelEndpoints(tl, w);
       if (!ep) continue;
       var d = distPointToSegment(px, py, ep.x1, ep.y1, ep.x2, ep.y2);
+      if (ep.x3 != null && ep.y3 != null) {
+        var dx = ep.x2 - ep.x1;
+        var dy = ep.y2 - ep.y1;
+        var x4 = ep.x3 + dx;
+        var y4 = ep.y3 + dy;
+        var dUpper = distPointToSegment(px, py, ep.x3, ep.y3, x4, y4);
+        if (dUpper < d) d = dUpper;
+      }
       if (d <= TL_HIT_PX && d < bestD) {
         bestD = d;
         best = tl.id;
@@ -3055,11 +3247,12 @@ export function mountStockChartPage() {
       var ep = getTrendlinePixelEndpoints(tl, w);
       if (!ep) return;
       var sel = tl.id === selectedTlId;
-      var plugin = drawingRegistry.get(tl.type);
+      var pluginType = normalizeDrawingType(tl.type);
+      var plugin = drawingRegistry.get(pluginType);
       if (plugin) {
         plugin.draw(ctx, tl, ep, { selected: sel, width: w });
       } else {
-        var fallbackPlugin = tl.type === 'fib' ? drawingRegistry.get('FIB') : drawingRegistry.get('TRENDLINE');
+        var fallbackPlugin = drawingRegistry.get('TRENDLINE');
         if (fallbackPlugin) fallbackPlugin.draw(ctx, tl, ep, { selected: sel, width: w });
       }
       
@@ -3068,6 +3261,9 @@ export function mountStockChartPage() {
         if (ap) {
           drawAnchorMarker(ctx, ap.x1, ap.y1);
           drawAnchorMarker(ctx, ap.x2, ap.y2);
+          if (ap.x3 != null && ap.y3 != null) {
+            drawAnchorMarker(ctx, ap.x3, ap.y3);
+          }
         }
       }
     });
@@ -3087,7 +3283,7 @@ export function mountStockChartPage() {
         var ax = timeToCoordinateExtrapolated(a0.time);
         var ay = candleSeries.priceToCoordinate(a0.price);
         
-        var plugin = drawingRegistry.get(window.currentDrawType || 'TRENDLINE');
+        var plugin = drawingRegistry.get(getActiveDrawType());
         if (plugin) {
            var draftPixels = { x1: ax, y1: ay, x2: tlPreviewPx.x, y2: tlPreviewPx.y };
            if (tlAnchors.length === 2) {
@@ -3160,13 +3356,16 @@ export function mountStockChartPage() {
           tlx.time2 = fo.time;
           tlx.price2 = fo.price;
         }
-      } else {
+      } else if (tlRmbDrag.whichEnd === 2) {
         tlx.time2 = time;
         tlx.price2 = price;
         if (fo) {
           tlx.time1 = fo.time;
           tlx.price1 = fo.price;
         }
+      } else if (tlRmbDrag.whichEnd === 3) {
+        tlx.time3 = time;
+        tlx.price3 = price;
       }
       scheduleDrawTrendlines();
       return;
@@ -3186,6 +3385,14 @@ export function mountStockChartPage() {
     tlx.price1 = pr1;
     tlx.time2 = t2;
     tlx.price2 = pr2;
+    if (ep.x3 != null && ep.y3 != null) {
+      var t3 = coordinateToTimeExtrapolated(ep.x3 + ddx);
+      var pr3 = coordinateToPriceExtrapolated(ep.y3 + ddy);
+      if (t3 != null && pr3 != null) {
+        tlx.time3 = t3;
+        tlx.price3 = pr3;
+      }
+    }
     scheduleDrawTrendlines();
   }
 
@@ -3289,7 +3496,7 @@ export function mountStockChartPage() {
         var pt = canvasPointToChart(ev);
         if (!pt) return;
 
-        var plugin = drawingRegistry.get(window.currentDrawType || 'TRENDLINE');
+        var plugin = drawingRegistry.get(getActiveDrawType());
         var pointsNeeded = plugin ? (plugin.pointsNeeded || 2) : 2;
 
         if (tlAnchors.length < pointsNeeded - 1) {
@@ -3318,7 +3525,7 @@ export function mountStockChartPage() {
           style: 'solid',
           label: '',
           extended: false,
-          type: window.currentDrawType || 'TRENDLINE'
+          type: getActiveDrawType()
         };
 
         if (tlPulseTimer) {
@@ -3332,9 +3539,6 @@ export function mountStockChartPage() {
         detachTlDraftPreviewListeners();
         trendlines.push(newObj);
         
-        if (drawingFib) {
-          drawingFib = false;
-        }
         setSelectedTrendline(null);
         scheduleSaveAnnotations();
         scheduleDrawTrendlines();
@@ -3556,10 +3760,20 @@ export function mountStockChartPage() {
 
     if (tooltipPrefs.ma) {
       indicators.forEach(function (ind) {
-        if (!ind.series) return;
-        var sd = param.seriesData.get(ind.series);
-        if (sd && sd.value != null) {
-          parts.push(row(ind.type + ind.period, fmtNum(sd.value)));
+        var plugin = indicatorRegistry.get(ind.type);
+        if (plugin && typeof plugin.getTooltip === 'function') {
+          if (!ind.seriesObj) return;
+          var tip = plugin.getTooltip(ind.seriesObj, param.seriesData, ind);
+          if (tip) {
+            var valStr = tip.value !== '' && tip.value != null ? fmtNum(tip.value) : '';
+            parts.push(row(tip.label, valStr));
+          }
+        } else {
+          if (!ind.series) return;
+          var sd = param.seriesData.get(ind.series);
+          if (sd && sd.value != null) {
+            parts.push(row(ind.type + ind.period, fmtNum(sd.value)));
+          }
         }
       });
     }
@@ -3751,7 +3965,8 @@ export function mountStockChartPage() {
       chip.className = 'sc-chip';
       if (tl.id === selectedTlId) chip.classList.add('sc-tl-selected');
       applyChipObjectColor(chip, tl.color, '#f59e0b');
-      var tlLabel = tl.type === 'fib' ? 'Fib' : 'TL';
+      var drawingPlugin = drawingRegistry.get(normalizeDrawingType(tl.type));
+      var tlLabel = drawingPlugin ? (drawingPlugin.chipLabel || drawingPlugin.name || drawingPlugin.id) : 'TL';
       chip.innerHTML = '<span class="sc-chip-color-dot" aria-hidden="true"></span>' + tlLabel + ' ' + (idx + 1) +
         '<span class="sc-chip-remove" data-tlid="' + tl.id + '">\u00d7</span>';
       chip.addEventListener('click', function (e) {
@@ -3956,8 +4171,63 @@ export function mountStockChartPage() {
     });
   }
 
+  function populateIndicatorTypeSelect() {
+    var sel = document.getElementById('sc-ind-type');
+    if (!sel) return;
+    var currentType = normalizeIndicatorType(sel.value || 'SMA');
+    sel.innerHTML = '';
+    var plugins = getAddableIndicatorPlugins();
+    plugins.forEach(function (plugin) {
+      var opt = document.createElement('option');
+      opt.value = plugin.id;
+      opt.textContent = plugin.id;
+      if (plugin.id === currentType) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    if (!sel.options.length) {
+      var fallback = document.createElement('option');
+      fallback.value = 'SMA';
+      fallback.textContent = 'SMA';
+      sel.appendChild(fallback);
+    }
+  }
+
+  function renderToolbarPluginButtons() {
+    var host = document.getElementById('sc-plugin-toolbar');
+    if (!host) return;
+    host.innerHTML = '';
+
+    function makeBtn(cls, label, title) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'sc-control-btn ' + cls;
+      btn.textContent = label;
+      if (title) btn.title = title;
+      return btn;
+    }
+
+    getAddableIndicatorPlugins().forEach(function (plugin) {
+      var label = '+ ' + indicatorAddLabel(plugin);
+      var title = plugin.toolbarTitle || ('Add ' + indicatorAddLabel(plugin) + ' Indicator');
+      var btn = makeBtn('sc-add-ind-btn', label, title);
+      btn.setAttribute('data-ind-type', plugin.id);
+      host.appendChild(btn);
+    });
+
+    getAddableDrawingPlugins().forEach(function (plugin) {
+      var drawLabel = '+ ' + drawingAddLabel(plugin);
+      var drawTitle = plugin.toolbarTitle || ('Add ' + drawingAddLabel(plugin));
+      var btn = makeBtn('sc-draw-btn', drawLabel, drawTitle);
+      btn.setAttribute('data-draw-type', plugin.id);
+      btn.setAttribute('aria-pressed', 'false');
+      host.appendChild(btn);
+    });
+  }
+
   function setupUI() {
     syncIntervalButtons();
+    populateIndicatorTypeSelect();
+    renderToolbarPluginButtons();
     buildTooltipSettingsPanel();
     buildObjectPropertyPanels();
     buildDefaultAddContextMenu();
@@ -3984,15 +4254,11 @@ export function mountStockChartPage() {
     });
     document.getElementById('sc-ind-add-btn') && document.getElementById('sc-ind-add-btn').addEventListener('click', function () {
       if (indicators.length >= MAX_MAIN_INDICATORS) return;
-      var typ = (document.getElementById('sc-ind-type') || {}).value || 'SMA';
+      var typ = normalizeIndicatorType((document.getElementById('sc-ind-type') || {}).value || 'SMA');
       var period = Math.max(2, Math.min(200, parseInt(document.getElementById('sc-ind-period').value, 10) || 20));
       var color = (document.getElementById('sc-ind-color') || {}).value || '#f59e0b';
-      indicators.push({ id: uid(), type: typ, period: period, color: color, lineWidth: 2, style: 'solid', series: null, glowSeries: null, cachedPts: [], seriesArr: [], cachedPtsArr: null });
+      addIndicatorFromContext(typ, { period: period, color: color });
       if (indPanel) indPanel.hidden = true;
-      refreshIndicators();
-      renderChips();
-      updateIndAddButton();
-      scheduleSaveAnnotations();
     });
 
     var lvlPanel = document.getElementById('sc-lvl-panel');
@@ -4050,36 +4316,14 @@ export function mountStockChartPage() {
           if (chartInteractionMode === MODE_OBJECTS && drawingLevel) {
             setChartInteractionMode(MODE_NONE);
           } else {
-            drawingLevel = true;
-            drawingFib = false;
-            tlAnchors = [];
-            if (chartInteractionMode !== MODE_OBJECTS) {
-              setChartInteractionMode(MODE_OBJECTS);
-            } else {
-              applyChartInteractionMode();
-              updateExplicitButtonsState();
-            }
-            setSelectedLevel(null);
-            attachTlDraftPreviewListeners();
-            scheduleDrawTrendlines();
+            beginLevelDrawing();
           }
         } else {
-          if (chartInteractionMode === MODE_OBJECTS && !drawingLevel && (drawingFib === (drawType === 'FIB'))) {
+          var normalizedType = normalizeDrawingType(drawType);
+          if (chartInteractionMode === MODE_OBJECTS && !drawingLevel && getActiveDrawType() === normalizedType) {
             setChartInteractionMode(MODE_NONE);
           } else {
-            drawingLevel = false;
-            drawingFib = (drawType === 'FIB');
-            window.currentDrawType = drawType;
-            tlAnchors = [];
-            if (chartInteractionMode !== MODE_OBJECTS) {
-              setChartInteractionMode(MODE_OBJECTS);
-            } else {
-              applyChartInteractionMode();
-              updateExplicitButtonsState();
-            }
-            setSelectedTrendline(null);
-            attachTlDraftPreviewListeners();
-            scheduleDrawTrendlines();
+            beginObjectDrawing(normalizedType);
           }
         }
       });

@@ -18,6 +18,7 @@
 .sc-ivbtn:hover{background:var(--surface-2);color:var(--text)}
 .sc-ivbtn.active{background:var(--accent);border-color:var(--accent);color:#fff}
 .sc-controls{display:flex;gap:8px;margin-left:auto;flex-wrap:wrap;align-items:center}
+.sc-plugin-toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .sc-control-btn{min-height:44px;padding:8px 12px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:13px;cursor:pointer;transition:all .15s;display:inline-flex;align-items:center;gap:6px}
 .sc-control-btn:hover{background:var(--surface-2)}
 .sc-control-btn.active{background:var(--accent);border-color:var(--accent);color:#fff}
@@ -93,13 +94,7 @@
     </div>
     <div class="sc-controls">
       <button type="button" class="sc-control-btn" id="sc-mode-crosshair" aria-pressed="false" title="Crosshair: snap vertically to OHLC and MAs at the bar under the cursor; click the chart to place a horizontal level. Turn off for pan/zoom and right-click add actions (Level, Trendline, SMA, EMA).">Crosshair</button>
-      <button type="button" class="sc-control-btn sc-add-ind-btn" data-ind-type="SMA" title="Add SMA Indicator">+ SMA</button>
-      <button type="button" class="sc-control-btn sc-add-ind-btn" data-ind-type="EMA" title="Add EMA Indicator">+ EMA</button>
-      <button type="button" class="sc-control-btn sc-add-ind-btn" data-ind-type="FIB" title="Add Rolling Fibonacci Indicator">+ Fib Bands</button>
-      <button type="button" class="sc-control-btn sc-add-ind-btn" data-ind-type="SUPERTREND" title="Add SuperTrend Indicator">+ SuperTrend</button>
-      <button type="button" class="sc-control-btn sc-draw-btn" data-draw-type="TRENDLINE" aria-pressed="false" title="Add Trendline (click 2 anchor points)">+ Trendline</button>
-      <button type="button" class="sc-control-btn sc-draw-btn" data-draw-type="FIB" aria-pressed="false" title="Add Fibonacci Retracement (click 2 anchor points)">+ Fib Retrac</button>
-      <button type="button" class="sc-control-btn sc-draw-btn" data-draw-type="PARALLEL_CHANNEL" aria-pressed="false" title="Add Parallel Channel (click 3 anchor points)">+ Channel</button>
+      <div id="sc-plugin-toolbar" class="sc-plugin-toolbar"></div>
       <button type="button" class="sc-control-btn sc-draw-btn" data-draw-type="LEVEL" aria-pressed="false" title="Add Horizontal Level (click to place)">+ Level</button>
       <label class="sc-control-btn" style="cursor:pointer">
         <input type="checkbox" id="sc-show-vol" checked style="margin-right:4px">Vol
@@ -191,5 +186,5 @@
 
 {% block scripts %}
 <script src="/static/js/lightweight-charts.standalone.production.js"></script>
-<script src="/static/js/stock_chart.js?v=1.0.6"></script>
+<script src="/static/js/stock_chart.js?v=1.0.8"></script>
 {% endblock %}

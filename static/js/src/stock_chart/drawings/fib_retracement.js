@@ -3,6 +3,9 @@ import { drawingRegistry } from '../drawingRegistry.js';
 export const FibRetracementDrawing = {
   id: 'FIB',
   name: 'Fib Retracement',
+  addLabel: 'Fib Retracement',
+  chipLabel: 'Fib',
+  hitTestMode: 'horizontalLevels',
   pointsNeeded: 2,
   draw: function(ctx, objectState, pixels, options) {
     var sel = !!options.selected;

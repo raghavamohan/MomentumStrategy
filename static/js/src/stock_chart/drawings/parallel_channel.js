@@ -3,6 +3,8 @@ import { drawingRegistry } from '../drawingRegistry.js';
 export const ParallelChannelDrawing = {
   id: 'PARALLEL_CHANNEL',
   name: 'Parallel Channel',
+  addLabel: 'Channel',
+  chipLabel: 'Channel',
   pointsNeeded: 3,
   draw: function(ctx, objectState, pixels, options) {
     var lw = Math.max(1, Number(objectState.width) || 1);

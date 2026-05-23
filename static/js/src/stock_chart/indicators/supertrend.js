@@ -128,6 +128,40 @@ export const SuperTrendIndicator = {
       return { label: 'SuperTrend(' + options.period + ',' + options.multiplier + ')', value: val };
     }
     return null;
+  },
+
+  getPrimarySeriesData: function(data) {
+    if (data && Array.isArray(data.tooltipData)) return data.tooltipData;
+    return [];
+  },
+
+  syncSelection: function(seriesObj, selected, options) {
+    var upCol = selected ? '#f59e0b' : (options.upColor || '#22c55e');
+    var downCol = selected ? '#f59e0b' : (options.downColor || '#ef4444');
+    var lw = options.lineWidth || 2;
+    var finalLw = selected ? Math.min(8, lw + 2) : lw;
+    var lineStyle = options.style === 'dashed' ? 2 : (options.style === 'dotted' ? 3 : 0);
+
+    if (seriesObj.upSeries) {
+      seriesObj.upSeries.applyOptions({
+        color: upCol,
+        lineWidth: finalLw,
+        lineStyle: lineStyle
+      });
+    }
+    if (seriesObj.downSeries) {
+      seriesObj.downSeries.applyOptions({
+        color: downCol,
+        lineWidth: finalLw,
+        lineStyle: lineStyle
+      });
+    }
+    if (seriesObj.glowSeries) {
+      seriesObj.glowSeries.applyOptions({
+        color: selected ? 'rgba(245, 158, 11, 0.33)' : 'transparent',
+        lineWidth: Math.max(12, finalLw + 8)
+      });
+    }
   }
 };
 

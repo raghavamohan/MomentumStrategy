@@ -3,6 +3,8 @@ import { drawingRegistry } from '../drawingRegistry.js';
 export const TrendlineDrawing = {
   id: 'TRENDLINE',
   name: 'Trend Line',
+  addLabel: 'Trendline',
+  chipLabel: 'TL',
   pointsNeeded: 2,
   draw: function(ctx, objectState, pixels, options) {
     var lw = Math.max(1, Number(objectState.width) || 1);

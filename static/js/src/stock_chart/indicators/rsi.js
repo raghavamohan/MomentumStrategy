@@ -5,6 +5,7 @@ export const RsiIndicator = {
   name: 'Relative Strength Index',
   defaultOptions: { period: 14, color: '#c084fc', lineWidth: 2, style: 'solid' },
   isOscillator: true,
+  userAddable: false,
 
   createSeries: function(chart, options) {
     var mainSeries = chart.addLineSeries({
