@@ -78,6 +78,7 @@ export function mountStockChartPage() {
   var levelGlowPriceLines = {};
   var saveTimer = null;
   var tlAnchors = [];
+  var drawingLevel = false;
   var tlPreviewPx = null;
   var tlDraftMoveBound = null;
   var selectedTlId = null;
@@ -434,13 +435,29 @@ export function mountStockChartPage() {
   function attachTlDraftPreviewListeners() {
     if (tlDraftMoveBound) return;
     tlDraftMoveBound = function (ev) {
-      if (chartInteractionMode !== MODE_OBJECTS || tlAnchors.length !== 1 || !mainChart) return;
+      if (chartInteractionMode !== MODE_OBJECTS || !mainChart) return;
+      if (tlAnchors.length !== 1 && !drawingLevel) return;
       var p = canvasPixelFromClient(ev.clientX, ev.clientY);
       if (!p) return;
       tlPreviewPx = p;
       scheduleDrawTrendlines();
     };
     window.addEventListener('mousemove', tlDraftMoveBound);
+  }
+
+  function updateExplicitButtonsState() {
+    var tlBtn = document.getElementById('sc-btn-trendline');
+    var lvlBtn = document.getElementById('sc-btn-level');
+    if (tlBtn) {
+      var tlOn = chartInteractionMode === MODE_OBJECTS && !drawingLevel;
+      tlBtn.classList.toggle('active', tlOn);
+      tlBtn.setAttribute('aria-pressed', tlOn ? 'true' : 'false');
+    }
+    if (lvlBtn) {
+      var lvlOn = chartInteractionMode === MODE_OBJECTS && drawingLevel;
+      lvlBtn.classList.toggle('active', lvlOn);
+      lvlBtn.setAttribute('aria-pressed', lvlOn ? 'true' : 'false');
+    }
   }
 
   function applyChartInteractionMode() {
@@ -462,7 +479,7 @@ export function mountStockChartPage() {
       canvas.classList.remove('object-interact-mode', 'drawing-tl');
       if (chartInteractionMode === MODE_OBJECTS) {
         canvas.classList.add('object-interact-mode');
-        if (tlAnchors.length === 1) canvas.classList.add('drawing-tl');
+        if (tlAnchors.length === 1 || drawingLevel) canvas.classList.add('drawing-tl');
       }
     }
     var cxBtn = document.getElementById('sc-mode-crosshair');
@@ -471,6 +488,7 @@ export function mountStockChartPage() {
       cxBtn.classList.toggle('active', cxOn);
       cxBtn.setAttribute('aria-pressed', cxOn ? 'true' : 'false');
     }
+    updateExplicitButtonsState();
   }
 
   function clearCrosshairBothCharts() {
@@ -526,6 +544,7 @@ export function mountStockChartPage() {
     levelDrag = null;
     unbindLevelDragDoc();
     tlAnchors = [];
+    drawingLevel = false;
     tlSuppressNextDrawClick = false;
     tlSuppressSelectClick = false;
     detachTlDraftPreviewListeners();
@@ -800,7 +819,7 @@ export function mountStockChartPage() {
   }
 
   function tryBeginTrendlineDragFromPointerDown(ev, px, py, wid, captureEl) {
-    if (!chartAllowsObjectSelection() || !mainChart || !candleSeries || tlAnchors.length) return false;
+    if (!chartAllowsObjectSelection() || !mainChart || !candleSeries || tlAnchors.length || drawingLevel) return false;
     if (tlRmbDrag) return false;
     if (ev.button !== 0 && ev.button !== 2) return false;
     var tlHit = hitTestTrendlineIds(px, py, wid);
@@ -916,7 +935,7 @@ export function mountStockChartPage() {
     var py = wp.py;
     var wid = wp.wid;
 
-    if (chartAllowsObjectSelection() && ev.button === 0 && !tlRmbDrag && tlAnchors.length === 0) {
+    if (chartAllowsObjectSelection() && ev.button === 0 && !tlRmbDrag && tlAnchors.length === 0 && !drawingLevel) {
       var lid = hitTestLevelId(px, py);
       if (lid) {
         var hitTl = hitTestTrendlineIds(px, py, wid);
@@ -938,7 +957,7 @@ export function mountStockChartPage() {
       if (tryBeginTrendlineDragFromPointerDown(ev, px, py, wid, wrap)) return;
     }
 
-    if (chartAllowsObjectSelection() && ev.button === 0 && !tlRmbDrag && tlAnchors.length === 0) {
+    if (chartAllowsObjectSelection() && ev.button === 0 && !tlRmbDrag && tlAnchors.length === 0 && !drawingLevel) {
       var iid = hitTestIndicatorId(px, py);
       if (iid) {
         setSelectedInd(iid);
@@ -956,6 +975,7 @@ export function mountStockChartPage() {
     if (!wrap || !wrap.contains(ev.target)) return;
     if (ev.target.closest && ev.target.closest('.sc-panel')) return;
     if (tlAnchors.length === 1 && chartInteractionMode === MODE_OBJECTS) return;
+    if (drawingLevel && chartInteractionMode === MODE_OBJECTS) return;
     if (tlSuppressSelectClick) return;
     var wp = wrapPixelFromClient(ev.clientX, ev.clientY);
     if (!wp) return;
@@ -2722,6 +2742,17 @@ export function mountStockChartPage() {
       }
     }
 
+    if (chartInteractionMode === MODE_OBJECTS && drawingLevel && tlPreviewPx) {
+      ctx.strokeStyle = 'rgba(250,204,21,.75)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(0, tlPreviewPx.y);
+      ctx.lineTo(w, tlPreviewPx.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
     if (tlAnchorPulse) {
       for (var pi = 0; pi < tlAnchorPulse.length; pi++) {
         drawAnchorMarker(ctx, tlAnchorPulse[pi].x, tlAnchorPulse[pi].y);
@@ -2831,7 +2862,7 @@ export function mountStockChartPage() {
       var wrap = document.getElementById('sc-main-wrap');
       var wid = wrap ? wrap.clientWidth : 0;
 
-      if (chartInteractionMode === MODE_OBJECTS && mainChart && candleSeries && tlAnchors.length === 0) {
+      if (chartInteractionMode === MODE_OBJECTS && mainChart && candleSeries && tlAnchors.length === 0 && !drawingLevel) {
         if (ev.button !== 0) return;
         if (tlRmbDrag) return;
         if (hitTestTrendlineIds(px, py, wid) != null) return;
@@ -2851,6 +2882,31 @@ export function mountStockChartPage() {
 
     canvas.addEventListener('click', function (ev) {
       if (!mainChart || !candleSeries) return;
+
+      if (chartInteractionMode === MODE_OBJECTS && drawingLevel) {
+        if (tlSuppressSelectClick) {
+          tlSuppressSelectClick = false;
+          ev.stopPropagation();
+          return;
+        }
+        var pt = canvasPointToChart(ev);
+        if (!pt) return;
+        levels.push({
+          id: uid(),
+          price: pt.price,
+          color: '#cbd5e1',
+          style: 'solid',
+          width: 2,
+          label: ''
+        });
+        restoreLevels();
+        scheduleSaveAnnotations();
+        drawingLevel = false;
+        detachTlDraftPreviewListeners();
+        setChartInteractionMode(MODE_NONE);
+        ev.stopPropagation();
+        return;
+      }
 
       if (chartInteractionMode === MODE_OBJECTS && tlAnchors.length === 1) {
         if (tlSuppressSelectClick) {
@@ -3167,11 +3223,21 @@ export function mountStockChartPage() {
   function updateIndAddButton() {
     var btn = document.getElementById('sc-ind-add-btn');
     var addInd = document.getElementById('sc-add-ind');
+    var btnSma = document.getElementById('sc-btn-sma');
+    var btnEma = document.getElementById('sc-btn-ema');
     var full = indicators.length >= MAX_MAIN_INDICATORS;
     if (btn) btn.disabled = full;
     if (addInd) {
       addInd.disabled = full;
       addInd.title = full ? ('Maximum ' + MAX_MAIN_INDICATORS + ' indicators — remove one to add another') : '';
+    }
+    if (btnSma) {
+      btnSma.disabled = full;
+      btnSma.title = full ? ('Maximum ' + MAX_MAIN_INDICATORS + ' indicators — remove one to add another') : '';
+    }
+    if (btnEma) {
+      btnEma.disabled = full;
+      btnEma.title = full ? ('Maximum ' + MAX_MAIN_INDICATORS + ' indicators — remove one to add another') : '';
     }
     var hint = document.getElementById('sc-ind-limit-hint');
     if (hint) {
@@ -3415,6 +3481,7 @@ export function mountStockChartPage() {
     document.addEventListener('keydown', function (ev) {
       if (ev.key === 'Escape') {
         closeAllPanels(null);
+        clearObjectSelections();
         if (chartInteractionMode === MODE_OBJECTS || chartInteractionMode === MODE_CROSSHAIR) {
           setChartInteractionMode(MODE_NONE);
         }
@@ -3510,6 +3577,52 @@ export function mountStockChartPage() {
         ev.stopPropagation();
         closeAllPanels(null);
         setChartInteractionMode(MODE_CROSSHAIR);
+      });
+    }
+    var btnSma = document.getElementById('sc-btn-sma');
+    if (btnSma) {
+      btnSma.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        closeAllPanels(null);
+        addIndicatorFromContext('SMA');
+      });
+    }
+    var btnEma = document.getElementById('sc-btn-ema');
+    if (btnEma) {
+      btnEma.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        closeAllPanels(null);
+        addIndicatorFromContext('EMA');
+      });
+    }
+    var btnTl = document.getElementById('sc-btn-trendline');
+    if (btnTl) {
+      btnTl.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        closeAllPanels(null);
+        if (chartInteractionMode === MODE_OBJECTS && !drawingLevel) {
+          setChartInteractionMode(MODE_NONE);
+        } else {
+          drawingLevel = false;
+          setChartInteractionMode(MODE_OBJECTS);
+          setSelectedTrendline(null);
+        }
+      });
+    }
+    var btnLvl = document.getElementById('sc-btn-level');
+    if (btnLvl) {
+      btnLvl.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        closeAllPanels(null);
+        if (chartInteractionMode === MODE_OBJECTS && drawingLevel) {
+          setChartInteractionMode(MODE_NONE);
+        } else {
+          drawingLevel = true;
+          setChartInteractionMode(MODE_OBJECTS);
+          setSelectedLevel(null);
+          attachTlDraftPreviewListeners();
+          scheduleDrawTrendlines();
+        }
       });
     }
     var volCb = document.getElementById('sc-show-vol');
