@@ -534,9 +534,23 @@ export function mountStockChartPage() {
   function timeToCoordinateExtrapolated(time) {
     if (!mainChart) return null;
     var ts = mainChart.timeScale();
+    
+    // First, try standard exact look up in case it already matches
     var x = ts.timeToCoordinate(time);
     if (x != null) return x;
+    
+    // Map the time to the current chart's timescale format (daily string vs unix timestamp)
     var sec = chartTimeToUnixSec(time);
+    if (isFinite(sec)) {
+      var refBar = allBars && allBars.length ? allBars[0] : null;
+      if (refBar) {
+        var currentScaleTime = unixSecToChartTime(sec, refBar);
+        x = ts.timeToCoordinate(currentScaleTime);
+        if (x != null) return x;
+      }
+    }
+    
+    // Extrapolate if the point is off-screen/out of index range
     if (!isFinite(sec)) return null;
     var basis = getTimeScaleExtrapolationBasis();
     if (!basis) return null;
