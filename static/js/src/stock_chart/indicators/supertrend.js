@@ -1,12 +1,14 @@
 import { indicatorRegistry } from '../indicatorRegistry.js';
 import { BaseIndicator, hexToRgba, getStandardTooltip } from '../basePlugin.js';
+import { SUPERTREND_PROPERTIES } from '../propertyFields.js';
 
 export class SuperTrendIndicator extends BaseIndicator {
   constructor() {
     super({
       id: 'SUPERTREND',
       name: 'SuperTrend',
-      defaultOptions: { period: 20, multiplier: 3, upColor: '#22c55e', downColor: '#ef4444', lineWidth: 2, style: 'solid' }
+      defaultOptions: { period: 20, multiplier: 3, upColor: '#22c55e', downColor: '#ef4444', lineWidth: 2, style: 'solid' },
+      editableProperties: SUPERTREND_PROPERTIES
     });
   }
 

@@ -1,5 +1,6 @@
 import { drawingRegistry } from '../drawingRegistry.js';
 import { BaseDrawing, applyCanvasMainStyle, applyCanvasGlowStyle } from '../basePlugin.js';
+import { DRAWING_STD_PROPERTIES } from '../propertyFields.js';
 
 export class FibRetracementDrawing extends BaseDrawing {
   constructor() {
@@ -9,7 +10,8 @@ export class FibRetracementDrawing extends BaseDrawing {
       addLabel: 'Fib Retracement',
       chipLabel: 'Fib',
       hitTestMode: 'horizontalLevels',
-      pointsNeeded: 2
+      pointsNeeded: 2,
+      editableProperties: DRAWING_STD_PROPERTIES
     });
   }
 

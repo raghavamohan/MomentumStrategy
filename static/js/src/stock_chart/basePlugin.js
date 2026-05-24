@@ -161,6 +161,7 @@ export class BaseIndicator {
     this.addLabel = config.addLabel || config.name;
     this.periodLabel = config.periodLabel;
     this.bandKeys = config.bandKeys;
+    this.editableProperties = config.editableProperties || null;
   }
 
   createSeries(chart, options) {
@@ -196,6 +197,7 @@ export class BaseDrawing {
     this.chipLabel = config.chipLabel || config.id;
     this.pointsNeeded = config.pointsNeeded || 2;
     this.hitTestMode = config.hitTestMode;
+    this.editableProperties = config.editableProperties || null;
   }
 
   draw(ctx, objectState, pixels, options) {

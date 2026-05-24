@@ -20,6 +20,9 @@ import {
 import { indicatorRegistry } from './indicatorRegistry.js';
 import { drawingRegistry } from './drawingRegistry.js';
 import { rgbaFromHex, indicatorGlowColor, styleToLw, normalizeHexColor } from './basePlugin.js';
+import { resolveEditableFields } from './propertyFields.js';
+import { renderPropertyFields, populatePropertyFields, readPropertyFields } from './propertyPanel.js';
+import { levelPlugin } from './annotations/level.js';
 import './indicators/sma.js';
 import './indicators/ema.js';
 import './indicators/rsi.js';
@@ -105,6 +108,202 @@ export function mountStockChartPage() {
       return plugin.defaultOptions;
     }
     return {};
+  }
+
+  var OBJ_PROPS_PREFIX = 'sc-obj-prop';
+  var objectPropsFields = [];
+
+  function findIndicatorById(id) {
+    for (var i = 0; i < indicators.length; i++) {
+      if (indicators[i].id === id) return indicators[i];
+    }
+    return null;
+  }
+
+  function getSelectedObjectContext() {
+    if (selectedIndId) return { kind: 'indicator', id: selectedIndId };
+    if (selectedTlId) return { kind: 'drawing', id: selectedTlId };
+    if (selectedLevelId) return { kind: 'level', id: selectedLevelId };
+    return null;
+  }
+
+  function getObjectPluginForContext(ctx) {
+    if (!ctx) return null;
+    if (ctx.kind === 'indicator') {
+      var ind = findIndicatorById(ctx.id);
+      return ind ? indicatorRegistry.get(ind.type) : null;
+    }
+    if (ctx.kind === 'drawing') {
+      var tl = findTrendlineById(ctx.id);
+      return tl ? drawingRegistry.get(normalizeDrawingType(tl.type)) : null;
+    }
+    if (ctx.kind === 'level') return levelPlugin;
+    return null;
+  }
+
+  function getObjectStateForContext(ctx) {
+    if (!ctx) return null;
+    if (ctx.kind === 'indicator') return findIndicatorById(ctx.id);
+    if (ctx.kind === 'drawing') return findTrendlineById(ctx.id);
+    if (ctx.kind === 'level') return findLevelById(ctx.id);
+    return null;
+  }
+
+  function getObjectPropsPanelTitle(ctx, plugin, state) {
+    if (!ctx || !state) return 'Properties';
+    if (ctx.kind === 'indicator') {
+      return (plugin && plugin.name ? plugin.name : state.type) + ' · ' + state.period;
+    }
+    if (ctx.kind === 'drawing') {
+      return (plugin && plugin.name ? plugin.name : 'Drawing');
+    }
+    if (ctx.kind === 'level') return levelPlugin.name;
+    return 'Properties';
+  }
+
+  function resolveObjectEditableFields(ctx, plugin) {
+    if (!plugin) return [];
+    var fields = resolveEditableFields(plugin);
+    if (ctx && ctx.kind === 'indicator' && plugin.periodLabel) {
+      fields = fields.map(function (field) {
+        if (field.id === 'period') {
+          return Object.assign({}, field, { label: plugin.periodLabel });
+        }
+        return field;
+      });
+    }
+    return fields;
+  }
+
+  function syncObjectPropsPanel() {
+    var panel = document.getElementById('sc-obj-props-panel');
+    var host = document.getElementById('sc-obj-props-fields');
+    var title = document.getElementById('sc-obj-props-title');
+    var err = document.getElementById('sc-obj-props-err');
+    if (!panel || !host) return;
+    var ctx = getSelectedObjectContext();
+    var state = getObjectStateForContext(ctx);
+    if (!ctx || !state) {
+      panel.hidden = true;
+      objectPropsFields = [];
+      if (err) err.hidden = true;
+      return;
+    }
+    var plugin = getObjectPluginForContext(ctx);
+    objectPropsFields = resolveObjectEditableFields(ctx, plugin);
+    if (title) title.textContent = getObjectPropsPanelTitle(ctx, plugin, state);
+    renderPropertyFields(host, objectPropsFields, OBJ_PROPS_PREFIX);
+    populatePropertyFields(objectPropsFields, state, OBJ_PROPS_PREFIX);
+    if (err) err.hidden = true;
+  }
+
+  function openObjectPropsPanelForChip(chip, selectFn) {
+    if (!chip || typeof selectFn !== 'function') return;
+    chip.addEventListener('dblclick', function (e) {
+      if (e.target.closest && e.target.closest('.sc-chip-remove')) return;
+      if (e.target.closest && e.target.closest('.sc-chip-toggle-vis')) return;
+      if (!chartAllowsObjectSelection()) return;
+      e.stopPropagation();
+      e.preventDefault();
+      selectFn();
+      var rect = chip.getBoundingClientRect();
+      openObjectPropsPanel(rect.left, rect.bottom + 8);
+    });
+  }
+  function openObjectPropsPanel(clientX, clientY) {
+    syncObjectPropsPanel();
+    if (!getSelectedObjectContext()) return false;
+    var panel = document.getElementById('sc-obj-props-panel');
+    if (!panel) return false;
+    closeAllPanels('objprops');
+    panel.hidden = false;
+    positionPanelAtClient(panel, clientX, clientY);
+    return true;
+  }
+
+  function applyResolvedPropertyValues(state, fields, values) {
+    fields.forEach(function (field) {
+      var key = field.stateKey || field.id;
+      if (!Object.prototype.hasOwnProperty.call(values, key)) return;
+      if (field.type === 'boolean') {
+        state[key] = values[key] === true;
+        return;
+      }
+      state[key] = values[key];
+    });
+  }
+
+  function applyObjectPropsPanel() {
+    var ctx = getSelectedObjectContext();
+    var state = getObjectStateForContext(ctx);
+    var plugin = getObjectPluginForContext(ctx);
+    var fields = resolveObjectEditableFields(ctx, plugin);
+    if (!ctx || !state || !fields.length) return false;
+    objectPropsFields = fields;
+    var values = readPropertyFields(fields, OBJ_PROPS_PREFIX);
+    var err = document.getElementById('sc-obj-props-err');
+
+    if (ctx.kind === 'level') {
+      if (values.price == null || !isFinite(values.price)) {
+        if (err) { err.hidden = false; err.textContent = 'Enter a valid price.'; }
+        return false;
+      }
+      if (!levelPriceFreeExcept(values.price, state.id)) {
+        if (err) { err.hidden = false; err.textContent = 'A level at that price already exists.'; }
+        return false;
+      }
+    }
+
+    if (ctx.kind === 'indicator') {
+      if (values.period != null) state.period = values.period;
+      if (values.color != null) state.color = values.color;
+      if (values.upColor != null) {
+        state.upColor = values.upColor;
+        state.color = values.upColor;
+      }
+      if (values.downColor != null) state.downColor = values.downColor;
+      if (values.multiplier != null) state.multiplier = values.multiplier;
+      if (values.lineWidth != null) state.lineWidth = values.lineWidth;
+      if (values.style != null) state.style = values.style;
+      refreshIndicators();
+      renderChips();
+    } else if (ctx.kind === 'drawing') {
+      applyResolvedPropertyValues(state, fields, values);
+      scheduleDrawTrendlines();
+      renderChips();
+    } else if (ctx.kind === 'level') {
+      state.price = values.price;
+      if (values.label != null) state.label = values.label;
+      if (values.color != null) state.color = values.color;
+      if (values.style != null) state.style = values.style;
+      if (values.width != null) state.width = values.width;
+      applyLevelPriceLineVisual(state);
+      syncLevelSelectionVisuals();
+      renderChips();
+    }
+
+    scheduleSaveAnnotations();
+    var panel = document.getElementById('sc-obj-props-panel');
+    if (panel) panel.hidden = true;
+    if (err) err.hidden = true;
+    return true;
+  }
+
+  function syncIndicatorAddPanelFields(type) {
+    var plugin = indicatorRegistry.get(normalizeIndicatorType(type));
+    var fields = resolveObjectEditableFields({ kind: 'indicator' }, plugin);
+    var host = document.getElementById('sc-ind-add-fields');
+    if (!host) return fields;
+    renderPropertyFields(host, fields, 'sc-ind-add');
+    var defaults = getIndicatorPluginDefaults(type);
+    populatePropertyFields(fields, defaults, 'sc-ind-add');
+    return fields;
+  }
+
+  function readIndicatorAddPanelValues(type) {
+    var plugin = indicatorRegistry.get(normalizeIndicatorType(type));
+    var fields = resolveObjectEditableFields({ kind: 'indicator' }, plugin);
+    return readPropertyFields(fields, 'sc-ind-add');
   }
 
   function createIndicatorState(base) {
@@ -591,18 +790,14 @@ export function mountStockChartPage() {
     var ind = document.getElementById('sc-ind-panel');
     var lvl = document.getElementById('sc-lvl-panel');
     var tp = getTooltipPanel();
-    var tlP = document.getElementById('sc-tl-props-panel');
-    var lvlE = document.getElementById('sc-lvl-edit-panel');
-    var indE = document.getElementById('sc-ind-edit-panel');
     var addM = document.getElementById('sc-add-ctx-menu');
     var helpP = document.getElementById('sc-help-panel');
     var helpBtn = document.getElementById('sc-help-btn');
     if (except !== 'ind' && ind) ind.hidden = true;
     if (except !== 'lvl' && lvl) lvl.hidden = true;
     if (except !== 'tooltip' && tp) tp.hidden = true;
-    if (except !== 'tlprops' && tlP) tlP.hidden = true;
-    if (except !== 'lvlprops' && lvlE) lvlE.hidden = true;
-    if (except !== 'indprops' && indE) indE.hidden = true;
+    var objP = document.getElementById('sc-obj-props-panel');
+    if (except !== 'objprops' && objP) objP.hidden = true;
     if (except !== 'addctx' && addM) addM.hidden = true;
     if (except !== 'help' && helpP) helpP.hidden = true;
     if (helpBtn) {
@@ -792,11 +987,9 @@ export function mountStockChartPage() {
     selectedIndId = null;
     syncIndicatorSelectionVisuals();
     syncLevelSelectionVisuals();
-    syncTrendlinePropsPanel();
-    syncLevelEditPanel();
-    syncIndEditPanel();
     drawTrendlines();
     renderChips();
+    syncObjectPropsPanel();
     closeAllPanels(null);
   }
 
@@ -832,6 +1025,7 @@ export function mountStockChartPage() {
     syncLevelSelectionVisuals();
     drawTrendlines();
     renderChips();
+    syncObjectPropsPanel();
   }
 
   function setSelectedLevel(id) {
@@ -846,6 +1040,7 @@ export function mountStockChartPage() {
     syncLevelSelectionVisuals();
     drawTrendlines();
     renderChips();
+    syncObjectPropsPanel();
   }
 
   function setSelectedInd(id) {
@@ -860,6 +1055,7 @@ export function mountStockChartPage() {
     syncLevelSelectionVisuals();
     drawTrendlines();
     renderChips();
+    syncObjectPropsPanel();
   }
 
   function chartAllowsObjectSelection() {
@@ -1179,24 +1375,24 @@ export function mountStockChartPage() {
       return true;
     }
     if (hitTestTrendlineParallelBody(px, py, tlDrag, wid)) {
-      var ep = getTrendlinePixelEndpoints(tlDrag, wid);
-      if (!ep) return false;
+      var ap = getTrendlineAnchorPixels(tlDrag);
+      if (!ap) return false;
       ev.preventDefault();
       ev.stopPropagation();
-      
-      var ep0 = { x1: ep.x1, y1: ep.y1, x2: ep.x2, y2: ep.y2 };
-      var grab = projectPointToSegment(px, py, ep.x1, ep.y1, ep.x2, ep.y2);
-      if (ep.x3 != null && ep.y3 != null) {
-        ep0.x3 = ep.x3;
-        ep0.y3 = ep.y3;
-        var dx = ep.x2 - ep.x1;
-        var dy = ep.y2 - ep.y1;
-        var x4 = ep.x3 + dx;
-        var y4 = ep.y3 + dy;
-        var dLower = distPointToSegment(px, py, ep.x1, ep.y1, ep.x2, ep.y2);
-        var dUpper = distPointToSegment(px, py, ep.x3, ep.y3, x4, y4);
+
+      var ep0 = { x1: ap.x1, y1: ap.y1, x2: ap.x2, y2: ap.y2 };
+      var grab = projectPointToSegment(px, py, ap.x1, ap.y1, ap.x2, ap.y2);
+      if (ap.x3 != null && ap.y3 != null) {
+        ep0.x3 = ap.x3;
+        ep0.y3 = ap.y3;
+        var dx = ap.x2 - ap.x1;
+        var dy = ap.y2 - ap.y1;
+        var x4 = ap.x3 + dx;
+        var y4 = ap.y3 + dy;
+        var dLower = distPointToSegment(px, py, ap.x1, ap.y1, ap.x2, ap.y2);
+        var dUpper = distPointToSegment(px, py, ap.x3, ap.y3, x4, y4);
         if (dUpper < dLower) {
-          grab = projectPointToSegment(px, py, ep.x3, ep.y3, x4, y4);
+          grab = projectPointToSegment(px, py, ap.x3, ap.y3, x4, y4);
         }
       }
       
@@ -1397,220 +1593,31 @@ export function mountStockChartPage() {
     panel.style.top = Math.min(maxTop, Math.max(pad, localY)) + 'px';
   }
 
-  function syncTrendlinePropsPanel() {
-    var p = document.getElementById('sc-tl-props-panel');
-    if (!p) return;
-    var tl = selectedTlId ? findTrendlineById(selectedTlId) : null;
-    var color = document.getElementById('sc-tl-prop-color');
-    var width = document.getElementById('sc-tl-prop-width');
-    var style = document.getElementById('sc-tl-prop-style');
-    var ext = document.getElementById('sc-tl-prop-ext');
-    var lab = document.getElementById('sc-tl-prop-label');
-    if (!tl) {
-      p.hidden = true;
-      return;
-    }
-    if (color) color.value = tl.color || '#f59e0b';
-    if (width) width.value = String(Math.max(1, Number(tl.width) || 1));
-    if (style) style.value = tl.style === 'dashed' ? 'dashed' : (tl.style === 'dotted' ? 'dotted' : 'solid');
-    if (ext) ext.checked = !!tl.extended;
-    if (lab) lab.value = tl.label || '';
-  }
-
-  function syncLevelEditPanel() {
-    var p = document.getElementById('sc-lvl-edit-panel');
-    if (!p) return;
-    var lv = selectedLevelId ? findLevelById(selectedLevelId) : null;
-    var price = document.getElementById('sc-lvl-edit-price');
-    var lab = document.getElementById('sc-lvl-edit-label');
-    var color = document.getElementById('sc-lvl-edit-color');
-    var style = document.getElementById('sc-lvl-edit-style');
-    var width = document.getElementById('sc-lvl-edit-width');
-    if (!lv) {
-      p.hidden = true;
-      return;
-    }
-    if (price) price.value = String(lv.price);
-    if (lab) lab.value = lv.label || '';
-    if (color) color.value = lv.color || '#22c55e';
-    if (style) style.value = lv.style || 'dashed';
-    if (width) width.value = String(Math.max(1, Number(lv.width) || 1));
-  }
-
-  function syncIndEditPanel() {
-    var p = document.getElementById('sc-ind-edit-panel');
-    if (!p) return;
-    var ind = null;
-    if (selectedIndId) {
-      for (var i = 0; i < indicators.length; i++) {
-        if (indicators[i].id === selectedIndId) { ind = indicators[i]; break; }
-      }
-    }
-    var typ = document.getElementById('sc-ind-edit-type');
-    var per = document.getElementById('sc-ind-edit-period');
-    var color = document.getElementById('sc-ind-edit-color');
-    var width = document.getElementById('sc-ind-edit-width');
-    var style = document.getElementById('sc-ind-edit-style');
-    if (!ind) {
-      p.hidden = true;
-      return;
-    }
-    if (typ) typ.textContent = ind.type + ' ' + ind.period;
-    if (per) {
-      per.value = String(ind.period);
-      var perRow = per.closest('.sc-panel-row');
-      var perLbl = perRow ? perRow.querySelector('label') : null;
-      if (perLbl) {
-        var plugin = indicatorRegistry.get(ind.type);
-        perLbl.textContent = (plugin && plugin.periodLabel) ? plugin.periodLabel : 'Period';
-      }
-    }
-    
-    var colorLbl = document.getElementById('sc-ind-edit-color-lbl');
-    var downColorRow = document.getElementById('sc-ind-edit-down-color-row');
-    var downColor = document.getElementById('sc-ind-edit-down-color');
-    var multRow = document.getElementById('sc-ind-edit-multiplier-row');
-    var mult = document.getElementById('sc-ind-edit-multiplier');
-
-    if (ind.type === 'SUPERTREND') {
-      if (color) color.value = ind.upColor || ind.color || '#22c55e';
-      if (colorLbl) colorLbl.textContent = 'Up Color';
-      if (downColorRow) downColorRow.hidden = false;
-      if (downColor) downColor.value = ind.downColor || '#ef4444';
-      if (multRow) multRow.hidden = false;
-      if (mult) mult.value = String(ind.multiplier || 3);
-    } else {
-      if (color) color.value = ind.color || '#f59e0b';
-      if (colorLbl) colorLbl.textContent = 'Color';
-      if (downColorRow) downColorRow.hidden = true;
-      if (multRow) multRow.hidden = true;
-    }
-    if (width) width.value = String(Math.max(1, Number(ind.lineWidth) || 2));
-    if (style) style.value = ind.style || 'solid';
-  }
-
   function buildObjectPropertyPanels() {
     var page = document.querySelector('.sc-page');
-    if (!page || document.getElementById('sc-tl-props-panel')) return;
+    if (!page || document.getElementById('sc-obj-props-panel')) return;
 
-    function mkPanel(id, title) {
-      var el = document.createElement('div');
-      el.id = id;
-      el.className = 'sc-panel';
-      el.hidden = true;
-      el.setAttribute('role', 'dialog');
-      el.setAttribute('aria-modal', 'true');
-      var h = document.createElement('h3');
-      h.textContent = title;
-      el.appendChild(h);
-      page.appendChild(el);
-      return el;
-    }
+    var panel = document.createElement('div');
+    panel.id = 'sc-obj-props-panel';
+    panel.className = 'sc-panel';
+    panel.hidden = true;
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-modal', 'true');
+    panel.innerHTML =
+      '<h3 id="sc-obj-props-title">Properties</h3>' +
+      '<div id="sc-obj-props-fields"></div>' +
+      '<p id="sc-obj-props-err" class="sc-field-err" role="alert" hidden></p>' +
+      '<div class="sc-panel-btns">' +
+      '<button type="button" class="sc-btn-primary" id="sc-obj-props-apply">Apply</button>' +
+      '<button type="button" class="sc-btn-secondary" id="sc-obj-props-close">Close</button>' +
+      '</div>';
+    page.appendChild(panel);
 
-    var tlP = mkPanel('sc-tl-props-panel', 'Trendline');
-    tlP.innerHTML = '<h3 id="sc-tl-props-title">Trendline</h3>' +
-      '<div class="sc-panel-row"><label>Color</label><input type="color" id="sc-tl-prop-color"></div>' +
-      '<div class="sc-panel-row"><label>Width</label><input type="number" id="sc-tl-prop-width" min="1" max="6" step="1"></div>' +
-      '<div class="sc-panel-row"><label>Style</label><select id="sc-tl-prop-style"><option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option></select></div>' +
-      '<div class="sc-panel-row"><label><input type="checkbox" id="sc-tl-prop-ext"> Extended</label></div>' +
-      '<div class="sc-panel-row"><label>Label</label><input type="text" id="sc-tl-prop-label" maxlength="48"></div>' +
-      '<div class="sc-panel-btns"><button type="button" class="sc-btn-primary" id="sc-tl-prop-apply">Apply</button>' +
-      '<button type="button" class="sc-btn-secondary" id="sc-tl-prop-close">Close</button></div>';
-    tlP.querySelector('#sc-tl-prop-apply').addEventListener('click', function () {
-      var tl = selectedTlId ? findTrendlineById(selectedTlId) : null;
-      if (!tl) return;
-      tl.color = (document.getElementById('sc-tl-prop-color') || {}).value || tl.color;
-      tl.width = Math.max(1, parseInt(document.getElementById('sc-tl-prop-width').value, 10) || 1);
-      tl.style = (document.getElementById('sc-tl-prop-style') || {}).value || 'solid';
-      tl.extended = !!(document.getElementById('sc-tl-prop-ext') || {}).checked;
-      tl.label = (document.getElementById('sc-tl-prop-label') || {}).value || '';
-      scheduleSaveAnnotations();
-      drawTrendlines();
-      renderChips();
-      tlP.hidden = true;
+    panel.querySelector('#sc-obj-props-apply').addEventListener('click', function () {
+      applyObjectPropsPanel();
     });
-    tlP.querySelector('#sc-tl-prop-close').addEventListener('click', function () {
-      tlP.hidden = true;
-    });
-
-    var lvP = mkPanel('sc-lvl-edit-panel', 'Edit level');
-    lvP.innerHTML = '<h3 id="sc-lvl-edit-title">Horizontal level</h3>' +
-      '<div class="sc-panel-row"><label>Price</label><input type="number" id="sc-lvl-edit-price" step="any"></div>' +
-      '<div class="sc-panel-row"><label>Label</label><input type="text" id="sc-lvl-edit-label" maxlength="48"></div>' +
-      '<div class="sc-panel-row"><label>Color</label><input type="color" id="sc-lvl-edit-color"></div>' +
-      '<div class="sc-panel-row"><label>Style</label><select id="sc-lvl-edit-style"><option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option></select></div>' +
-      '<div class="sc-panel-row"><label>Width</label><input type="number" id="sc-lvl-edit-width" min="1" max="6" step="1"></div>' +
-      '<div class="sc-panel-btns"><button type="button" class="sc-btn-primary" id="sc-lvl-edit-apply">Apply</button>' +
-      '<button type="button" class="sc-btn-secondary" id="sc-lvl-edit-close">Close</button></div>';
-    lvP.querySelector('#sc-lvl-edit-apply').addEventListener('click', function () {
-      var lv = selectedLevelId ? findLevelById(selectedLevelId) : null;
-      if (!lv) return;
-      var raw = (document.getElementById('sc-lvl-edit-price') || {}).value;
-      var price = parseFloat(String(raw).replace(/,/g, ''));
-      if (!isFinite(price)) return;
-      if (!levelPriceFreeExcept(price, lv.id)) return;
-      lv.price = price;
-      lv.label = (document.getElementById('sc-lvl-edit-label') || {}).value || '';
-      lv.color = (document.getElementById('sc-lvl-edit-color') || {}).value || lv.color;
-      lv.style = (document.getElementById('sc-lvl-edit-style') || {}).value || 'dashed';
-      lv.width = Math.max(1, parseInt(document.getElementById('sc-lvl-edit-width').value, 10) || 1);
-      applyLevelPriceLineVisual(lv);
-      syncLevelSelectionVisuals();
-      scheduleSaveAnnotations();
-      renderChips();
-      lvP.hidden = true;
-    });
-    lvP.querySelector('#sc-lvl-edit-close').addEventListener('click', function () {
-      lvP.hidden = true;
-    });
-
-    var inP = mkPanel('sc-ind-edit-panel', 'Edit indicator');
-    inP.innerHTML = '<h3 id="sc-ind-edit-title">Indicator</h3>' +
-      '<div class="sc-panel-row"><label>Type</label><span id="sc-ind-edit-type"></span></div>' +
-      '<div class="sc-panel-row"><label>Period</label><input type="number" id="sc-ind-edit-period" min="2" max="200"></div>' +
-      '<div class="sc-panel-row"><label id="sc-ind-edit-color-lbl">Color</label><input type="color" id="sc-ind-edit-color"></div>' +
-      '<div class="sc-panel-row" id="sc-ind-edit-down-color-row" hidden><label>Down Color</label><input type="color" id="sc-ind-edit-down-color"></div>' +
-      '<div class="sc-panel-row" id="sc-ind-edit-multiplier-row" hidden><label>Multiplier</label><input type="number" id="sc-ind-edit-multiplier" step="0.1" min="0.1" max="50"></div>' +
-      '<div class="sc-panel-row"><label>Width</label><input type="number" id="sc-ind-edit-width" min="1" max="6" step="1"></div>' +
-      '<div class="sc-panel-row"><label>Style</label><select id="sc-ind-edit-style"><option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option></select></div>' +
-      '<div class="sc-panel-btns"><button type="button" class="sc-btn-primary" id="sc-ind-edit-apply">Apply</button>' +
-      '<button type="button" class="sc-btn-secondary" id="sc-ind-edit-close">Close</button></div>';
-    inP.querySelector('#sc-ind-edit-apply').addEventListener('click', function () {
-      var ind = null;
-      if (selectedIndId) {
-        for (var j = 0; j < indicators.length; j++) {
-          if (indicators[j].id === selectedIndId) { ind = indicators[j]; break; }
-        }
-      }
-      if (!ind) return;
-      var per = Math.max(2, Math.min(200, parseInt(document.getElementById('sc-ind-edit-period').value, 10) || ind.period));
-      ind.period = per;
-      if (ind.type === 'SUPERTREND') {
-        ind.upColor = (document.getElementById('sc-ind-edit-color') || {}).value || ind.upColor;
-        ind.color = ind.upColor;
-        ind.downColor = (document.getElementById('sc-ind-edit-down-color') || {}).value || ind.downColor;
-        ind.multiplier = parseFloat((document.getElementById('sc-ind-edit-multiplier') || {}).value) || ind.multiplier || 3;
-      } else {
-        ind.color = (document.getElementById('sc-ind-edit-color') || {}).value || ind.color;
-      }
-      ind.lineWidth = Math.max(1, parseInt(document.getElementById('sc-ind-edit-width').value, 10) || 2);
-      ind.style = (document.getElementById('sc-ind-edit-style') || {}).value || 'solid';
-      if (ind.series) {
-        try {
-          ind.series.applyOptions({
-            color: ind.color,
-            lineWidth: ind.lineWidth,
-            lineStyle: styleToLw(ind.style)
-          });
-        } catch (_) {}
-      }
-      refreshIndicators();
-      renderChips();
-      scheduleSaveAnnotations();
-      inP.hidden = true;
-    });
-    inP.querySelector('#sc-ind-edit-close').addEventListener('click', function () {
-      inP.hidden = true;
+    panel.querySelector('#sc-obj-props-close').addEventListener('click', function () {
+      panel.hidden = true;
     });
   }
 
@@ -1807,39 +1814,21 @@ export function mountStockChartPage() {
     var tlHit = hitTestTrendlineIds(px, py, wid);
     if (tlHit) {
       setSelectedTrendline(tlHit);
-      syncTrendlinePropsPanel();
-      var p = document.getElementById('sc-tl-props-panel');
-      if (p) {
-        closeAllPanels('tlprops');
-        p.hidden = false;
-        positionPanelAtClient(p, ev.clientX, ev.clientY);
-      }
+      openObjectPropsPanel(ev.clientX, ev.clientY);
       ev.preventDefault();
       return true;
     }
     var lvlHit = hitTestLevelId(px, py);
     if (lvlHit) {
       setSelectedLevel(lvlHit);
-      syncLevelEditPanel();
-      var pl = document.getElementById('sc-lvl-edit-panel');
-      if (pl) {
-        closeAllPanels('lvlprops');
-        pl.hidden = false;
-        positionPanelAtClient(pl, ev.clientX, ev.clientY);
-      }
+      openObjectPropsPanel(ev.clientX, ev.clientY);
       ev.preventDefault();
       return true;
     }
     var indHit = hitTestIndicatorId(px, py);
     if (indHit) {
       setSelectedInd(indHit);
-      syncIndEditPanel();
-      var pi = document.getElementById('sc-ind-edit-panel');
-      if (pi) {
-        closeAllPanels('indprops');
-        pi.hidden = false;
-        positionPanelAtClient(pi, ev.clientX, ev.clientY);
-      }
+      openObjectPropsPanel(ev.clientX, ev.clientY);
       ev.preventDefault();
       return true;
     }
@@ -2294,7 +2283,7 @@ export function mountStockChartPage() {
           indicators = hydrateIndicatorsFromSave(body.indicators);
         }
         trendlines.forEach(function (tl) {
-          if (tl.extended === undefined) tl.extended = false;
+          tl.extended = tl.extended === true;
           if (!tl.style) tl.style = 'solid';
           if (!tl.id) tl.id = uid();
           tl.type = normalizeDrawingType(tl.type || 'TRENDLINE');
@@ -3084,7 +3073,7 @@ export function mountStockChartPage() {
       res.y3 = candleSeries.priceToCoordinate(tl.price3);
     }
 
-    if (tl.extended) {
+    if (tl.extended === true) {
       var dx = x2 - x1;
       var dy = y2 - y1;
       if (Math.abs(dx) > 0.001) {
@@ -3967,6 +3956,7 @@ export function mountStockChartPage() {
         scheduleSaveAnnotations();
         renderChips();
       });
+      openObjectPropsPanelForChip(chip, function () { setSelectedInd(ind.id); });
       host.appendChild(chip);
     });
 
@@ -3997,6 +3987,7 @@ export function mountStockChartPage() {
         drawTrendlines();
         renderChips();
       });
+      openObjectPropsPanelForChip(chip, function () { setSelectedTrendline(tl.id); });
       host.appendChild(chip);
     });
 
@@ -4028,6 +4019,7 @@ export function mountStockChartPage() {
         scheduleSaveAnnotations();
         renderChips();
       });
+      openObjectPropsPanelForChip(chip, function () { setSelectedLevel(lv.id); });
       host.appendChild(chip);
     });
 
@@ -4278,6 +4270,7 @@ export function mountStockChartPage() {
       fallback.textContent = 'SMA';
       sel.appendChild(fallback);
     }
+    syncIndicatorAddPanelFields(sel.value || 'SMA');
   }
 
   function renderToolbarPluginButtons() {
@@ -4357,13 +4350,7 @@ export function mountStockChartPage() {
     var indTypeSel = document.getElementById('sc-ind-type');
     if (indTypeSel) {
       indTypeSel.addEventListener('change', function() {
-         var isST = this.value === 'SUPERTREND';
-         var lbl = document.getElementById('sc-ind-color-lbl');
-         if (lbl) lbl.textContent = isST ? 'Up Color' : 'Color';
-         var dcr = document.getElementById('sc-ind-down-color-row');
-         if (dcr) dcr.hidden = !isST;
-         var mr = document.getElementById('sc-ind-multiplier-row');
-         if (mr) mr.hidden = !isST;
+        syncIndicatorAddPanelFields(this.value);
       });
     }
 
@@ -4374,15 +4361,8 @@ export function mountStockChartPage() {
     document.getElementById('sc-ind-add-btn') && document.getElementById('sc-ind-add-btn').addEventListener('click', function () {
       if (indicators.length >= MAX_MAIN_INDICATORS) return;
       var typ = normalizeIndicatorType((document.getElementById('sc-ind-type') || {}).value || 'SMA');
-      var period = Math.max(2, Math.min(200, parseInt(document.getElementById('sc-ind-period').value, 10) || 20));
-      var color = (document.getElementById('sc-ind-color') || {}).value || '#f59e0b';
-      
-      var cfg = { period: period, color: color };
-      if (typ === 'SUPERTREND') {
-        cfg.upColor = color;
-        cfg.downColor = (document.getElementById('sc-ind-down-color') || {}).value || '#ef4444';
-        cfg.multiplier = parseFloat((document.getElementById('sc-ind-multiplier') || {}).value) || 3;
-      }
+      var cfg = readIndicatorAddPanelValues(typ);
+      if (cfg.upColor != null && cfg.color == null) cfg.color = cfg.upColor;
       addIndicatorFromContext(typ, cfg);
       if (indPanel) indPanel.hidden = true;
     });

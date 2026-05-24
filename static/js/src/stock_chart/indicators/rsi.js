@@ -1,5 +1,6 @@
 import { indicatorRegistry } from '../indicatorRegistry.js';
 import { BaseIndicator } from '../basePlugin.js';
+import { INDICATOR_STD_PROPERTIES } from '../propertyFields.js';
 
 export class RsiIndicator extends BaseIndicator {
   constructor() {
@@ -8,7 +9,8 @@ export class RsiIndicator extends BaseIndicator {
       name: 'Relative Strength Index',
       defaultOptions: { period: 14, color: '#c084fc', lineWidth: 2, style: 'solid' },
       isOscillator: true,
-      userAddable: false
+      userAddable: false,
+      editableProperties: INDICATOR_STD_PROPERTIES
     });
   }
 

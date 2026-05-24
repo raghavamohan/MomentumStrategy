@@ -1,5 +1,6 @@
 import { drawingRegistry } from '../drawingRegistry.js';
 import { BaseDrawing } from '../basePlugin.js';
+import { DRAWING_STD_PROPERTIES } from '../propertyFields.js';
 
 export class ParallelChannelDrawing extends BaseDrawing {
   constructor() {
@@ -8,7 +9,8 @@ export class ParallelChannelDrawing extends BaseDrawing {
       name: 'Parallel Channel',
       addLabel: 'Channel',
       chipLabel: 'Channel',
-      pointsNeeded: 3
+      pointsNeeded: 3,
+      editableProperties: DRAWING_STD_PROPERTIES
     });
   }
 

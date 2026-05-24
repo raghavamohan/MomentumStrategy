@@ -1,5 +1,6 @@
 import { indicatorRegistry } from '../indicatorRegistry.js';
 import { BaseIndicator, fibBandColorMap, indicatorGlowColor, styleToLw } from '../basePlugin.js';
+import { INDICATOR_STD_PROPERTIES } from '../propertyFields.js';
 
 export class FibBandsIndicator extends BaseIndicator {
   constructor() {
@@ -9,7 +10,13 @@ export class FibBandsIndicator extends BaseIndicator {
       addLabel: 'Fib Bands',
       periodLabel: 'Lookback (candles)',
       bandKeys: ['l1000', 'l786', 'l618', 'l500', 'l382', 'l236', 'l0'],
-      defaultOptions: { period: 20, color: '#94a3b8', lineWidth: 1, style: 'dashed' }
+      defaultOptions: { period: 20, color: '#94a3b8', lineWidth: 1, style: 'dashed' },
+      editableProperties: [
+        { id: 'period', label: 'Lookback (candles)' },
+        'color',
+        'lineWidth',
+        'style'
+      ]
     });
   }
 

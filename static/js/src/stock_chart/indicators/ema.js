@@ -1,12 +1,14 @@
 import { indicatorRegistry } from '../indicatorRegistry.js';
 import { BaseIndicator } from '../basePlugin.js';
+import { INDICATOR_STD_PROPERTIES } from '../propertyFields.js';
 
 export class EmaIndicator extends BaseIndicator {
   constructor() {
     super({
       id: 'EMA',
       name: 'Exponential Moving Average',
-      defaultOptions: { period: 21, color: '#3b82f6', lineWidth: 2, style: 'solid' }
+      defaultOptions: { period: 21, color: '#3b82f6', lineWidth: 2, style: 'solid' },
+      editableProperties: INDICATOR_STD_PROPERTIES
     });
   }
 

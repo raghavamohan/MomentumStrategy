@@ -1,5 +1,6 @@
 import { drawingRegistry } from '../drawingRegistry.js';
 import { BaseDrawing } from '../basePlugin.js';
+import { TRENDLINE_PROPERTIES } from '../propertyFields.js';
 
 export class TrendlineDrawing extends BaseDrawing {
   constructor() {
@@ -8,7 +9,8 @@ export class TrendlineDrawing extends BaseDrawing {
       name: 'Trend Line',
       addLabel: 'Trendline',
       chipLabel: 'TL',
-      pointsNeeded: 2
+      pointsNeeded: 2,
+      editableProperties: TRENDLINE_PROPERTIES
     });
   }
 
