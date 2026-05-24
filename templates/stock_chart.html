@@ -88,12 +88,8 @@
 
   <div id="sc-quick-controls" class="sc-quick-controls">
     <button type="button" class="sc-control-btn" id="sc-mode-inspect" aria-pressed="false" aria-keyshortcuts="I" title="Inspect (I): toggle inspect mode. Shows crosshair with OHLC/MA snap and RSI sync. Alt+Click places a level at snap."><span><u>I</u>nspect</span></button>
-    <label class="sc-control-btn" style="cursor:pointer">
-      <input type="checkbox" id="sc-show-vol" checked style="margin-right:4px">Vol
-    </label>
-    <label class="sc-control-btn" style="cursor:pointer">
-      <input type="checkbox" id="sc-show-rsi" checked style="margin-right:4px">RSI
-    </label>
+    <button type="button" class="sc-control-btn active" id="sc-show-vol" aria-pressed="true" title="Toggle Volume">Vol</button>
+    <button type="button" class="sc-control-btn active" id="sc-show-rsi" aria-pressed="true" title="Toggle RSI">RSI</button>
   </div>
 
   <div class="sc-interval-bar">

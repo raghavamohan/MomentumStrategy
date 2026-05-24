@@ -2023,8 +2023,11 @@ export function mountStockChartPage() {
 
   function applyRsiVisibility() {
     var area = document.getElementById('sc-chart-area');
-    var rsiCb = document.getElementById('sc-show-rsi');
-    if (rsiCb) rsiCb.checked = showRsi;
+    var rsiBtn = document.getElementById('sc-show-rsi');
+    if (rsiBtn) {
+      rsiBtn.classList.toggle('active', showRsi);
+      rsiBtn.setAttribute('aria-pressed', showRsi ? 'true' : 'false');
+    }
     if (area) area.classList.toggle('sc-rsi-hidden', !showRsi);
     try { localStorage.setItem(RSI_SHOW_KEY, showRsi ? '1' : '0'); } catch (_) {}
     requestAnimationFrame(function () {
@@ -4507,21 +4510,23 @@ export function mountStockChartPage() {
         }
       });
     });
-    var volCb = document.getElementById('sc-show-vol');
-    if (volCb) {
-      volCb.checked = showVolume;
-      volCb.addEventListener('change', function () {
-        showVolume = volCb.checked;
+    var volBtn = document.getElementById('sc-show-vol');
+    if (volBtn) {
+      volBtn.classList.toggle('active', showVolume);
+      volBtn.setAttribute('aria-pressed', showVolume ? 'true' : 'false');
+      volBtn.addEventListener('click', function () {
+        showVolume = !showVolume;
+        volBtn.classList.toggle('active', showVolume);
+        volBtn.setAttribute('aria-pressed', showVolume ? 'true' : 'false');
         if (volSeries) volSeries.applyOptions({ visible: showVolume });
         scheduleSyncChartPaneSizes();
       });
     }
 
-    var rsiCb = document.getElementById('sc-show-rsi');
-    if (rsiCb) {
-      rsiCb.checked = showRsi;
-      rsiCb.addEventListener('change', function () {
-        showRsi = rsiCb.checked;
+    var rsiBtn = document.getElementById('sc-show-rsi');
+    if (rsiBtn) {
+      rsiBtn.addEventListener('click', function () {
+        showRsi = !showRsi;
         applyRsiVisibility();
       });
     }
