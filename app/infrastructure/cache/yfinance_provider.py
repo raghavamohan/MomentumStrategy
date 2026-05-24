@@ -126,6 +126,10 @@ def _maybe_start_daily_refresh_unlocked() -> None:
 
             updated = 0
             for exch, sym in keys:
+                sym_up = sym.upper()
+                if "NIFTY" in sym_up or "SENSEX" in sym_up or "BANK" in sym_up or "INDIAVIX" in sym_up:
+                    continue
+                    
                 yf_symbol = sym if "." in sym else f"{sym}{'.NS' if exch == 'NSE' else '.BO'}"
                 try:
                     info = yf.Ticker(yf_symbol).info or {}
@@ -173,6 +177,12 @@ def _maybe_start_symbol_refresh_unlocked(exchange: str, symbol: str) -> None:
         global _SOURCE_LABEL, _CACHE_DAY, _EXPIRES_AT
         try:
             exch, sym = key
+            sym_up = sym.upper()
+            if "NIFTY" in sym_up or "SENSEX" in sym_up or "BANK" in sym_up or "INDIAVIX" in sym_up:
+                with _CACHE_LOCK:
+                    _SYMBOL_REFRESH_IN_PROGRESS.discard(key)
+                return
+
             yf_symbol = sym if "." in sym else f"{sym}{'.NS' if exch == 'NSE' else '.BO'}"
             info = yf.Ticker(yf_symbol).info or {}
             ind = normalise_name(info.get("industry") or info.get("sector"))
