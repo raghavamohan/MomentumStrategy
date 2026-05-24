@@ -353,19 +353,7 @@ export function mountStockChartPage() {
       if (canvas && canvas.classList.contains('object-interact-mode') &&
           (ev.target === canvas || canvas.contains(ev.target))) {
         if (tlAnchors.length || tlRmbDrag) return true;
-        var rect = canvas.getBoundingClientRect();
-        var px = ev.clientX - rect.left;
-        var py = ev.clientY - rect.top;
-        var wid = wrap.clientWidth;
-        if (hitTestTrendlineIds(px, py, wid) != null) return true;
       }
-    }
-    if (chartAllowsObjectSelection()) {
-      var rectW = wrap.getBoundingClientRect();
-      var pwx = ev.clientX - rectW.left;
-      var pwy = ev.clientY - rectW.top;
-      var wwid = wrap.clientWidth;
-      if (hitTestTrendlineIds(pwx, pwy, wwid) != null) return true;
     }
     return false;
   }
@@ -412,6 +400,7 @@ export function mountStockChartPage() {
     if (!mainChart) return;
     if (typeof ev.button === 'number' && ev.button !== 0) return;
     if (shouldIgnoreMainPaneDoubleClick(ev)) return;
+    if (openObjectContextPanels(ev)) return;
     ev.preventDefault();
     resetSharedTimeScaleToDefault();
     resetMainPanePriceScales();
@@ -1274,6 +1263,29 @@ export function mountStockChartPage() {
     document.addEventListener('pointercancel', levelDragEndDoc, true);
   }
 
+  var lastObjClickTime = 0;
+  var lastObjClickId = null;
+  /** Set while a deferred object property panel open is pending (avoids mousedown close race). */
+  var objectPropsPanelOpening = false;
+
+  function scheduleOpenObjectPropertyPanel(ev) {
+    objectPropsPanelOpening = true;
+    var synth = {
+      type: 'dblclick',
+      clientX: ev.clientX,
+      clientY: ev.clientY,
+      target: ev.target,
+      preventDefault: function() {}
+    };
+    setTimeout(function () {
+      try {
+        openObjectContextPanels(synth);
+      } finally {
+        objectPropsPanelOpening = false;
+      }
+    }, 0);
+  }
+
   function mainWrapPointerDownCapture(ev) {
     if (!mainChart || !candleSeries) return;
     var wrap = document.getElementById('sc-main-wrap');
@@ -1284,6 +1296,25 @@ export function mountStockChartPage() {
     var px = wp.px;
     var py = wp.py;
     var wid = wp.wid;
+
+    if (chartAllowsObjectSelection() && ev.button === 0 && !tlRmbDrag && tlAnchors.length === 0 && !drawingLevel && !isAltDrawingModeActive()) {
+      var hitId = hitTestTrendlineIds(px, py, wid) || hitTestLevelId(px, py) || hitTestIndicatorId(px, py);
+      if (hitId) {
+        var now = Date.now();
+        if (hitId === lastObjClickId && (now - lastObjClickTime) < 400) {
+          lastObjClickTime = 0;
+          lastObjClickId = null;
+          ev.preventDefault();
+          ev.stopPropagation();
+          scheduleOpenObjectPropertyPanel(ev);
+          return;
+        }
+        lastObjClickTime = now;
+        lastObjClickId = hitId;
+      } else {
+        lastObjClickId = null;
+      }
+    }
 
     if (chartAllowsObjectSelection() && ev.button === 0 && !tlRmbDrag && tlAnchors.length === 0 && !drawingLevel && !isAltDrawingModeActive()) {
       var lid = hitTestLevelId(px, py);
@@ -1310,7 +1341,7 @@ export function mountStockChartPage() {
     if (chartAllowsObjectSelection() && ev.button === 0 && !tlRmbDrag && tlAnchors.length === 0 && !drawingLevel && !isAltDrawingModeActive()) {
       var iid = hitTestIndicatorId(px, py);
       if (iid) {
-        setSelectedInd(iid === selectedIndId ? null : iid);
+        setSelectedInd(iid);
         ev.preventDefault();
         ev.stopPropagation();
         return;
@@ -1320,7 +1351,16 @@ export function mountStockChartPage() {
 
   function handleMainWrapClickCapture(ev) {
     if (!mainChart || !candleSeries || !chartAllowsObjectSelection()) return;
-    if (ev.detail !== 1) return;
+    if (ev.detail !== 1) {
+      var w = document.getElementById('sc-main-wrap');
+      if (w && w.contains(ev.target)) {
+        var wp2 = wrapPixelFromClient(ev.clientX, ev.clientY);
+        if (wp2 && (hitTestTrendlineIds(wp2.px, wp2.py, wp2.wid) || hitTestLevelId(wp2.px, wp2.py) || hitTestIndicatorId(wp2.px, wp2.py))) {
+          ev.stopPropagation();
+        }
+      }
+      return;
+    }
     var wrap = document.getElementById('sc-main-wrap');
     if (!wrap || !wrap.contains(ev.target)) return;
     if (ev.target.closest && ev.target.closest('.sc-panel')) return;
@@ -1755,12 +1795,12 @@ export function mountStockChartPage() {
   }
 
   function openObjectContextPanels(ev) {
-    if (!chartAllowsObjectSelection() || !mainChart || !candleSeries) return;
+    if (!chartAllowsObjectSelection() || !mainChart || !candleSeries) return false;
     var wrap = document.getElementById('sc-main-wrap');
-    if (!wrap || !wrap.contains(ev.target)) return;
-    if (ev.target.closest && ev.target.closest('.sc-panel')) return;
+    if (!wrap || !wrap.contains(ev.target)) return false;
+    if (ev.target.closest && ev.target.closest('.sc-panel')) return false;
     var wp = wrapPixelFromClient(ev.clientX, ev.clientY);
-    if (!wp) return;
+    if (!wp) return false;
     var px = wp.px;
     var py = wp.py;
     var wid = wp.wid;
@@ -1775,7 +1815,7 @@ export function mountStockChartPage() {
         positionPanelAtClient(p, ev.clientX, ev.clientY);
       }
       ev.preventDefault();
-      return;
+      return true;
     }
     var lvlHit = hitTestLevelId(px, py);
     if (lvlHit) {
@@ -1788,7 +1828,7 @@ export function mountStockChartPage() {
         positionPanelAtClient(pl, ev.clientX, ev.clientY);
       }
       ev.preventDefault();
-      return;
+      return true;
     }
     var indHit = hitTestIndicatorId(px, py);
     if (indHit) {
@@ -1801,14 +1841,15 @@ export function mountStockChartPage() {
         positionPanelAtClient(pi, ev.clientX, ev.clientY);
       }
       ev.preventDefault();
-      return;
+      return true;
     }
 
-    if (chartInteractionMode === MODE_NONE || chartInteractionMode === MODE_INSPECT) {
+    if (ev.type === 'contextmenu' && (chartInteractionMode === MODE_NONE || chartInteractionMode === MODE_INSPECT)) {
       var priceHint = coordinateToPriceExtrapolated(py);
       showMainContextMenu(ev.clientX, ev.clientY, priceHint, true);
       ev.preventDefault();
     }
+    return false;
   }
 
   function bindMainWrapOverlayInteraction() {
@@ -4213,6 +4254,7 @@ export function mountStockChartPage() {
       var t = ev.target;
       if (t.closest && t.closest('.sc-panel')) return;
       if (isPanelOpenTrigger(t)) return;
+      if (objectPropsPanelOpening) return;
       closeAllPanels(null);
     });
   }
