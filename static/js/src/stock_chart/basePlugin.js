@@ -22,8 +22,9 @@ export function rgbaFromHex(hex, alpha) {
   return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
 }
 
-export function hexToRgba(hex, alpha) {
-  if (!hex || typeof hex !== 'string') return 'rgba(34, 197, 94, ' + alpha + ')';
+export function hexToRgba(hex, alpha, fallbackRgba) {
+  var defaultFallback = fallbackRgba || 'rgba(148, 163, 184, ' + alpha + ')';
+  if (!hex || typeof hex !== 'string') return defaultFallback;
   if (hex.startsWith('#')) {
     if (hex.length === 4) hex = '#' + hex[1] + hex[1] + hex[2] + hex[2] + hex[3] + hex[3];
     var r = parseInt(hex.slice(1, 3), 16) || 0;

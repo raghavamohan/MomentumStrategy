@@ -25,6 +25,15 @@ _PROFILE_CACHE_LOCK = threading.Lock()
 _PROFILE_CACHE_TTL_SECONDS = 600.0
 _PROFILE_CACHE_VALUE: dict[str, Any] = {}
 _PROFILE_CACHE_EXPIRES_AT = 0.0
+
+_PORTFOLIO_CACHE_LOCK = threading.Lock()
+_PORTFOLIO_CACHE_TTL_SECONDS = 15.0
+_PORTFOLIO_CACHE_EQUITY_HOLDINGS: list[dict[str, Any]] | None = None
+_PORTFOLIO_CACHE_EQUITY_HOLDINGS_EXPIRES_AT = 0.0
+_PORTFOLIO_CACHE_POSITIONS: dict[str, Any] | None = None
+_PORTFOLIO_CACHE_POSITIONS_EXPIRES_AT = 0.0
+_PORTFOLIO_CACHE_MARGINS: dict[str, Any] | None = None
+_PORTFOLIO_CACHE_MARGINS_EXPIRES_AT = 0.0
 _QUOTE_CACHE_LOCK = threading.Lock()
 _QUOTE_CACHE_DAY = ""
 _QUOTE_CACHE: dict[str, dict[str, Any]] = {}
@@ -125,6 +134,63 @@ def get_cached_profile(kite) -> dict[str, Any]:
         _PROFILE_CACHE_VALUE.update(profile)
         _PROFILE_CACHE_EXPIRES_AT = now + _PROFILE_CACHE_TTL_SECONDS
         return dict(_PROFILE_CACHE_VALUE)
+
+
+def get_cached_equity_holdings(kite) -> list[dict[str, Any]]:
+    """Return equity holdings cached for a short TTL to speed up dashboard nav."""
+    global _PORTFOLIO_CACHE_EQUITY_HOLDINGS_EXPIRES_AT, _PORTFOLIO_CACHE_EQUITY_HOLDINGS
+    now = time.time()
+    with _PORTFOLIO_CACHE_LOCK:
+        if now < _PORTFOLIO_CACHE_EQUITY_HOLDINGS_EXPIRES_AT and _PORTFOLIO_CACHE_EQUITY_HOLDINGS is not None:
+            return list(_PORTFOLIO_CACHE_EQUITY_HOLDINGS)
+    try:
+        val = kite.holdings() or []
+    except Exception as exc:
+        if isinstance(exc, (PermissionException, TokenException)):
+            raise
+        val = []
+    with _PORTFOLIO_CACHE_LOCK:
+        _PORTFOLIO_CACHE_EQUITY_HOLDINGS = list(val)
+        _PORTFOLIO_CACHE_EQUITY_HOLDINGS_EXPIRES_AT = now + _PORTFOLIO_CACHE_TTL_SECONDS
+        return list(_PORTFOLIO_CACHE_EQUITY_HOLDINGS)
+
+
+def get_cached_positions(kite) -> dict[str, Any]:
+    """Return positions cached for a short TTL to speed up dashboard nav."""
+    global _PORTFOLIO_CACHE_POSITIONS_EXPIRES_AT, _PORTFOLIO_CACHE_POSITIONS
+    now = time.time()
+    with _PORTFOLIO_CACHE_LOCK:
+        if now < _PORTFOLIO_CACHE_POSITIONS_EXPIRES_AT and _PORTFOLIO_CACHE_POSITIONS is not None:
+            return dict(_PORTFOLIO_CACHE_POSITIONS)
+    try:
+        val = kite.positions() or {}
+    except Exception as exc:
+        if isinstance(exc, (PermissionException, TokenException)):
+            raise
+        val = {}
+    with _PORTFOLIO_CACHE_LOCK:
+        _PORTFOLIO_CACHE_POSITIONS = dict(val)
+        _PORTFOLIO_CACHE_POSITIONS_EXPIRES_AT = now + _PORTFOLIO_CACHE_TTL_SECONDS
+        return dict(_PORTFOLIO_CACHE_POSITIONS)
+
+
+def get_cached_margins(kite, segment: str = "equity") -> dict[str, Any]:
+    """Return margins cached for a short TTL to speed up dashboard nav."""
+    global _PORTFOLIO_CACHE_MARGINS_EXPIRES_AT, _PORTFOLIO_CACHE_MARGINS
+    now = time.time()
+    with _PORTFOLIO_CACHE_LOCK:
+        if now < _PORTFOLIO_CACHE_MARGINS_EXPIRES_AT and _PORTFOLIO_CACHE_MARGINS is not None:
+            return dict(_PORTFOLIO_CACHE_MARGINS)
+    try:
+        val = kite.margins(segment) or {}
+    except Exception as exc:
+        if isinstance(exc, (PermissionException, TokenException)):
+            raise
+        val = {}
+    with _PORTFOLIO_CACHE_LOCK:
+        _PORTFOLIO_CACHE_MARGINS = dict(val)
+        _PORTFOLIO_CACHE_MARGINS_EXPIRES_AT = now + _PORTFOLIO_CACHE_TTL_SECONDS
+        return dict(_PORTFOLIO_CACHE_MARGINS)
 
 
 def _decorate_mf_row(h: dict) -> dict:

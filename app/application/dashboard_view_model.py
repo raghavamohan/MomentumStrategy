@@ -38,7 +38,13 @@ from app.presentation.http.server_config import (
     DASHBOARD_SNAPSHOT_INTERVAL_MS,
     dashboard_timing_logger,
 )
-from app.infrastructure.services.dashboard_caches import get_cached_profile, get_cached_quotes
+from app.infrastructure.services.dashboard_caches import (
+    get_cached_profile,
+    get_cached_quotes,
+    get_cached_equity_holdings,
+    get_cached_positions,
+    get_cached_margins,
+)
 from app.infrastructure.cache.nse_provider import get_nifty50_symbols
 
 logger = logging.getLogger(__name__)
@@ -255,9 +261,9 @@ async def build_dashboard_view_model(
     mf_error: str | None = None
     kite_api_permission_error: str | None = None
     with ThreadPoolExecutor(max_workers=6) as pool:
-        future_equity = pool.submit(kite.holdings)
-        future_positions = pool.submit(kite.positions)
-        future_margins = pool.submit(kite.margins, "equity")
+        future_equity = pool.submit(get_cached_equity_holdings, kite)
+        future_positions = pool.submit(get_cached_positions, kite)
+        future_margins = pool.submit(get_cached_margins, kite, "equity")
         future_market_condition = pool.submit(get_marketsmith_market_condition)
         future_profile = pool.submit(get_cached_profile, kite)
         future_quotes = pool.submit(get_cached_quotes, kite, quote_keys)

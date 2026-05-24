@@ -154,15 +154,21 @@ def _persist(cache_day: str) -> None:
         "entries": _MEMORY,
     }
     try:
-        _CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = _CACHE_FILE.with_suffix(".tmp")
-        tmp.write_text(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n",
-            encoding="utf-8",
-        )
-        tmp.replace(_CACHE_FILE)
-    except OSError as exc:
-        logger.warning("stock_history_cache: could not write %s: %s", _CACHE_FILE, exc)
+        data_str = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+    except Exception as exc:
+        logger.warning("stock_history_cache: could not serialize payload: %s", exc)
+        return
+
+    def _write_file() -> None:
+        try:
+            _CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            tmp = _CACHE_FILE.with_suffix(".tmp")
+            tmp.write_text(data_str, encoding="utf-8")
+            tmp.replace(_CACHE_FILE)
+        except OSError as exc:
+            logger.warning("stock_history_cache: could not write %s: %s", _CACHE_FILE, exc)
+
+    threading.Thread(target=_write_file, daemon=True).start()
 
 
 def _slice_candles_by_days(
@@ -173,8 +179,8 @@ def _slice_candles_by_days(
     if not candles or days <= 0:
         return []
     cutoff = datetime.now(_IST) - timedelta(days=days)
-    cutoff_key = cutoff.strftime("%Y-%m-%d")
     is_intraday = interval != "day"
+    cutoff_key = cutoff.strftime("%Y-%m-%dT%H:%M:%S") if is_intraday else cutoff.strftime("%Y-%m-%d")
     out: list[dict[str, Any]] = []
     for row in candles:
         date_val = str(row.get("date") or "")
