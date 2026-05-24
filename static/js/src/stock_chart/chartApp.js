@@ -1064,6 +1064,10 @@ export function mountStockChartPage() {
       chartInteractionMode === MODE_OBJECTS;
   }
 
+  function isInspectAltLevelPlace(ev) {
+    return !!ev && ev.altKey && chartInteractionMode === MODE_INSPECT;
+  }
+
   function deleteSelectedTrendline() {
     if (!selectedTlId) return;
     endTlRmbDrag();
@@ -1493,7 +1497,7 @@ export function mountStockChartPage() {
     var py = wp.py;
     var wid = wp.wid;
 
-    if (chartAllowsObjectSelection() && ev.button === 0 && !tlRmbDrag && tlAnchors.length === 0 && !drawingLevel && !isAltDrawingModeActive()) {
+    if (chartAllowsObjectSelection() && ev.button === 0 && !tlRmbDrag && tlAnchors.length === 0 && !drawingLevel && !isAltDrawingModeActive() && !isInspectAltLevelPlace(ev)) {
       var hitId = hitTestTrendlineIds(px, py, wid) || hitTestLevelId(px, py) || hitTestIndicatorId(px, py);
       if (hitId) {
         var now = Date.now();
@@ -1512,7 +1516,7 @@ export function mountStockChartPage() {
       }
     }
 
-    if (chartAllowsObjectSelection() && ev.button === 0 && !tlRmbDrag && tlAnchors.length === 0 && !drawingLevel && !isAltDrawingModeActive()) {
+    if (chartAllowsObjectSelection() && ev.button === 0 && !tlRmbDrag && tlAnchors.length === 0 && !drawingLevel && !isAltDrawingModeActive() && !isInspectAltLevelPlace(ev)) {
       var lid = hitTestLevelId(px, py);
       if (lid) {
         var hitTl = hitTestTrendlineIds(px, py, wid);
@@ -1530,11 +1534,11 @@ export function mountStockChartPage() {
       }
     }
 
-    if (chartAllowsObjectSelection()) {
+    if (chartAllowsObjectSelection() && !isInspectAltLevelPlace(ev)) {
       if (tryBeginTrendlineDragFromPointerDown(ev, px, py, wid, wrap)) return;
     }
 
-    if (chartAllowsObjectSelection() && ev.button === 0 && !tlRmbDrag && tlAnchors.length === 0 && !drawingLevel && !isAltDrawingModeActive()) {
+    if (chartAllowsObjectSelection() && ev.button === 0 && !tlRmbDrag && tlAnchors.length === 0 && !drawingLevel && !isAltDrawingModeActive() && !isInspectAltLevelPlace(ev)) {
       var iid = hitTestIndicatorId(px, py);
       if (iid) {
         setSelectedInd(iid);
@@ -1547,6 +1551,7 @@ export function mountStockChartPage() {
 
   function handleMainWrapClickCapture(ev) {
     if (!mainChart || !candleSeries || !chartAllowsObjectSelection()) return;
+    if (isInspectAltLevelPlace(ev)) return;
     if (ev.detail !== 1) {
       var w = document.getElementById('sc-main-wrap');
       if (w && w.contains(ev.target)) {
@@ -2794,12 +2799,7 @@ export function mountStockChartPage() {
   function placeHorizontalLevel(price, styleOverrides) {
     var levelPrice = Number(price);
     if (!isFinite(levelPrice) || hasLevelAtPrice(levelPrice)) return false;
-    var cfg = Object.assign({
-      color: '#cbd5e1',
-      style: 'solid',
-      width: 2,
-      label: ''
-    }, styleOverrides || {});
+    var cfg = Object.assign({}, levelPlugin.defaultOptions || {}, styleOverrides || {});
     levels.push({
       id: uid(),
       price: levelPrice,
@@ -2842,17 +2842,12 @@ export function mountStockChartPage() {
           tgt.closest('select') || tgt.closest('textarea') || tgt.closest('.sc-panel'))) {
         return;
       }
-      var wrap = document.getElementById('sc-main-wrap');
-      if (wrap && mainChart && candleSeries) {
-        var r = wrap.getBoundingClientRect();
-        var px = ev.clientX - r.left;
-        var py = ev.clientY - r.top;
-        var wid = wrap.clientWidth;
-        if (hitTestTrendlineIds(px, py, wid) || hitTestLevelId(px, py) || hitTestIndicatorId(px, py)) return;
-      }
       if (!crosshairLastSnap || crosshairLastSnap.price == null || !isFinite(crosshairLastSnap.price)) return;
       if (!candleSeries) return;
-      placeHorizontalLevel(crosshairLastSnap.price);
+      if (placeHorizontalLevel(crosshairLastSnap.price)) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
     };
     el.addEventListener('click', crosshairSnapClick);
   }

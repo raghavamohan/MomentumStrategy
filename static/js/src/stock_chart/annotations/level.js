@@ -8,7 +8,8 @@ export const levelPlugin = {
   id: 'LEVEL',
   name: 'Horizontal Level',
   chipLabel: 'Lv',
-  editableProperties: LEVEL_PROPERTIES
+  editableProperties: LEVEL_PROPERTIES,
+  defaultOptions: { color: '#cbd5e1', style: 'dashed', width: 1, label: '' }
 };
 
 export function getLevelEditableFields() {
