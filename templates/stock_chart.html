@@ -18,9 +18,10 @@
 .sc-ivbtn{min-height:44px;padding:8px 12px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--muted);font-size:13px;font-weight:600;cursor:pointer;transition:all .15s}
 .sc-ivbtn:hover{background:var(--surface-2);color:var(--text)}
 .sc-ivbtn.active{background:var(--accent);border-color:var(--accent);color:#fff}
-.sc-controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.sc-controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center;width:100%}
 .sc-plugin-toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .sc-control-btn{min-height:44px;padding:8px 12px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:13px;cursor:pointer;transition:all .15s;display:inline-flex;align-items:center;gap:6px}
+.sc-control-btn u{text-decoration:underline;text-underline-offset:2px}
 .sc-control-btn:hover{background:var(--surface-2)}
 .sc-control-btn.active{background:var(--accent);border-color:var(--accent);color:#fff}
 .sc-help{font-size:12px;color:var(--muted);line-height:1.45;margin:0 0 var(--space-3);padding:10px 12px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--surface-2)}
@@ -86,7 +87,7 @@
   </div>
 
   <div id="sc-quick-controls" class="sc-quick-controls">
-    <button type="button" class="sc-control-btn" id="sc-mode-inspect" aria-pressed="false" aria-keyshortcuts="I" title="Inspect (I): toggle inspect mode. Shows crosshair with OHLC/MA snap and RSI sync. Alt+Click places a level at snap.">Inspect</button>
+    <button type="button" class="sc-control-btn" id="sc-mode-inspect" aria-pressed="false" aria-keyshortcuts="I" title="Inspect (I): toggle inspect mode. Shows crosshair with OHLC/MA snap and RSI sync. Alt+Click places a level at snap."><span><u>I</u>nspect</span></button>
     <label class="sc-control-btn" style="cursor:pointer">
       <input type="checkbox" id="sc-show-vol" checked style="margin-right:4px">Vol
     </label>
@@ -107,7 +108,7 @@
     </div>
     <div class="sc-controls">
       <div id="sc-plugin-toolbar" class="sc-plugin-toolbar"></div>
-      <button type="button" class="sc-control-btn sc-draw-btn" data-draw-type="LEVEL" aria-pressed="false" title="Add Horizontal Level: toggle level draw mode and click chart to place exact price. In Inspect mode, use Alt+Click for OHLC/MA snap.">+ Level</button>
+      <button type="button" class="sc-control-btn sc-draw-btn" data-draw-type="LEVEL" aria-pressed="false" title="Add Horizontal Level: toggle level draw mode and click chart to place exact price. In Inspect mode, use Alt+Click for OHLC/MA snap."><span>+ <u>L</u>evel</span></button>
     </div>
   </div>
 
@@ -191,6 +192,9 @@
     <ul class="sc-help-list">
       <li><strong>Hover</strong>: shows tooltip values for candle/indicators.</li>
       <li><strong>I</strong>: toggle Inspect mode.</li>
+      <li><strong>L / T</strong>: toggle Level / Trendline drawing modes.</li>
+      <li><strong>FR / PC</strong>: draw Fib Retracement / Parallel Channel.</li>
+      <li><strong>FB / SM / EM / ST</strong>: add indicators (Fib Bands, SMA, EMA, SuperTrend).</li>
       <li><strong>Alt+Click</strong> in Inspect: add level at OHLC/MA snap.</li>
       <li><strong>Right-click</strong>: open add menu (Level, drawings, indicators).</li>
       <li><strong>+ Level</strong>: enter level draw mode, click chart to place exact price.</li>

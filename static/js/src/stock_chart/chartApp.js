@@ -688,12 +688,23 @@ export function mountStockChartPage() {
     } else {
       mainCxCfg = { mode: hiddenMode };
     }
-    var rsiCxMode = inInspectMode ? magnetMode : hiddenMode;
+    var rsiCxCfg;
+    if (inInspectMode) {
+      rsiCxCfg = { mode: magnetMode };
+    } else if (inBrowseMode) {
+      rsiCxCfg = {
+        mode: normalMode,
+        vertLine: { visible: true, color: 'rgba(148,163,184,0.25)', width: 1, style: 2, labelVisible: false },
+        horzLine: { visible: false, labelVisible: false }
+      };
+    } else {
+      rsiCxCfg = { mode: hiddenMode };
+    }
     if (mainChart) {
       try { mainChart.applyOptions({ crosshair: mainCxCfg }); } catch (_) {}
     }
     if (rsiChart) {
-      try { rsiChart.applyOptions({ crosshair: { mode: rsiCxMode } }); } catch (_) {}
+      try { rsiChart.applyOptions({ crosshair: rsiCxCfg }); } catch (_) {}
     }
     bindCrosshairOhlcSnapDom();
     var mainHost = document.getElementById('sc-main-chart');
@@ -2914,7 +2925,7 @@ export function mountStockChartPage() {
 
   function syncRsiCrosshairFromMain(param) {
     if (!rsiChart || !rsiLineSeries) return;
-    if (chartInteractionMode !== MODE_INSPECT) return;
+    if (chartInteractionMode === MODE_OBJECTS) return;
     if (typeof rsiChart.setCrosshairPosition !== 'function') return;
     if (crosshairSyncGuard === 2) return;
     if (!param || !param.point) {
@@ -2939,7 +2950,7 @@ export function mountStockChartPage() {
 
   function syncMainCrosshairFromRsi(param) {
     if (!mainChart || !candleSeries) return;
-    if (chartInteractionMode !== MODE_INSPECT) return;
+    if (chartInteractionMode === MODE_OBJECTS) return;
     if (typeof mainChart.setCrosshairPosition !== 'function') return;
     if (crosshairSyncGuard === 1) return;
     if (!param || !param.point) {
@@ -4197,9 +4208,13 @@ export function mountStockChartPage() {
     return !!(el.closest('#sc-tooltip-btn') || el.closest('#sc-help-btn'));
   }
 
+  var keySeq = '';
+  var keySeqTimer = null;
+
   function setupGlobalUiHandlers() {
     document.addEventListener('keydown', function (ev) {
       if (ev.key === 'Escape') {
+        keySeq = '';
         closeAllPanels(null);
         clearObjectSelections();
         if (chartInteractionMode === MODE_OBJECTS || chartInteractionMode === MODE_INSPECT) {
@@ -4207,19 +4222,86 @@ export function mountStockChartPage() {
         }
         return;
       }
-      if ((ev.key === 'i' || ev.key === 'I') && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
-        if (isTypingTarget(ev.target)) return;
-        ev.preventDefault();
-        setChartInteractionMode(MODE_INSPECT);
+
+      if (ev.ctrlKey || ev.metaKey || ev.altKey || isTypingTarget(ev.target)) return;
+
+      if (ev.key === 'Delete' || ev.key === 'Backspace') {
+        if (chartAllowsObjectSelection()) {
+          ev.preventDefault();
+          if (selectedTlId) deleteSelectedTrendline();
+          else if (selectedLevelId) deleteSelectedLevel();
+          else if (selectedIndId) deleteSelectedInd();
+        }
         return;
       }
-      if ((ev.key === 'Delete' || ev.key === 'Backspace') && chartAllowsObjectSelection()) {
-        if (isTypingTarget(ev.target)) return;
-        ev.preventDefault();
-        if (selectedTlId) deleteSelectedTrendline();
-        else if (selectedLevelId) deleteSelectedLevel();
-        else if (selectedIndId) deleteSelectedInd();
-        return;
+
+      if (ev.key.length === 1 && ev.key.match(/[a-zA-Z]/)) {
+        var k = ev.key.toUpperCase();
+        keySeq += k;
+        if (keySeqTimer) clearTimeout(keySeqTimer);
+
+        var handled = false;
+        var multiKeyPrefixes = { 'F': 1, 'P': 1, 'S': 1, 'E': 1 };
+
+        if (keySeq === 'I') {
+          ev.preventDefault();
+          setChartInteractionMode(MODE_INSPECT);
+          handled = true;
+        } else if (keySeq === 'L') {
+          ev.preventDefault();
+          if (chartInteractionMode === MODE_OBJECTS && drawingLevel) {
+            setChartInteractionMode(MODE_NONE);
+          } else {
+            beginLevelDrawing();
+          }
+          handled = true;
+        } else if (keySeq === 'T') {
+          ev.preventDefault();
+          if (chartInteractionMode === MODE_OBJECTS && getActiveDrawType() === 'TRENDLINE' && !drawingLevel) {
+            setChartInteractionMode(MODE_NONE);
+          } else {
+            beginObjectDrawing('TRENDLINE');
+          }
+          handled = true;
+        } else if (keySeq === 'FR') {
+          ev.preventDefault();
+          if (chartInteractionMode === MODE_OBJECTS && getActiveDrawType() === 'FIB' && !drawingLevel) {
+            setChartInteractionMode(MODE_NONE);
+          } else {
+            beginObjectDrawing('FIB');
+          }
+          handled = true;
+        } else if (keySeq === 'PC') {
+          ev.preventDefault();
+          if (chartInteractionMode === MODE_OBJECTS && getActiveDrawType() === 'PARALLEL_CHANNEL' && !drawingLevel) {
+            setChartInteractionMode(MODE_NONE);
+          } else {
+            beginObjectDrawing('PARALLEL_CHANNEL');
+          }
+          handled = true;
+        } else if (keySeq === 'FB') {
+          ev.preventDefault();
+          addIndicatorFromContext('FIB', {});
+          handled = true;
+        } else if (keySeq === 'SM') {
+          ev.preventDefault();
+          addIndicatorFromContext('SMA', {});
+          handled = true;
+        } else if (keySeq === 'EM') {
+          ev.preventDefault();
+          addIndicatorFromContext('EMA', {});
+          handled = true;
+        } else if (keySeq === 'ST') {
+          ev.preventDefault();
+          addIndicatorFromContext('SUPERTREND', {});
+          handled = true;
+        }
+
+        if (handled || !multiKeyPrefixes[keySeq]) {
+          keySeq = '';
+        } else {
+          keySeqTimer = setTimeout(function() { keySeq = ''; }, 600);
+        }
       }
     });
 
@@ -4261,22 +4343,40 @@ export function mountStockChartPage() {
       var btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'sc-control-btn ' + cls;
-      btn.textContent = label;
+      btn.innerHTML = '<span>' + label + '</span>';
       if (title) btn.title = title;
       return btn;
     }
 
+    function formatPluginLabel(rawLabel, id, type) {
+      if (type === 'ind') {
+        if (id === 'FIB') return '<u>F</u>ib <u>B</u>ands';
+        if (id === 'SMA') return '<u>SM</u>A';
+        if (id === 'EMA') return '<u>EM</u>A';
+        if (id === 'SUPERTREND') return '<u>S</u>uper<u>T</u>rend';
+      } else if (type === 'draw') {
+        if (id === 'FIB') return '<u>F</u>ib <u>R</u>etracement';
+        if (id === 'PARALLEL_CHANNEL') return '<u>P</u>arallel <u>C</u>hannel';
+        if (id === 'TRENDLINE') return '<u>T</u>rendline';
+      }
+      return rawLabel;
+    }
+
     getAddableIndicatorPlugins().forEach(function (plugin) {
-      var label = '+ ' + indicatorAddLabel(plugin);
-      var title = plugin.toolbarTitle || ('Add ' + indicatorAddLabel(plugin) + ' Indicator');
+      var rawLabel = indicatorAddLabel(plugin);
+      var formatted = formatPluginLabel(rawLabel, plugin.id, 'ind');
+      var label = '+ ' + formatted;
+      var title = plugin.toolbarTitle || ('Add ' + rawLabel + ' Indicator');
       var btn = makeBtn('sc-add-ind-btn', label, title);
       btn.setAttribute('data-ind-type', plugin.id);
       host.appendChild(btn);
     });
 
     getAddableDrawingPlugins().forEach(function (plugin) {
-      var drawLabel = '+ ' + drawingAddLabel(plugin);
-      var drawTitle = plugin.toolbarTitle || ('Add ' + drawingAddLabel(plugin));
+      var rawLabel = drawingAddLabel(plugin);
+      var formatted = formatPluginLabel(rawLabel, plugin.id, 'draw');
+      var drawLabel = '+ ' + formatted;
+      var drawTitle = plugin.toolbarTitle || ('Add ' + rawLabel);
       var btn = makeBtn('sc-draw-btn', drawLabel, drawTitle);
       btn.setAttribute('data-draw-type', plugin.id);
       btn.setAttribute('aria-pressed', 'false');
