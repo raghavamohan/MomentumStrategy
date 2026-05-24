@@ -1,13 +1,14 @@
 import { indicatorRegistry } from '../indicatorRegistry.js';
 import { BaseIndicator } from '../basePlugin.js';
 import { INDICATOR_STD_PROPERTIES } from '../propertyFields.js';
+import { DEFAULT_LINE_WIDTH } from '../constants.js';
 
 export class RsiIndicator extends BaseIndicator {
   constructor() {
     super({
       id: 'RSI',
       name: 'Relative Strength Index',
-      defaultOptions: { period: 14, color: '#c084fc', lineWidth: 2, style: 'solid' },
+      defaultOptions: { period: 14, color: '#c084fc', lineWidth: DEFAULT_LINE_WIDTH, style: 'solid' },
       isOscillator: true,
       userAddable: false,
       editableProperties: INDICATOR_STD_PROPERTIES

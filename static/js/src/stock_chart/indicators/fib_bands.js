@@ -1,6 +1,7 @@
 import { indicatorRegistry } from '../indicatorRegistry.js';
-import { BaseIndicator, fibBandColorMap, indicatorGlowColor, styleToLw } from '../basePlugin.js';
+import { BaseIndicator, fibBandColorMap, indicatorGlowColor, styleToLw, resolveLineWidth } from '../basePlugin.js';
 import { INDICATOR_STD_PROPERTIES } from '../propertyFields.js';
+import { DEFAULT_LINE_WIDTH } from '../constants.js';
 
 export class FibBandsIndicator extends BaseIndicator {
   constructor() {
@@ -10,7 +11,7 @@ export class FibBandsIndicator extends BaseIndicator {
       addLabel: 'Fib Bands',
       periodLabel: 'Lookback (candles)',
       bandKeys: ['l1000', 'l786', 'l618', 'l500', 'l382', 'l236', 'l0'],
-      defaultOptions: { period: 20, color: '#94a3b8', lineWidth: 1, style: 'dashed' },
+      defaultOptions: { period: 20, color: '#94a3b8', lineWidth: DEFAULT_LINE_WIDTH, style: 'dashed' },
       editableProperties: [
         { id: 'period', label: 'Lookback (candles)' },
         'color',
@@ -23,6 +24,7 @@ export class FibBandsIndicator extends BaseIndicator {
   createSeries(chart, options) {
     var bands = ['l1000', 'l786', 'l618', 'l500', 'l382', 'l236', 'l0'];
     var lineStyle = styleToLw(options.style);
+    var lw = resolveLineWidth(options.lineWidth);
     
     var seriesObj = {
       bands: {},
@@ -33,7 +35,7 @@ export class FibBandsIndicator extends BaseIndicator {
     bands.forEach(function(band) {
       seriesObj.bands[band] = chart.addLineSeries({
         color: options.color,
-        lineWidth: options.lineWidth,
+        lineWidth: lw,
         lineStyle: lineStyle,
         crosshairMarkerVisible: false,
         lastValueVisible: false,
@@ -41,7 +43,7 @@ export class FibBandsIndicator extends BaseIndicator {
       });
       seriesObj.glowBands[band] = chart.addLineSeries({
         color: 'transparent',
-        lineWidth: Math.max(12, options.lineWidth + 8),
+        lineWidth: Math.max(12, lw + 8),
         lineStyle: 0,
         crosshairMarkerVisible: false,
         lastValueVisible: false,
@@ -88,7 +90,7 @@ export class FibBandsIndicator extends BaseIndicator {
 
   syncSelection(seriesObj, selected, options) {
     var bands = ['l1000', 'l786', 'l618', 'l500', 'l382', 'l236', 'l0'];
-    var lw = Math.max(1, Math.min(8, Number(options.lineWidth) || 1));
+    var lw = resolveLineWidth(options.lineWidth);
     var ls = styleToLw(options.style);
     var colors = fibBandColorMap(options);
 

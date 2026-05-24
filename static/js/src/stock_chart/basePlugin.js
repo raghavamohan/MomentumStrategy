@@ -1,3 +1,5 @@
+import { DEFAULT_LINE_WIDTH } from './constants.js';
+
 export function normalizeHexColor(color, fallback) {
   fallback = fallback || '#94a3b8';
   if (typeof color !== 'string') return fallback;
@@ -66,9 +68,13 @@ export function fibBandColorMap(ind) {
   };
 }
 
+export function resolveLineWidth(width) {
+  return Math.max(1, Math.min(8, Number(width) || DEFAULT_LINE_WIDTH));
+}
+
 export function createStandardIndicatorSeries(chart, options) {
   var lineStyle = styleToLw(options.style);
-  var lw = Math.max(1, Math.min(8, Number(options.lineWidth) || 2));
+  var lw = resolveLineWidth(options.lineWidth);
 
   var mainSeries = chart.addLineSeries({
     color: options.color || '#f59e0b',
@@ -97,7 +103,7 @@ export function updateStandardIndicatorSeries(seriesObj, data) {
 }
 
 export function syncStandardSelection(seriesObj, selected, options) {
-  var lw = Math.max(1, Math.min(8, Number(options.lineWidth) || 2));
+  var lw = resolveLineWidth(options.lineWidth);
   var ls = styleToLw(options.style);
   
   if (seriesObj.mainSeries) {

@@ -1,13 +1,14 @@
 import { indicatorRegistry } from '../indicatorRegistry.js';
 import { BaseIndicator } from '../basePlugin.js';
 import { INDICATOR_STD_PROPERTIES } from '../propertyFields.js';
+import { DEFAULT_LINE_WIDTH } from '../constants.js';
 
 export class SmaIndicator extends BaseIndicator {
   constructor() {
     super({
       id: 'SMA',
       name: 'Simple Moving Average',
-      defaultOptions: { period: 21, color: '#f59e0b', lineWidth: 2, style: 'solid' },
+      defaultOptions: { period: 21, color: '#f59e0b', lineWidth: DEFAULT_LINE_WIDTH, style: 'solid' },
       editableProperties: INDICATOR_STD_PROPERTIES
     });
   }

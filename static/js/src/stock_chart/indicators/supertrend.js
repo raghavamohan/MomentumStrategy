@@ -1,22 +1,24 @@
 import { indicatorRegistry } from '../indicatorRegistry.js';
-import { BaseIndicator, hexToRgba, getStandardTooltip } from '../basePlugin.js';
+import { BaseIndicator, hexToRgba, getStandardTooltip, resolveLineWidth } from '../basePlugin.js';
 import { SUPERTREND_PROPERTIES } from '../propertyFields.js';
+import { DEFAULT_LINE_WIDTH } from '../constants.js';
 
 export class SuperTrendIndicator extends BaseIndicator {
   constructor() {
     super({
       id: 'SUPERTREND',
       name: 'SuperTrend',
-      defaultOptions: { period: 20, multiplier: 3, upColor: '#22c55e', downColor: '#ef4444', lineWidth: 2, style: 'solid' },
+      defaultOptions: { period: 20, multiplier: 3, upColor: '#22c55e', downColor: '#ef4444', lineWidth: DEFAULT_LINE_WIDTH, style: 'solid' },
       editableProperties: SUPERTREND_PROPERTIES
     });
   }
 
   createSeries(chart, options) {
     var lineStyle = options.style === 'dashed' ? 2 : (options.style === 'dotted' ? 3 : 0);
+    var lw = resolveLineWidth(options.lineWidth);
     var mainSeries = chart.addLineSeries({
       color: options.upColor || '#22c55e',
-      lineWidth: options.lineWidth,
+      lineWidth: lw,
       lineStyle: lineStyle,
       crosshairMarkerVisible: false,
       lastValueVisible: false,
@@ -24,7 +26,7 @@ export class SuperTrendIndicator extends BaseIndicator {
     });
     var glowSeries = chart.addLineSeries({
       color: 'transparent',
-      lineWidth: Math.min(16, options.lineWidth + 5),
+      lineWidth: Math.min(16, lw + 5),
       visible: false,
       crosshairMarkerVisible: false,
       lastValueVisible: false,
@@ -138,7 +140,7 @@ export class SuperTrendIndicator extends BaseIndicator {
   }
 
   syncSelection(seriesObj, selected, options) {
-    var lw = options.lineWidth || 2;
+    var lw = resolveLineWidth(options.lineWidth);
     var lineStyle = options.style === 'dashed' ? 2 : (options.style === 'dotted' ? 3 : 0);
 
     if (seriesObj.mainSeries) {

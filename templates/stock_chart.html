@@ -27,6 +27,9 @@
 .sc-help{font-size:12px;color:var(--muted);line-height:1.45;margin:0 0 var(--space-3);padding:10px 12px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--surface-2)}
 .sc-help-list{margin:0;padding-left:18px;color:var(--text);font-size:12px;line-height:1.5}
 .sc-help-list li{margin:0 0 4px}
+.sc-help-section{list-style:none;margin:10px 0 4px -18px;padding:0;font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.sc-help-section:first-child{margin-top:0}
+.sc-help-list kbd{display:inline-block;padding:0 4px;border-radius:4px;border:1px solid var(--border);background:var(--surface);font-size:11px;font-family:inherit;line-height:1.4}
 .sc-quote-bar{display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:8px 12px;border-bottom:1px solid var(--border);font-size:13px;background:var(--surface-2)}
 .sc-quote-bar[hidden]{display:none!important}
 .sc-live-dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex-shrink:0}
@@ -177,18 +180,30 @@
     </div>
   </div>
 
-  <div id="sc-help-panel" class="sc-panel" role="dialog" aria-modal="true" aria-labelledby="sc-help-panel-title" hidden style="top:120px;right:20px;max-width:360px">
-    <h3 id="sc-help-panel-title">Chart interactions</h3>
+  <div id="sc-help-panel" class="sc-panel" role="dialog" aria-modal="true" aria-labelledby="sc-help-panel-title" hidden style="top:120px;right:20px;max-width:400px">
+    <h3 id="sc-help-panel-title">Chart help</h3>
     <ul class="sc-help-list">
-      <li><strong>Hover</strong>: shows tooltip values for candle/indicators.</li>
-      <li><strong>I</strong>: toggle Inspect mode.</li>
-      <li><strong>L / T</strong>: toggle Level / Trendline drawing modes.</li>
-      <li><strong>FR / PC</strong>: draw Fib Retracement / Parallel Channel.</li>
-      <li><strong>FB / SM / EM / ST</strong>: add indicators (Fib Bands, SMA, EMA, SuperTrend).</li>
-      <li><strong>Alt+Click</strong> in Inspect: add level at OHLC/MA snap.</li>
-      <li><strong>Right-click</strong>: open add menu (Level, drawings, indicators).</li>
-      <li><strong>+ Level</strong>: enter level draw mode, click chart to place exact price.</li>
-      <li><strong>Esc</strong>: exit Inspect/cancel drawing and close open panels.</li>
+      <li class="sc-help-section">Modes</li>
+      <li><strong>Hover</strong> — tooltip for candle, volume, and overlays (use the <strong>Tooltip</strong> button to choose fields).</li>
+      <li><strong>Inspect</strong> (<kbd>I</kbd> or toolbar) — crosshair snaps to OHLC and MA values; RSI pane stays in sync.</li>
+      <li><strong>Draw</strong> (<kbd>L</kbd>, <kbd>T</kbd>, <kbd>FR</kbd>, <kbd>PC</kbd>, or toolbar) — place levels and drawings; crosshair is hidden while drawing.</li>
+      <li class="sc-help-section">Keyboard shortcuts</li>
+      <li><kbd>I</kbd> — toggle Inspect mode on/off.</li>
+      <li><kbd>L</kbd> — toggle Level draw mode (click chart for exact price; new levels default to dashed, width 1).</li>
+      <li><kbd>T</kbd> — toggle Trendline draw mode (two clicks: press, then click).</li>
+      <li><kbd>FR</kbd> — toggle Fib Retracement draw mode (two clicks).</li>
+      <li><kbd>PC</kbd> — toggle Parallel Channel draw mode (three clicks).</li>
+      <li><kbd>FB</kbd>, <kbd>SM</kbd>, <kbd>EM</kbd>, <kbd>ST</kbd> — add Fib Bands, SMA, EMA, or SuperTrend (type the pair within ~0.6s).</li>
+      <li><kbd>Alt</kbd>+<strong>Click</strong> (Inspect only) — place a level at the snapped OHLC/MA price (preferred over selecting indicators).</li>
+      <li><kbd>Delete</kbd> / <kbd>Backspace</kbd> — remove the selected indicator, level, or drawing.</li>
+      <li><kbd>Esc</kbd> — exit Inspect/draw mode, cancel in-progress drawing, close panels, and clear selection.</li>
+      <li class="sc-help-section">Objects &amp; chart</li>
+      <li><strong>Click</strong> an object — select it (indicator line, level, or drawing).</li>
+      <li><strong>Double-click</strong> an object or its chip — open the property panel.</li>
+      <li><strong>Drag</strong> a level — change price; <strong>drag</strong> trendline handles — reshape.</li>
+      <li><strong>Double-click</strong> empty chart or RSI pane — reset zoom to default.</li>
+      <li><strong>Right-click</strong> the chart — add menu (level, drawings, indicators) or object properties when over a hit target; save/copy chart image.</li>
+      <li>Press the same draw shortcut again (<kbd>L</kbd>, <kbd>T</kbd>, <kbd>FR</kbd>, <kbd>PC</kbd>) to exit draw mode.</li>
     </ul>
     <div class="sc-panel-btns">
       <button type="button" class="sc-btn-secondary" id="sc-help-close">Close</button>

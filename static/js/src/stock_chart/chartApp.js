@@ -6,6 +6,7 @@ import {
   RSI_SHOW_KEY,
   RSI_PERIOD,
   MAX_MAIN_INDICATORS,
+  DEFAULT_LINE_WIDTH,
   DEFAULT_MAIN_INDICATORS,
   SAVE_DEBOUNCE_MS,
   WS_RECONNECT_MS,
@@ -19,7 +20,7 @@ import {
 } from './constants.js';
 import { indicatorRegistry } from './indicatorRegistry.js';
 import { drawingRegistry } from './drawingRegistry.js';
-import { rgbaFromHex, indicatorGlowColor, styleToLw, normalizeHexColor } from './basePlugin.js';
+import { rgbaFromHex, indicatorGlowColor, styleToLw, normalizeHexColor, resolveLineWidth } from './basePlugin.js';
 import { resolveEditableFields } from './propertyFields.js';
 import { renderPropertyFields, populatePropertyFields, readPropertyFields } from './propertyPanel.js';
 import { levelPlugin } from './annotations/level.js';
@@ -312,7 +313,7 @@ export function mountStockChartPage() {
     row.type = normalizeIndicatorType(row.type);
     row.period = Math.max(2, Math.min(200, parseInt(row.period, 10) || 20));
     row.color = typeof row.color === 'string' && row.color ? row.color : '#f59e0b';
-    row.lineWidth = Math.max(1, Math.min(8, Number(row.lineWidth) || 2));
+    row.lineWidth = resolveLineWidth(row.lineWidth);
     row.style = row.style || 'solid';
     row.visible = row.visible !== false;
     row.series = null;
@@ -426,7 +427,7 @@ export function mountStockChartPage() {
       out.type = type;
       out.period = Math.max(2, Math.min(200, parseInt(out.period, 10) || parseInt(defaults.period, 10) || 20));
       out.color = typeof out.color === 'string' && out.color ? out.color : (defaults.color || '#f59e0b');
-      out.lineWidth = Math.max(1, Math.min(8, Number(out.lineWidth) || Number(defaults.lineWidth) || 2));
+      out.lineWidth = resolveLineWidth(out.lineWidth != null ? out.lineWidth : defaults.lineWidth);
       out.style = out.style || defaults.style || 'solid';
       out.visible = out.visible !== false;
       return out;
@@ -1235,7 +1236,7 @@ export function mountStockChartPage() {
   }
 
   function indicatorHitPx(ind, selected) {
-    var lw = Math.max(1, Math.min(8, Number(ind.lineWidth) || 2));
+    var lw = resolveLineWidth(ind.lineWidth);
     var hitPx = IND_HIT_PX + lw / 2;
     if (selected) {
       if (isBandIndicator(ind)) hitPx += lw / 2 + 2;
@@ -2196,7 +2197,7 @@ export function mountStockChartPage() {
 
     rsiLineSeries = rsiChart.addLineSeries({
       color: '#a78bfa',
-      lineWidth: 1,
+      lineWidth: DEFAULT_LINE_WIDTH,
       priceLineVisible: false,
       lastValueVisible: true
     });
@@ -2290,6 +2291,7 @@ export function mountStockChartPage() {
         trendlines.forEach(function (tl) {
           tl.extended = tl.extended === true;
           if (!tl.style) tl.style = 'solid';
+          if (!tl.width) tl.width = DEFAULT_LINE_WIDTH;
           if (!tl.id) tl.id = uid();
           tl.type = normalizeDrawingType(tl.type || 'TRENDLINE');
         });
@@ -3296,7 +3298,7 @@ export function mountStockChartPage() {
              draftPixels.x3 = tlPreviewPx.x;
              draftPixels.y3 = tlPreviewPx.y;
            }
-           plugin.draw(ctx, { color: 'rgba(250,204,21,.75)', style: 'dashed', width: 2 }, draftPixels, { selected: false, width: w });
+           plugin.draw(ctx, { color: 'rgba(250,204,21,.75)', style: 'dashed', width: DEFAULT_LINE_WIDTH }, draftPixels, { selected: false, width: w });
         }
       }
     }
@@ -3515,7 +3517,7 @@ export function mountStockChartPage() {
           time3: tlAnchors.length >= 2 ? pt.time : null,
           price3: tlAnchors.length >= 2 ? pt.price : null,
           color: '#f59e0b',
-          width: 1,
+          width: DEFAULT_LINE_WIDTH,
           style: 'solid',
           label: '',
           extended: false,
@@ -3869,7 +3871,7 @@ export function mountStockChartPage() {
       if (!ind) return false;
       if (ind.type !== def.type || ind.period !== def.period) return false;
       if ((ind.color || '') !== def.color) return false;
-      if ((Number(ind.lineWidth) || 2) !== def.lineWidth) return false;
+      if ((Number(ind.lineWidth) || DEFAULT_LINE_WIDTH) !== def.lineWidth) return false;
       if ((ind.style || 'solid') !== def.style) return false;
       if (ind.visible === false) return false;
     }
