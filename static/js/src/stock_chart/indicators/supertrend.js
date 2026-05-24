@@ -7,20 +7,8 @@ export const SuperTrendIndicator = {
 
   createSeries: function(chart, options) {
     var lineStyle = options.style === 'dashed' ? 2 : (options.style === 'dotted' ? 3 : 0);
-    // SuperTrend often changes color based on trend, but lineSeries only has a single color.
-    // To support up/down colors, we can either use two line series, or let Lightweight Charts 
-    // handle it if it supports per-bar colors for lines (it does not directly, only for some series types).
-    // The easiest way is to use two line series.
-    var upSeries = chart.addLineSeries({
-      color: options.upColor || '#22c55e',
-      lineWidth: options.lineWidth,
-      lineStyle: lineStyle,
-      crosshairMarkerVisible: false,
-      lastValueVisible: false,
-      priceLineVisible: false
-    });
-    var downSeries = chart.addLineSeries({
-      color: options.downColor || '#ef4444',
+    var mainSeries = chart.addLineSeries({
+      color: options.upColor || '#22c55e', // default fallback color
       lineWidth: options.lineWidth,
       lineStyle: lineStyle,
       crosshairMarkerVisible: false,
@@ -34,96 +22,107 @@ export const SuperTrendIndicator = {
       lastValueVisible: false,
       priceLineVisible: false
     });
-    return { mainSeries: upSeries, upSeries, downSeries, glowSeries };
+    return { mainSeries: mainSeries, glowSeries: glowSeries };
   },
 
   calculate: function(bars, options) {
     var period = parseInt(options.period, 10);
     var multiplier = parseFloat(options.multiplier);
-    var out = { upData: [], downData: [], tooltipData: [] };
+    var out = { mainData: [], tooltipData: [] };
 
-    if (bars.length < period) return out;
+    if (bars.length <= period) return out;
 
-    var atrVals = [];
-    // Calculate True Range and ATR
+    var trueRanges = [];
     for (var i = 1; i < bars.length; i++) {
       var tr = Math.max(
         bars[i].high - bars[i].low,
         Math.abs(bars[i].high - bars[i - 1].close),
         Math.abs(bars[i].low - bars[i - 1].close)
       );
-      atrVals.push(tr);
+      trueRanges.push(tr);
     }
 
-    var atr = 0;
-    var finalUpperBand = 0;
-    var finalLowerBand = 0;
-    var superTrend = 0;
-    var prevSuperTrend = 0;
+    var initialTrSum = 0;
+    for (var j = 0; j < period; j++) {
+      initialTrSum += trueRanges[j];
+    }
+    var atr = initialTrSum / period;
+
     var prevFinalUpperBand = 0;
     var prevFinalLowerBand = 0;
     var dir = 1;
+    var prevDir = 1;
 
     for (var i = period; i < bars.length; i++) {
-      var trSum = 0;
-      for (var j = i - period; j < i; j++) {
-        trSum += atrVals[j];
+      var currentTr = trueRanges[i - 1];
+      
+      // Wilder's Smoothing (RMA) for ATR
+      if (i > period) {
+        atr = (atr * (period - 1) + currentTr) / period;
       }
-      atr = trSum / period;
 
-      var basicUpperBand = (bars[i].high + bars[i].low) / 2 + multiplier * atr;
-      var basicLowerBand = (bars[i].high + bars[i].low) / 2 - multiplier * atr;
+      var hl2 = (bars[i].high + bars[i].low) / 2;
+      var basicUpperBand = hl2 + multiplier * atr;
+      var basicLowerBand = hl2 - multiplier * atr;
+      
+      var finalUpperBand, finalLowerBand;
 
-      if (basicUpperBand < prevFinalUpperBand || bars[i - 1].close > prevFinalUpperBand) {
-        finalUpperBand = basicUpperBand;
+      if (i === period) {
+         finalUpperBand = basicUpperBand;
+         finalLowerBand = basicLowerBand;
+         dir = bars[i].close > finalUpperBand ? 1 : -1;
       } else {
-        finalUpperBand = prevFinalUpperBand;
+        if (basicUpperBand < prevFinalUpperBand || bars[i - 1].close > prevFinalUpperBand) {
+          finalUpperBand = basicUpperBand;
+        } else {
+          finalUpperBand = prevFinalUpperBand;
+        }
+
+        if (basicLowerBand > prevFinalLowerBand || bars[i - 1].close < prevFinalLowerBand) {
+          finalLowerBand = basicLowerBand;
+        } else {
+          finalLowerBand = prevFinalLowerBand;
+        }
+        
+        if (dir === -1 && bars[i].close > finalUpperBand) {
+          dir = 1;
+        } else if (dir === 1 && bars[i].close < finalLowerBand) {
+          dir = -1;
+        }
       }
 
-      if (basicLowerBand > prevFinalLowerBand || bars[i - 1].close < prevFinalLowerBand) {
-        finalLowerBand = basicLowerBand;
-      } else {
-        finalLowerBand = prevFinalLowerBand;
+      var superTrend = (dir === 1) ? finalLowerBand : finalUpperBand;
+      var pointColor = (dir === 1) ? (options.upColor || '#22c55e') : (options.downColor || '#ef4444');
+      
+      if (dir !== prevDir && i > period && out.mainData.length > 0) {
+        // In Lightweight Charts, the 'color' property of a point colors the segment
+        // from that point to the NEXT point.
+        // When the trend flips, we want the segment from the PREVIOUS point to THIS point
+        // to be invisible. So we must retroactively change the previous point's color.
+        out.mainData[out.mainData.length - 1].color = 'transparent';
       }
+      
+      var pt = { time: bars[i].time, value: superTrend, color: pointColor };
+      
+      out.mainData.push(pt);
+      out.tooltipData.push(pt);
 
-      if (superTrend === prevFinalUpperBand && bars[i].close <= finalUpperBand) {
-        dir = -1;
-      } else if (superTrend === prevFinalUpperBand && bars[i].close > finalUpperBand) {
-        dir = 1;
-      } else if (superTrend === prevFinalLowerBand && bars[i].close >= finalLowerBand) {
-        dir = 1;
-      } else if (superTrend === prevFinalLowerBand && bars[i].close < finalLowerBand) {
-        dir = -1;
-      }
-
-      if (dir === 1) superTrend = finalLowerBand;
-      else superTrend = finalUpperBand;
-
-      out.tooltipData.push({ time: bars[i].time, value: superTrend });
-      if (dir === 1) {
-        out.upData.push({ time: bars[i].time, value: superTrend });
-      } else {
-        out.downData.push({ time: bars[i].time, value: superTrend });
-      }
-
-      prevSuperTrend = superTrend;
       prevFinalUpperBand = finalUpperBand;
       prevFinalLowerBand = finalLowerBand;
+      prevDir = dir;
     }
 
     return out;
   },
 
   updateSeries: function(seriesObj, data) {
-    if (seriesObj.upSeries) seriesObj.upSeries.setData(data.upData);
-    if (seriesObj.downSeries) seriesObj.downSeries.setData(data.downData);
+    if (seriesObj.mainSeries) seriesObj.mainSeries.setData(data.mainData);
     if (seriesObj.glowSeries) seriesObj.glowSeries.setData(data.tooltipData);
   },
 
   getTooltip: function(seriesObj, seriesDataMap, options) {
-    var sd1 = seriesDataMap.get(seriesObj.upSeries);
-    var sd2 = seriesDataMap.get(seriesObj.downSeries);
-    var val = (sd1 && sd1.value != null) ? sd1.value : (sd2 && sd2.value != null ? sd2.value : null);
+    var sd = seriesDataMap.get(seriesObj.mainSeries);
+    var val = (sd && sd.value != null) ? sd.value : null;
     if (val != null) {
       return { label: 'SuperTrend(' + options.period + ',' + options.multiplier + ')', value: val };
     }
@@ -136,22 +135,12 @@ export const SuperTrendIndicator = {
   },
 
   syncSelection: function(seriesObj, selected, options) {
-    var upCol = selected ? '#f59e0b' : (options.upColor || '#22c55e');
-    var downCol = selected ? '#f59e0b' : (options.downColor || '#ef4444');
     var lw = options.lineWidth || 2;
     var finalLw = selected ? Math.min(8, lw + 2) : lw;
     var lineStyle = options.style === 'dashed' ? 2 : (options.style === 'dotted' ? 3 : 0);
 
-    if (seriesObj.upSeries) {
-      seriesObj.upSeries.applyOptions({
-        color: upCol,
-        lineWidth: finalLw,
-        lineStyle: lineStyle
-      });
-    }
-    if (seriesObj.downSeries) {
-      seriesObj.downSeries.applyOptions({
-        color: downCol,
+    if (seriesObj.mainSeries) {
+      seriesObj.mainSeries.applyOptions({
         lineWidth: finalLw,
         lineStyle: lineStyle
       });
