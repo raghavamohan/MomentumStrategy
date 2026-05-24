@@ -66,10 +66,6 @@ export function fibBandColorMap(ind) {
   };
 }
 
-// ---------------------------------------------------------
-// Standard Lightweight Charts Helpers
-// ---------------------------------------------------------
-
 export function createStandardIndicatorSeries(chart, options) {
   var lineStyle = styleToLw(options.style);
   var lw = Math.max(1, Math.min(8, Number(options.lineWidth) || 2));
@@ -133,10 +129,6 @@ export function getStandardTooltip(seriesObj, seriesDataMap, labelText) {
   return null;
 }
 
-// ---------------------------------------------------------
-// Standard Canvas Drawing Helpers
-// ---------------------------------------------------------
-
 export function applyCanvasMainStyle(ctx, color, baseLineWidth, styleString) {
   ctx.strokeStyle = color || '#f59e0b';
   ctx.lineWidth = Math.max(1, Number(baseLineWidth) || 1);
@@ -153,4 +145,81 @@ export function applyCanvasGlowStyle(ctx, color, baseLineWidth) {
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   ctx.setLineDash([]);
+}
+
+// ---------------------------------------------------------
+// Base Indicator Plugin
+// ---------------------------------------------------------
+
+export class BaseIndicator {
+  constructor(config) {
+    this.id = config.id;
+    this.name = config.name;
+    this.defaultOptions = config.defaultOptions || {};
+    this.isOscillator = !!config.isOscillator;
+    this.userAddable = config.userAddable !== false;
+    this.addLabel = config.addLabel || config.name;
+    this.periodLabel = config.periodLabel;
+    this.bandKeys = config.bandKeys;
+  }
+
+  createSeries(chart, options) {
+    return createStandardIndicatorSeries(chart, options);
+  }
+
+  updateSeries(seriesObj, data) {
+    updateStandardIndicatorSeries(seriesObj, data);
+  }
+
+  syncSelection(seriesObj, selected, options) {
+    syncStandardSelection(seriesObj, selected, options);
+  }
+
+  getTooltip(seriesObj, seriesDataMap, options) {
+    return getStandardTooltip(seriesObj, seriesDataMap, this.id + (options.period || ''));
+  }
+
+  calculate(bars, options) {
+    return [];
+  }
+}
+
+// ---------------------------------------------------------
+// Base Drawing Plugin
+// ---------------------------------------------------------
+
+export class BaseDrawing {
+  constructor(config) {
+    this.id = config.id;
+    this.name = config.name;
+    this.addLabel = config.addLabel || config.name;
+    this.chipLabel = config.chipLabel || config.id;
+    this.pointsNeeded = config.pointsNeeded || 2;
+    this.hitTestMode = config.hitTestMode;
+  }
+
+  draw(ctx, objectState, pixels, options) {
+    var sel = options.selected;
+    var baseLw = objectState.width;
+
+    if (typeof this.drawBackground === 'function') {
+      this.drawBackground(ctx, objectState, pixels, options);
+    }
+
+    if (typeof this.drawShape === 'function') {
+      applyCanvasMainStyle(ctx, objectState.color, baseLw, objectState.style);
+      this.drawShape(ctx, pixels, options, objectState);
+
+      if (sel) {
+        ctx.save();
+        applyCanvasGlowStyle(ctx, objectState.color, baseLw);
+        this.drawShape(ctx, pixels, options, objectState);
+        ctx.restore();
+      }
+    }
+
+    if (typeof this.drawLabels === 'function') {
+      this.drawLabels(ctx, objectState, pixels, options);
+    }
+  }
 }

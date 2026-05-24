@@ -19,7 +19,7 @@ import {
 } from './constants.js';
 import { indicatorRegistry } from './indicatorRegistry.js';
 import { drawingRegistry } from './drawingRegistry.js';
-import { rgbaFromHex, indicatorGlowColor, styleToLw, normalizeHexColor } from './visualUtils.js';
+import { rgbaFromHex, indicatorGlowColor, styleToLw, normalizeHexColor } from './basePlugin.js';
 import './indicators/sma.js';
 import './indicators/ema.js';
 import './indicators/rsi.js';

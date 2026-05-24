@@ -1,15 +1,19 @@
 import { indicatorRegistry } from '../indicatorRegistry.js';
-import { fibBandColorMap, indicatorGlowColor, styleToLw } from '../visualUtils.js';
+import { BaseIndicator, fibBandColorMap, indicatorGlowColor, styleToLw } from '../basePlugin.js';
 
-export const FibBandsIndicator = {
-  id: 'FIB',
-  name: 'Rolling Fibonacci Bands',
-  addLabel: 'Fib Bands',
-  periodLabel: 'Lookback (candles)',
-  bandKeys: ['l1000', 'l786', 'l618', 'l500', 'l382', 'l236', 'l0'],
-  defaultOptions: { period: 20, color: '#94a3b8', lineWidth: 1, style: 'dashed' },
+export class FibBandsIndicator extends BaseIndicator {
+  constructor() {
+    super({
+      id: 'FIB',
+      name: 'Rolling Fibonacci Bands',
+      addLabel: 'Fib Bands',
+      periodLabel: 'Lookback (candles)',
+      bandKeys: ['l1000', 'l786', 'l618', 'l500', 'l382', 'l236', 'l0'],
+      defaultOptions: { period: 20, color: '#94a3b8', lineWidth: 1, style: 'dashed' }
+    });
+  }
 
-  createSeries: function(chart, options) {
+  createSeries(chart, options) {
     var bands = ['l1000', 'l786', 'l618', 'l500', 'l382', 'l236', 'l0'];
     var lineStyle = styleToLw(options.style);
     
@@ -40,9 +44,9 @@ export const FibBandsIndicator = {
     });
 
     return seriesObj;
-  },
+  }
 
-  calculate: function(bars, options) {
+  calculate(bars, options) {
     var period = parseInt(options.period, 10);
     var out = { l0: [], l236: [], l382: [], l500: [], l618: [], l786: [], l1000: [] };
     
@@ -65,17 +69,17 @@ export const FibBandsIndicator = {
       out.l1000.push({ time: t, value: maxH });
     }
     return out;
-  },
+  }
 
-  updateSeries: function(seriesObj, data) {
+  updateSeries(seriesObj, data) {
     var bands = ['l1000', 'l786', 'l618', 'l500', 'l382', 'l236', 'l0'];
     bands.forEach(function(band) {
       if (seriesObj.bands[band]) seriesObj.bands[band].setData(data[band] || []);
       if (seriesObj.glowBands[band]) seriesObj.glowBands[band].setData(data[band] || []);
     });
-  },
+  }
 
-  syncSelection: function(seriesObj, selected, options) {
+  syncSelection(seriesObj, selected, options) {
     var bands = ['l1000', 'l786', 'l618', 'l500', 'l382', 'l236', 'l0'];
     var lw = Math.max(1, Math.min(8, Number(options.lineWidth) || 1));
     var ls = styleToLw(options.style);
@@ -101,11 +105,11 @@ export const FibBandsIndicator = {
         });
       }
     });
-  },
+  }
 
-  getTooltip: function(seriesObj, seriesDataMap, options) {
+  getTooltip(seriesObj, seriesDataMap, options) {
     return { label: 'FIB ' + options.period, value: '' };
   }
-};
+}
 
-indicatorRegistry.register(FibBandsIndicator);
+indicatorRegistry.register(new FibBandsIndicator());

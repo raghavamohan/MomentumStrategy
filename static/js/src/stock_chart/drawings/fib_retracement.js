@@ -1,16 +1,20 @@
 import { drawingRegistry } from '../drawingRegistry.js';
-import { applyCanvasMainStyle, applyCanvasGlowStyle } from '../visualUtils.js';
+import { BaseDrawing, applyCanvasMainStyle, applyCanvasGlowStyle } from '../basePlugin.js';
 
-export const FibRetracementDrawing = {
-  id: 'FIB',
-  name: 'Fib Retracement',
-  addLabel: 'Fib Retracement',
-  chipLabel: 'Fib',
-  hitTestMode: 'horizontalLevels',
-  pointsNeeded: 2,
-  draw: function(ctx, objectState, pixels, options) {
+export class FibRetracementDrawing extends BaseDrawing {
+  constructor() {
+    super({
+      id: 'FIB',
+      name: 'Fib Retracement',
+      addLabel: 'Fib Retracement',
+      chipLabel: 'Fib',
+      hitTestMode: 'horizontalLevels',
+      pointsNeeded: 2
+    });
+  }
+
+  draw(ctx, objectState, pixels, options) {
     var sel = !!options.selected;
-    var lw = Math.max(1, Number(objectState.width) || 1);
     var diffY = pixels.y2 - pixels.y1;
     var fibs = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
     var colorMap = ['#f59e0b', '#a855f7', '#3b82f6', '#ef4444', '#22c55e', '#94a3b8', '#f59e0b'];
@@ -54,6 +58,6 @@ export const FibRetracementDrawing = {
       }
     });
   }
-};
+}
 
-drawingRegistry.register(FibRetracementDrawing);
+drawingRegistry.register(new FibRetracementDrawing());

@@ -1,12 +1,16 @@
 import { indicatorRegistry } from '../indicatorRegistry.js';
-import { hexToRgba, getStandardTooltip } from '../visualUtils.js';
+import { BaseIndicator, hexToRgba, getStandardTooltip } from '../basePlugin.js';
 
-export const SuperTrendIndicator = {
-  id: 'SUPERTREND',
-  name: 'SuperTrend',
-  defaultOptions: { period: 20, multiplier: 3, upColor: '#22c55e', downColor: '#ef4444', lineWidth: 2, style: 'solid' },
+export class SuperTrendIndicator extends BaseIndicator {
+  constructor() {
+    super({
+      id: 'SUPERTREND',
+      name: 'SuperTrend',
+      defaultOptions: { period: 20, multiplier: 3, upColor: '#22c55e', downColor: '#ef4444', lineWidth: 2, style: 'solid' }
+    });
+  }
 
-  createSeries: function(chart, options) {
+  createSeries(chart, options) {
     var lineStyle = options.style === 'dashed' ? 2 : (options.style === 'dotted' ? 3 : 0);
     var mainSeries = chart.addLineSeries({
       color: options.upColor || '#22c55e',
@@ -25,9 +29,9 @@ export const SuperTrendIndicator = {
       priceLineVisible: false
     });
     return { mainSeries: mainSeries, glowSeries: glowSeries };
-  },
+  }
 
-  calculate: function(bars, options) {
+  calculate(bars, options) {
     var period = parseInt(options.period, 10);
     var multiplier = parseFloat(options.multiplier);
     var out = { mainData: [], tooltipData: [], glowData: [] };
@@ -103,7 +107,6 @@ export const SuperTrendIndicator = {
       }
       
       var pt = { time: bars[i].time, value: superTrend, color: pointColor };
-      // glowPt has NO per-point color normally, falling back to series color
       var glowPt = { time: bars[i].time, value: superTrend };
       
       out.mainData.push(pt);
@@ -116,41 +119,49 @@ export const SuperTrendIndicator = {
     }
 
     return out;
-  },
+  }
 
-  updateSeries: function(seriesObj, data) {
+  updateSeries(seriesObj, data) {
     if (seriesObj.mainSeries) seriesObj.mainSeries.setData(data.mainData);
     if (seriesObj.glowSeries) seriesObj.glowSeries.setData(data.glowData || []);
-  },
+  }
 
-  getTooltip: function(seriesObj, seriesDataMap, options) {
+  getTooltip(seriesObj, seriesDataMap, options) {
     return getStandardTooltip(seriesObj, seriesDataMap, 'SuperTrend(' + options.period + ',' + options.multiplier + ')');
-  },
+  }
 
-  getPrimarySeriesData: function(data) {
+  getPrimarySeriesData(data) {
     if (data && Array.isArray(data.tooltipData)) return data.tooltipData;
     return [];
-  },
+  }
 
-  syncSelection: function(seriesObj, selected, options) {
+  syncSelection(seriesObj, selected, options) {
     var lw = options.lineWidth || 2;
     var lineStyle = options.style === 'dashed' ? 2 : (options.style === 'dotted' ? 3 : 0);
 
     if (seriesObj.mainSeries) {
       seriesObj.mainSeries.applyOptions({
-        lineWidth: lw, // Do NOT thicken the main line on selection!
-        lineStyle: lineStyle
+        lineWidth: lw,
+        lineStyle: lineStyle,
+        visible: options.visible !== false,
+        lastValueVisible: true,
+        priceLineVisible: false
       });
     }
+
     if (seriesObj.glowSeries) {
       var seriesColor = hexToRgba(options.color || options.upColor || '#22c55e', 0.33);
       seriesObj.glowSeries.applyOptions({
         color: selected ? seriesColor : 'transparent',
-        visible: !!selected,
-        lineWidth: Math.min(16, lw + 5)
+        lineWidth: Math.min(16, lw + 5),
+        lineStyle: 0,
+        visible: !!selected && options.visible !== false,
+        crosshairMarkerVisible: false,
+        lastValueVisible: false,
+        priceLineVisible: false
       });
     }
   }
-};
+}
 
-indicatorRegistry.register(SuperTrendIndicator);
+indicatorRegistry.register(new SuperTrendIndicator());

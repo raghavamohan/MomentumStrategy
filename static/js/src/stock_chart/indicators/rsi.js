@@ -1,18 +1,18 @@
 import { indicatorRegistry } from '../indicatorRegistry.js';
-import { createStandardIndicatorSeries, updateStandardIndicatorSeries, syncStandardSelection, getStandardTooltip } from '../visualUtils.js';
+import { BaseIndicator } from '../basePlugin.js';
 
-export const RsiIndicator = {
-  id: 'RSI',
-  name: 'Relative Strength Index',
-  defaultOptions: { period: 14, color: '#c084fc', lineWidth: 2, style: 'solid' },
-  isOscillator: true,
-  userAddable: false,
+export class RsiIndicator extends BaseIndicator {
+  constructor() {
+    super({
+      id: 'RSI',
+      name: 'Relative Strength Index',
+      defaultOptions: { period: 14, color: '#c084fc', lineWidth: 2, style: 'solid' },
+      isOscillator: true,
+      userAddable: false
+    });
+  }
 
-  createSeries: function(chart, options) {
-    return createStandardIndicatorSeries(chart, options);
-  },
-
-  calculate: function(bars, options) {
+  calculate(bars, options) {
     var period = parseInt(options.period, 10);
     var out = [];
     var prefixCount = Math.min(period, bars.length);
@@ -34,19 +34,7 @@ export const RsiIndicator = {
       out.push({ time: bars[i].time, value: al === 0 ? 100 : 100 - 100 / (1 + ag / al) });
     }
     return out;
-  },
-
-  updateSeries: function(seriesObj, data) {
-    updateStandardIndicatorSeries(seriesObj, data);
-  },
-
-  syncSelection: function(seriesObj, selected, options) {
-    syncStandardSelection(seriesObj, selected, options);
-  },
-
-  getTooltip: function(seriesObj, seriesDataMap, options) {
-    return getStandardTooltip(seriesObj, seriesDataMap, 'RSI' + options.period);
   }
-};
+}
 
-indicatorRegistry.register(RsiIndicator);
+indicatorRegistry.register(new RsiIndicator());
