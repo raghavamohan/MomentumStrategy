@@ -14,15 +14,18 @@
 .sc-toolbar-right .button{min-height:44px;padding:10px 14px;display:inline-flex;align-items:center}
 .sc-interval-bar{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:var(--space-3)}
 .sc-intervals{display:flex;gap:4px;flex-wrap:wrap}
+.sc-quick-controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:var(--space-3)}
 .sc-ivbtn{min-height:44px;padding:8px 12px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--muted);font-size:13px;font-weight:600;cursor:pointer;transition:all .15s}
 .sc-ivbtn:hover{background:var(--surface-2);color:var(--text)}
 .sc-ivbtn.active{background:var(--accent);border-color:var(--accent);color:#fff}
-.sc-controls{display:flex;gap:8px;margin-left:auto;flex-wrap:wrap;align-items:center}
+.sc-controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .sc-plugin-toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .sc-control-btn{min-height:44px;padding:8px 12px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--text);font-size:13px;cursor:pointer;transition:all .15s;display:inline-flex;align-items:center;gap:6px}
 .sc-control-btn:hover{background:var(--surface-2)}
 .sc-control-btn.active{background:var(--accent);border-color:var(--accent);color:#fff}
 .sc-help{font-size:12px;color:var(--muted);line-height:1.45;margin:0 0 var(--space-3);padding:10px 12px;border-radius:var(--radius-md);border:1px solid var(--border);background:var(--surface-2)}
+.sc-help-list{margin:0;padding-left:18px;color:var(--text);font-size:12px;line-height:1.5}
+.sc-help-list li{margin:0 0 4px}
 .sc-quote-bar{display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:8px 12px;border-bottom:1px solid var(--border);font-size:13px;background:var(--surface-2)}
 .sc-quote-bar[hidden]{display:none!important}
 .sc-live-dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex-shrink:0}
@@ -78,8 +81,18 @@
     <h1 id="sc-title">{{ stock_title }}</h1>
     <div class="sc-toolbar-right">
       <a id="sc-back" class="button secondary" href="/dashboard">← Dashboard</a>
-      <a class="button secondary" href="/logout">Logout</a>
+      <button type="button" id="sc-help-btn" class="button secondary" aria-haspopup="dialog" aria-expanded="false" title="Show chart interaction help">Help</button>
     </div>
+  </div>
+
+  <div id="sc-quick-controls" class="sc-quick-controls">
+    <button type="button" class="sc-control-btn" id="sc-mode-inspect" aria-pressed="false" aria-keyshortcuts="I" title="Inspect (I): toggle inspect mode. Shows crosshair with OHLC/MA snap and RSI sync. Alt+Click places a level at snap.">Inspect</button>
+    <label class="sc-control-btn" style="cursor:pointer">
+      <input type="checkbox" id="sc-show-vol" checked style="margin-right:4px">Vol
+    </label>
+    <label class="sc-control-btn" style="cursor:pointer">
+      <input type="checkbox" id="sc-show-rsi" checked style="margin-right:4px">RSI
+    </label>
   </div>
 
   <div class="sc-interval-bar">
@@ -93,15 +106,8 @@
       <button type="button" class="sc-ivbtn" data-iv="month">1M</button>
     </div>
     <div class="sc-controls">
-      <button type="button" class="sc-control-btn" id="sc-mode-crosshair" aria-pressed="false" title="Crosshair: snap vertically to OHLC and MAs at the bar under the cursor; click the chart to place a horizontal level. Turn off for pan/zoom and right-click add actions (Level, Trendline, SMA, EMA).">Crosshair</button>
       <div id="sc-plugin-toolbar" class="sc-plugin-toolbar"></div>
-      <button type="button" class="sc-control-btn sc-draw-btn" data-draw-type="LEVEL" aria-pressed="false" title="Add Horizontal Level (click to place)">+ Level</button>
-      <label class="sc-control-btn" style="cursor:pointer">
-        <input type="checkbox" id="sc-show-vol" checked style="margin-right:4px">Vol
-      </label>
-      <label class="sc-control-btn" style="cursor:pointer">
-        <input type="checkbox" id="sc-show-rsi" checked style="margin-right:4px">RSI
-      </label>
+      <button type="button" class="sc-control-btn sc-draw-btn" data-draw-type="LEVEL" aria-pressed="false" title="Add Horizontal Level: toggle level draw mode and click chart to place exact price. In Inspect mode, use Alt+Click for OHLC/MA snap.">+ Level</button>
     </div>
   </div>
 
@@ -179,6 +185,21 @@
       <button type="button" class="sc-btn-secondary" id="sc-lvl-cancel">Cancel</button>
     </div>
   </div>
+
+  <div id="sc-help-panel" class="sc-panel" role="dialog" aria-modal="true" aria-labelledby="sc-help-panel-title" hidden style="top:120px;right:20px;max-width:360px">
+    <h3 id="sc-help-panel-title">Chart interactions</h3>
+    <ul class="sc-help-list">
+      <li><strong>Hover</strong>: shows tooltip values for candle/indicators.</li>
+      <li><strong>I</strong>: toggle Inspect mode.</li>
+      <li><strong>Alt+Click</strong> in Inspect: add level at OHLC/MA snap.</li>
+      <li><strong>Right-click</strong>: open add menu (Level, drawings, indicators).</li>
+      <li><strong>+ Level</strong>: enter level draw mode, click chart to place exact price.</li>
+      <li><strong>Esc</strong>: exit Inspect/cancel drawing and close open panels.</li>
+    </ul>
+    <div class="sc-panel-btns">
+      <button type="button" class="sc-btn-secondary" id="sc-help-close">Close</button>
+    </div>
+  </div>
 </div>
 
 <textarea id="sc-bootstrap" hidden readonly>{{ stock_chart_bootstrap_json }}</textarea>
@@ -186,5 +207,5 @@
 
 {% block scripts %}
 <script src="/static/js/lightweight-charts.standalone.production.js"></script>
-<script src="/static/js/stock_chart.js?v=1.0.8"></script>
+<script src="/static/js/stock_chart.js?v=1.0.9"></script>
 {% endblock %}

@@ -13,7 +13,7 @@ import {
   IV_CFG,
   CHART_OPTS,
   MODE_NONE,
-  MODE_CROSSHAIR,
+  MODE_INSPECT,
   MODE_OBJECTS,
   FIB_LEVELS
 } from './constants.js';
@@ -605,6 +605,8 @@ export function mountStockChartPage() {
     var lvlE = document.getElementById('sc-lvl-edit-panel');
     var indE = document.getElementById('sc-ind-edit-panel');
     var addM = document.getElementById('sc-add-ctx-menu');
+    var helpP = document.getElementById('sc-help-panel');
+    var helpBtn = document.getElementById('sc-help-btn');
     if (except !== 'ind' && ind) ind.hidden = true;
     if (except !== 'lvl' && lvl) lvl.hidden = true;
     if (except !== 'tooltip' && tp) tp.hidden = true;
@@ -612,6 +614,11 @@ export function mountStockChartPage() {
     if (except !== 'lvlprops' && lvlE) lvlE.hidden = true;
     if (except !== 'indprops' && indE) indE.hidden = true;
     if (except !== 'addctx' && addM) addM.hidden = true;
+    if (except !== 'help' && helpP) helpP.hidden = true;
+    if (helpBtn) {
+      var expanded = helpP ? !helpP.hidden : false;
+      helpBtn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    }
   }
 
   function replaceChartUrlInterval() {
@@ -662,15 +669,35 @@ export function mountStockChartPage() {
     var magnetMode = LW && LW.CrosshairMode ? LW.CrosshairMode.Magnet : 1;
     /** Main: Normal (0) — we snap Y to OHLC + MAs ourselves; LW magnet on candles favors close only. */
     var normalMode = LW && LW.CrosshairMode ? LW.CrosshairMode.Normal : 0;
-    var mainCxMode = chartInteractionMode === MODE_CROSSHAIR ? normalMode : hiddenMode;
-    var rsiCxMode = chartInteractionMode === MODE_CROSSHAIR ? magnetMode : hiddenMode;
+    var inInspectMode = chartInteractionMode === MODE_INSPECT;
+    var inBrowseMode = chartInteractionMode === MODE_NONE;
+    var mainCxCfg = null;
+    if (inInspectMode) {
+      mainCxCfg = {
+        mode: normalMode,
+        vertLine: { visible: true, color: 'rgba(148,163,184,0.55)', width: 1, style: 2, labelVisible: false },
+        horzLine: { visible: true, color: 'rgba(148,163,184,0.45)', width: 1, style: 2, labelVisible: true }
+      };
+    } else if (inBrowseMode) {
+      // Keep a subtle vertical guide in browse mode for easier time/value inspection.
+      mainCxCfg = {
+        mode: normalMode,
+        vertLine: { visible: true, color: 'rgba(148,163,184,0.25)', width: 1, style: 2, labelVisible: false },
+        horzLine: { visible: false, labelVisible: false }
+      };
+    } else {
+      mainCxCfg = { mode: hiddenMode };
+    }
+    var rsiCxMode = inInspectMode ? magnetMode : hiddenMode;
     if (mainChart) {
-      try { mainChart.applyOptions({ crosshair: { mode: mainCxMode } }); } catch (_) {}
+      try { mainChart.applyOptions({ crosshair: mainCxCfg }); } catch (_) {}
     }
     if (rsiChart) {
       try { rsiChart.applyOptions({ crosshair: { mode: rsiCxMode } }); } catch (_) {}
     }
     bindCrosshairOhlcSnapDom();
+    var mainHost = document.getElementById('sc-main-chart');
+    if (mainHost) mainHost.style.cursor = inInspectMode ? 'crosshair' : '';
     var canvas = getTlCanvas();
     if (canvas) {
       canvas.classList.remove('object-interact-mode', 'drawing-tl');
@@ -679,9 +706,9 @@ export function mountStockChartPage() {
         if (tlAnchors.length >= 1 || drawingLevel || isAltDrawingModeActive()) canvas.classList.add('drawing-tl');
       }
     }
-    var cxBtn = document.getElementById('sc-mode-crosshair');
+    var cxBtn = document.getElementById('sc-mode-inspect');
     if (cxBtn) {
-      var cxOn = chartInteractionMode === MODE_CROSSHAIR;
+      var cxOn = chartInteractionMode === MODE_INSPECT;
       cxBtn.classList.toggle('active', cxOn);
       cxBtn.setAttribute('aria-pressed', cxOn ? 'true' : 'false');
     }
@@ -782,7 +809,7 @@ export function mountStockChartPage() {
     if (next === MODE_NONE) {
       clearObjectSelections();
     }
-    if (next !== MODE_CROSSHAIR) {
+    if (next !== MODE_INSPECT) {
       clearCrosshairBothCharts();
       crosshairOhlcSnapApplied = null;
     }
@@ -836,7 +863,7 @@ export function mountStockChartPage() {
 
   function chartAllowsObjectSelection() {
     return chartInteractionMode === MODE_NONE ||
-      chartInteractionMode === MODE_CROSSHAIR ||
+      chartInteractionMode === MODE_INSPECT ||
       chartInteractionMode === MODE_OBJECTS;
   }
 
@@ -1306,8 +1333,16 @@ export function mountStockChartPage() {
   function positionPanelAtClient(panel, clientX, clientY) {
     if (!panel) return;
     var pad = 8;
-    panel.style.left = Math.min(window.innerWidth - panel.offsetWidth - pad, Math.max(pad, clientX)) + 'px';
-    panel.style.top = Math.min(window.innerHeight - panel.offsetHeight - pad, Math.max(pad, clientY)) + 'px';
+    var host = panel.offsetParent || document.documentElement;
+    var hostRect = host.getBoundingClientRect ? host.getBoundingClientRect() : { left: 0, top: 0 };
+    var hostW = host.clientWidth || window.innerWidth;
+    var hostH = host.clientHeight || window.innerHeight;
+    var localX = (clientX - hostRect.left);
+    var localY = (clientY - hostRect.top);
+    var maxLeft = Math.max(pad, hostW - panel.offsetWidth - pad);
+    var maxTop = Math.max(pad, hostH - panel.offsetHeight - pad);
+    panel.style.left = Math.min(maxLeft, Math.max(pad, localX)) + 'px';
+    panel.style.top = Math.min(maxTop, Math.max(pad, localY)) + 'px';
   }
 
   function syncTrendlinePropsPanel() {
@@ -1606,8 +1641,7 @@ export function mountStockChartPage() {
   }
 
   function inspectChartFromContext() {
-    showStatus('Inspect: press F12 or Ctrl+Shift+I.');
-    setTimeout(function () { hideStatus(); }, 1600);
+    // No transient status toast here to avoid chart layout jumps.
   }
 
   function buildDefaultAddContextMenu() {
@@ -1673,7 +1707,7 @@ export function mountStockChartPage() {
     addMenuBtn(menu, 'Copy', function () {
       copyChartImageFromContext();
     });
-    addMenuBtn(menu, 'Inspect (F12)', function () {
+    addMenuBtn(menu, 'Developer tools (F12)', function () {
       inspectChartFromContext();
     });
 
@@ -1730,9 +1764,9 @@ export function mountStockChartPage() {
       return;
     }
 
-    if (chartInteractionMode === MODE_NONE || chartInteractionMode === MODE_CROSSHAIR) {
+    if (chartInteractionMode === MODE_NONE || chartInteractionMode === MODE_INSPECT) {
       var priceHint = coordinateToPriceExtrapolated(py);
-      showMainContextMenu(ev.clientX, ev.clientY, priceHint, chartInteractionMode === MODE_NONE);
+      showMainContextMenu(ev.clientX, ev.clientY, priceHint, true);
       ev.preventDefault();
     }
   }
@@ -2126,7 +2160,7 @@ export function mountStockChartPage() {
     });
 
     mainChart.subscribeCrosshairMove(function (param) {
-      if (chartInteractionMode === MODE_CROSSHAIR) {
+      if (chartInteractionMode === MODE_INSPECT) {
         if (!param || !param.point || param.time === undefined || param.time === null) {
           crosshairOhlcSnapApplied = null;
         }
@@ -2758,7 +2792,7 @@ export function mountStockChartPage() {
   }
 
   function tryApplyMainCrosshairOhlcSnap(param) {
-    if (chartInteractionMode !== MODE_CROSSHAIR || crosshairOhlcSnapGuard) return;
+    if (chartInteractionMode !== MODE_INSPECT || crosshairOhlcSnapGuard) return;
     if (!param || !param.point) {
       crosshairOhlcSnapApplied = null;
       return;
@@ -2800,7 +2834,7 @@ export function mountStockChartPage() {
 
   function updateCrosshairLastSnap(param) {
     crosshairLastSnap = null;
-    if (chartInteractionMode !== MODE_CROSSHAIR || !param || !param.point) return;
+    if (chartInteractionMode !== MODE_INSPECT || !param || !param.point) return;
     var tUse = mainCrosshairDataTime(param);
     if (tUse == null) return;
     var bar = candleForCrosshairTime(tUse);
@@ -2810,6 +2844,29 @@ export function mountStockChartPage() {
     if (snapped != null && isFinite(snapped)) {
       crosshairLastSnap = { time: tUse, price: snapped };
     }
+  }
+
+  function placeHorizontalLevel(price, styleOverrides) {
+    var levelPrice = Number(price);
+    if (!isFinite(levelPrice) || hasLevelAtPrice(levelPrice)) return false;
+    var cfg = Object.assign({
+      color: '#cbd5e1',
+      style: 'solid',
+      width: 2,
+      label: ''
+    }, styleOverrides || {});
+    levels.push({
+      id: uid(),
+      price: levelPrice,
+      color: cfg.color,
+      style: cfg.style,
+      width: cfg.width,
+      label: cfg.label
+    });
+    restoreLevels();
+    scheduleSaveAnnotations();
+    renderChips();
+    return true;
   }
 
   function unbindCrosshairOhlcSnapDom() {
@@ -2825,15 +2882,16 @@ export function mountStockChartPage() {
   function bindCrosshairOhlcSnapDom() {
     var el = document.getElementById('sc-main-chart');
     if (!el) return;
-    if (chartInteractionMode !== MODE_CROSSHAIR) {
+    if (chartInteractionMode !== MODE_INSPECT) {
       unbindCrosshairOhlcSnapDom();
       return;
     }
     if (crosshairSnapListenersBound) return;
     crosshairSnapListenersBound = true;
     crosshairSnapClick = function (ev) {
-      if (chartInteractionMode !== MODE_CROSSHAIR || ev.button !== 0) return;
+      if (chartInteractionMode !== MODE_INSPECT || ev.button !== 0) return;
       if (ev.detail !== 1) return;
+      if (!ev.altKey) return;
       var tgt = ev.target;
       if (tgt && tgt.closest && (tgt.closest('button') || tgt.closest('a') || tgt.closest('input') ||
           tgt.closest('select') || tgt.closest('textarea') || tgt.closest('.sc-panel'))) {
@@ -2849,24 +2907,14 @@ export function mountStockChartPage() {
       }
       if (!crosshairLastSnap || crosshairLastSnap.price == null || !isFinite(crosshairLastSnap.price)) return;
       if (!candleSeries) return;
-      if (hasLevelAtPrice(crosshairLastSnap.price)) return;
-      levels.push({
-        id: uid(),
-        price: crosshairLastSnap.price,
-        color: '#cbd5e1',
-        style: 'solid',
-        width: 2,
-        label: ''
-      });
-      restoreLevels();
-      scheduleSaveAnnotations();
-      renderChips();
+      placeHorizontalLevel(crosshairLastSnap.price);
     };
     el.addEventListener('click', crosshairSnapClick);
   }
 
   function syncRsiCrosshairFromMain(param) {
     if (!rsiChart || !rsiLineSeries) return;
+    if (chartInteractionMode !== MODE_INSPECT) return;
     if (typeof rsiChart.setCrosshairPosition !== 'function') return;
     if (crosshairSyncGuard === 2) return;
     if (!param || !param.point) {
@@ -2891,6 +2939,7 @@ export function mountStockChartPage() {
 
   function syncMainCrosshairFromRsi(param) {
     if (!mainChart || !candleSeries) return;
+    if (chartInteractionMode !== MODE_INSPECT) return;
     if (typeof mainChart.setCrosshairPosition !== 'function') return;
     if (crosshairSyncGuard === 1) return;
     if (!param || !param.point) {
@@ -3479,16 +3528,7 @@ export function mountStockChartPage() {
         }
         var pt = canvasPointToChart(ev);
         if (!pt) return;
-        levels.push({
-          id: uid(),
-          price: pt.price,
-          color: '#cbd5e1',
-          style: 'solid',
-          width: 2,
-          label: ''
-        });
-        restoreLevels();
-        scheduleSaveAnnotations();
+        placeHorizontalLevel(pt.price);
         drawingLevel = false;
         detachTlDraftPreviewListeners();
         setChartInteractionMode(MODE_NONE);
@@ -3739,8 +3779,8 @@ export function mountStockChartPage() {
     var tip = document.getElementById('sc-tooltip');
     var wrap = document.getElementById('sc-main-wrap');
     if (!tip || !wrap || !candleSeries) return;
-
-    if (chartInteractionMode !== MODE_CROSSHAIR) {
+    var drawingBusy = chartInteractionMode === MODE_OBJECTS && (drawingLevel || tlAnchors.length > 0 || isAltDrawingModeActive());
+    if (drawingBusy) {
       tip.hidden = true;
       return;
     }
@@ -4078,7 +4118,7 @@ export function mountStockChartPage() {
   }
 
   function buildTooltipSettingsPanel() {
-    var wrap = document.querySelector('.sc-controls');
+    var wrap = document.getElementById('sc-quick-controls') || document.querySelector('.sc-controls');
     if (!wrap || document.getElementById('sc-tooltip-panel')) return;
 
     var btn = document.createElement('button');
@@ -4154,7 +4194,7 @@ export function mountStockChartPage() {
 
   function isPanelOpenTrigger(el) {
     if (!el || !el.closest) return false;
-    return !!el.closest('#sc-tooltip-btn');
+    return !!(el.closest('#sc-tooltip-btn') || el.closest('#sc-help-btn'));
   }
 
   function setupGlobalUiHandlers() {
@@ -4162,9 +4202,15 @@ export function mountStockChartPage() {
       if (ev.key === 'Escape') {
         closeAllPanels(null);
         clearObjectSelections();
-        if (chartInteractionMode === MODE_OBJECTS || chartInteractionMode === MODE_CROSSHAIR) {
+        if (chartInteractionMode === MODE_OBJECTS || chartInteractionMode === MODE_INSPECT) {
           setChartInteractionMode(MODE_NONE);
         }
+        return;
+      }
+      if ((ev.key === 'i' || ev.key === 'I') && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+        if (isTypingTarget(ev.target)) return;
+        ev.preventDefault();
+        setChartInteractionMode(MODE_INSPECT);
         return;
       }
       if ((ev.key === 'Delete' || ev.key === 'Backspace') && chartAllowsObjectSelection()) {
@@ -4276,6 +4322,28 @@ export function mountStockChartPage() {
     });
 
     var lvlPanel = document.getElementById('sc-lvl-panel');
+    var helpPanel = document.getElementById('sc-help-panel');
+    var helpBtn = document.getElementById('sc-help-btn');
+    var helpCloseBtn = document.getElementById('sc-help-close');
+    if (helpBtn && helpPanel) {
+      helpBtn.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        if (helpPanel.hidden) {
+          closeAllPanels('help');
+          helpPanel.hidden = false;
+          positionPanelAtClient(helpPanel, ev.clientX || window.innerWidth - 20, ev.clientY || 120);
+        } else {
+          helpPanel.hidden = true;
+        }
+        helpBtn.setAttribute('aria-expanded', helpPanel.hidden ? 'false' : 'true');
+      });
+    }
+    if (helpCloseBtn && helpPanel) {
+      helpCloseBtn.addEventListener('click', function () {
+        helpPanel.hidden = true;
+        if (helpBtn) helpBtn.setAttribute('aria-expanded', 'false');
+      });
+    }
     document.getElementById('sc-lvl-cancel') && document.getElementById('sc-lvl-cancel').addEventListener('click', function () {
       if (lvlPanel) lvlPanel.hidden = true;
       setLvlError('');
@@ -4296,19 +4364,16 @@ export function mountStockChartPage() {
       var color = (document.getElementById('sc-lvl-color') || {}).value || '#22c55e';
       var styleSel = document.getElementById('sc-lvl-style');
       var style = styleSel ? styleSel.value : 'dashed';
-      levels.push({ id: uid(), price: price, color: color, style: style, width: 1, label: label });
+      placeHorizontalLevel(price, { color: color, style: style, width: 1, label: label });
       if (lvlPanel) lvlPanel.hidden = true;
-      restoreLevels();
-      scheduleSaveAnnotations();
-      renderChips();
     });
 
-    var cxModeBtn = document.getElementById('sc-mode-crosshair');
+    var cxModeBtn = document.getElementById('sc-mode-inspect');
     if (cxModeBtn) {
       cxModeBtn.addEventListener('click', function (ev) {
         ev.stopPropagation();
         closeAllPanels(null);
-        setChartInteractionMode(MODE_CROSSHAIR);
+        setChartInteractionMode(MODE_INSPECT);
       });
     }
     document.querySelectorAll('.sc-add-ind-btn').forEach(function (btn) {

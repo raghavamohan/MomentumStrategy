@@ -35,7 +35,7 @@ export const CHART_OPTS = {
 };
 
 export const MODE_NONE = 'none';
-export const MODE_CROSSHAIR = 'crosshair';
+export const MODE_INSPECT = 'inspect';
 export const MODE_OBJECTS = 'objects';
 
 export const FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
