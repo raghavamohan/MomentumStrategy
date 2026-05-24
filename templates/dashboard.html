@@ -757,7 +757,7 @@
     let selectedTab = 'equity';
     let selectedSection = 'portfolio';
     let selectedHoldingTone = 'all';
-    let selectedHoldingSector = 'all';
+    let selectedHoldingSectors = new Set(['all']);
     let selectedMfTone = 'all';
     const MF_UNDERLYING_OTHERS_LABEL = 'Others';
     let selectedMfUnderlyingSector = 'all';
@@ -915,13 +915,13 @@
       document
         .querySelectorAll('.holding-filter-chip[data-filter-group="sector"]')
         .forEach(function (btn) {
-          const isActive = btn.dataset.filterValue === selectedHoldingSector;
+          const isActive = selectedHoldingSectors.has(btn.dataset.filterValue || 'all');
           btn.classList.toggle('active', isActive);
           btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
         });
       const resetBtn = document.getElementById('equity-reset-filters');
       if (resetBtn) {
-        const isDefault = selectedHoldingTone === 'all' && selectedHoldingSector === 'all';
+        const isDefault = selectedHoldingTone === 'all' && selectedHoldingSectors.has('all');
         resetBtn.disabled = isDefault;
       }
     }
@@ -935,8 +935,14 @@
       const ordered = Object.keys(counts.sectors).sort(function (a, b) {
         return a.localeCompare(b);
       });
-      if (selectedHoldingSector !== 'all' && !Object.prototype.hasOwnProperty.call(counts.sectors, selectedHoldingSector)) {
-        selectedHoldingSector = 'all';
+      let invalidSector = false;
+      selectedHoldingSectors.forEach(function(s) {
+          if (s !== 'all' && !Object.prototype.hasOwnProperty.call(counts.sectors, s)) {
+              invalidSector = true;
+          }
+      });
+      if (invalidSector) {
+        selectedHoldingSectors = new Set(['all']);
       }
       host.innerHTML =
         '<button type="button" class="holding-filter-chip" data-filter-group="sector" data-filter-value="all" data-chip-label="All sectors" aria-pressed="false">All sectors</button>' +
@@ -966,7 +972,7 @@
         const sector = String(tr.dataset.sector || 'Uncategorized').trim() || 'Uncategorized';
         const tone = getHoldingTone(tr);
         const toneMatch = selectedHoldingTone === 'all' || selectedHoldingTone === tone;
-        const sectorMatch = selectedHoldingSector === 'all' || selectedHoldingSector === sector;
+        const sectorMatch = selectedHoldingSectors.has('all') || selectedHoldingSectors.has(sector);
         const show = toneMatch && sectorMatch;
         tr.hidden = !show;
         if (show) {
@@ -2003,7 +2009,23 @@
           if (group === 'tone') {
             selectedHoldingTone = value;
           } else if (group === 'sector') {
-            selectedHoldingSector = value;
+            if (e.altKey) {
+              if (value === 'all') {
+                selectedHoldingSectors = new Set(['all']);
+              } else {
+                selectedHoldingSectors.delete('all');
+                if (selectedHoldingSectors.has(value)) {
+                  selectedHoldingSectors.delete(value);
+                  if (selectedHoldingSectors.size === 0) {
+                    selectedHoldingSectors.add('all');
+                  }
+                } else {
+                  selectedHoldingSectors.add(value);
+                }
+              }
+            } else {
+              selectedHoldingSectors = new Set([value]);
+            }
           }
           applyHoldingFilters();
           syncCsvActionState();
@@ -2012,7 +2034,7 @@
         const resetFiltersBtn = e.target.closest('#equity-reset-filters');
         if (resetFiltersBtn && dashboardRootEl.contains(resetFiltersBtn)) {
           selectedHoldingTone = 'all';
-          selectedHoldingSector = 'all';
+          selectedHoldingSectors = new Set(['all']);
           applyHoldingFilters();
           syncCsvActionState();
           return;
@@ -2708,7 +2730,7 @@
 
       if (row.classList.contains('live-holding')) {
         selectedHoldingTone = 'all';
-        selectedHoldingSector = 'all';
+        selectedHoldingSectors = new Set(['all']);
         syncHoldingFilterButtonsUi();
         applyHoldingFilters();
       }
