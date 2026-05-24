@@ -13,6 +13,7 @@ import {
   STALE_TICK_MS,
   IV_CFG,
   CHART_OPTS,
+  RIGHT_OFFSET_BARS,
   MODE_NONE,
   MODE_INSPECT,
   MODE_OBJECTS,
@@ -81,6 +82,9 @@ export function mountStockChartPage() {
   var staleCheckTimer = null;
   var chartResizeObs = null;
   var chartResizeDebounceTimer = null;
+  var chartHasData = false;
+  var annotationsFetchDone = false;
+  var historyLoadGen = 0;
 
   function uid() { return Math.random().toString(36).slice(2); }
 
@@ -648,6 +652,32 @@ export function mountStockChartPage() {
     paneDblClickRsiHandler = null;
   }
 
+  function restoreVisibleLogicalRangeAfterPrepend(addedBars, savedRange) {
+    if (!mainChart || !addedBars) return;
+    if (!savedRange || savedRange.from == null || savedRange.to == null) {
+      resetSharedTimeScaleToDefault();
+      return;
+    }
+
+    var lastIdx = allBars.length - 1;
+    var from = savedRange.from + addedBars;
+    var to = savedRange.to + addedBars;
+    var maxTo = lastIdx + RIGHT_OFFSET_BARS + 2;
+
+    if (from < 0 || to > maxTo || to <= from) {
+      resetSharedTimeScaleToDefault();
+      return;
+    }
+
+    paneRangeSyncing = true;
+    try {
+      mainChart.timeScale().setVisibleLogicalRange({ from: from, to: to });
+    } catch (_) {
+      resetSharedTimeScaleToDefault();
+    }
+    paneRangeSyncing = false;
+  }
+
   function alignRsiTimeScaleToMain() {
     if (!mainChart || !rsiChart) return;
     var lr = mainChart.timeScale().getVisibleLogicalRange();
@@ -658,6 +688,23 @@ export function mountStockChartPage() {
       rsiChart.timeScale().setVisibleLogicalRange({ from: lr.from, to: lr.to });
     } catch (_) {}
     paneRangeSyncing = false;
+  }
+
+  function finalizeChartLayoutAfterData() {
+    syncChartPaneSizes();
+    alignRsiTimeScaleToMain();
+    scheduleDrawTrendlines();
+    requestAnimationFrame(function () {
+      syncChartPaneSizes();
+      alignRsiTimeScaleToMain();
+      scheduleDrawTrendlines();
+    });
+  }
+
+  function ensureChartAreaVisibleForRender() {
+    hideStatus();
+    showArea();
+    syncChartPaneSizes();
   }
 
   // ── Tooltip prefs (localStorage) ─────────────────────────────────────────
@@ -2272,33 +2319,55 @@ export function mountStockChartPage() {
   }
 
   // ── Annotations API ───────────────────────────────────────────────────────
-  function loadAnnotations(done) {
-    if (!TOKEN) {
-      if (done) done();
-      return;
+  function mergeAnnotationsPayload(body) {
+    if (!body) return false;
+    var indicatorsChanged = false;
+    trendlines = Array.isArray(body.trendlines) ? body.trendlines.slice() : [];
+    levels = Array.isArray(body.levels) ? body.levels.slice() : [];
+    if (Object.prototype.hasOwnProperty.call(body, 'indicators') && Array.isArray(body.indicators)) {
+      indicators = hydrateIndicatorsFromSave(body.indicators);
+      indicatorsChanged = true;
     }
-    fetch('/dashboard/chart-annotations?instrument_token=' + TOKEN, {
+    trendlines.forEach(function (tl) {
+      tl.extended = tl.extended === true;
+      if (!tl.style) tl.style = 'solid';
+      if (!tl.width) tl.width = DEFAULT_LINE_WIDTH;
+      if (!tl.id) tl.id = uid();
+      tl.type = normalizeDrawingType(tl.type || 'TRENDLINE');
+    });
+    return indicatorsChanged;
+  }
+
+  function syncAnnotationsOverlay(indicatorsChanged) {
+    if (!chartHasData || !candleSeries) return;
+    if (indicatorsChanged) refreshIndicators();
+    restoreLevels();
+    scheduleDrawTrendlines();
+    renderChips();
+  }
+
+  function fetchAnnotationsAsync() {
+    if (!TOKEN) return Promise.resolve(false);
+    return fetch('/dashboard/chart-annotations?instrument_token=' + TOKEN, {
       credentials: 'same-origin',
       headers: { Accept: 'application/json' }
     })
       .then(function (r) { return r.json(); })
       .then(function (body) {
-        trendlines = Array.isArray(body.trendlines) ? body.trendlines.slice() : [];
-        levels = Array.isArray(body.levels) ? body.levels.slice() : [];
-        if (Object.prototype.hasOwnProperty.call(body, 'indicators') && Array.isArray(body.indicators)) {
-          indicators = hydrateIndicatorsFromSave(body.indicators);
-        }
-        trendlines.forEach(function (tl) {
-          tl.extended = tl.extended === true;
-          if (!tl.style) tl.style = 'solid';
-          if (!tl.width) tl.width = DEFAULT_LINE_WIDTH;
-          if (!tl.id) tl.id = uid();
-          tl.type = normalizeDrawingType(tl.type || 'TRENDLINE');
-        });
+        return mergeAnnotationsPayload(body);
       })
       .catch(function () {
         trendlines = [];
         levels = [];
+        return false;
+      });
+  }
+
+  function loadAnnotations(done) {
+    fetchAnnotationsAsync()
+      .then(function (indicatorsChanged) {
+        annotationsFetchDone = true;
+        syncAnnotationsOverlay(indicatorsChanged);
       })
       .finally(function () { if (done) done(); });
   }
@@ -4339,8 +4408,11 @@ export function mountStockChartPage() {
         replaceChartUrlInterval();
         closeWS();
         destroyCharts();
+        chartHasData = false;
+        annotationsFetchDone = false;
+        historyLoadGen += 1;
         initCharts();
-        loadHistory();
+        beginParallelChartLoad();
       });
     });
 
@@ -4485,6 +4557,11 @@ export function mountStockChartPage() {
   }
 
   // ── History load ──────────────────────────────────────────────────────────
+  function historyDaysForPhase(ivCfg, phase) {
+    if (phase === 'initial' && ivCfg.initialDays != null) return ivCfg.initialDays;
+    return ivCfg.days;
+  }
+
   function parseHistoryFetchResponse(r) {
     return r.text().then(function (text) {
       var body = {};
@@ -4499,96 +4576,209 @@ export function mountStockChartPage() {
     });
   }
 
-  function loadHistory() {
-    if (!TOKEN) { showStatus('Missing instrument token.'); return; }
-    if (!candleSeries) return;
+  function candlesToBars(candles, ivCfg) {
+    var raw = (candles || []).map(function (c) {
+      return {
+        time: toTime(c.date),
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume
+      };
+    });
+    return ivCfg.agg ? aggregateBars(raw, ivCfg.agg) : raw;
+  }
 
-    showStatus('Loading\u2026');
-    lastTick = null;
+  function fetchHistoryDays(days) {
     var ivCfg = IV_CFG[currentIv] || IV_CFG.day;
-    var kiteIv = ivCfg.kite;
     var params = new URLSearchParams({
       instrument_token: TOKEN,
       exchange: EXCHANGE,
-      interval: kiteIv,
-      days: String(ivCfg.days)
+      interval: ivCfg.kite,
+      days: String(days)
     });
-
-    fetch('/dashboard/stock-history?' + params, {
+    return fetch('/dashboard/stock-history?' + params, {
       credentials: 'same-origin',
       headers: { Accept: 'application/json' }
     })
       .then(parseHistoryFetchResponse)
       .then(function (res) {
-        if (!res.ok) {
-          var msg = (res.body && res.body.error) ? String(res.body.error) : 'Could not load chart data.';
-          if (res.status === 401) msg = 'Session expired. Open the dashboard and sign in again.';
-          showStatus(msg);
+        if (!res.ok) return res;
+        return {
+          ok: true,
+          status: res.status,
+          bars: candlesToBars((res.body && res.body.candles) || [], ivCfg)
+        };
+      });
+  }
+
+  function applyVolumeSeriesData(bars) {
+    volSeries.setData(bars.map(function (b) {
+      return {
+        time: b.time,
+        value: b.volume,
+        color: b.close >= b.open ? 'rgba(34,197,94,.35)' : 'rgba(239,68,68,.35)'
+      };
+    }));
+    volSeries.applyOptions({ visible: showVolume });
+  }
+
+  function applyChartBars(bars, opts) {
+    opts = opts || {};
+    if (!candleSeries || !bars.length) return false;
+
+    ensureChartAreaVisibleForRender();
+
+    paneRangeSyncing = true;
+    try {
+      candleSeries.setData(bars);
+      applyVolumeSeriesData(bars);
+      liveBar = Object.assign({}, bars[bars.length - 1]);
+      allBars = bars.slice();
+      allBars[allBars.length - 1] = liveBar;
+      refreshIndicators();
+    } finally {
+      paneRangeSyncing = false;
+    }
+
+    chartHasData = true;
+    renderChips();
+    if (annotationsFetchDone) syncAnnotationsOverlay(false);
+    finalizeChartLayoutAfterData();
+    updateQuoteBarLayout();
+    refreshQuoteBarFromBars();
+    applyRsiVisibility();
+
+    if (opts.firstLoad) {
+      clearStaleCheck();
+      staleCheckTimer = setInterval(updateStaleHint, 15000);
+      connectWS();
+      replaceChartUrlInterval();
+      scheduleHistoryBackfill(opts.loadGen);
+    }
+    return true;
+  }
+
+  function applyHistoryBackfill(bars, loadGen) {
+    if (loadGen !== historyLoadGen || !candleSeries || !bars.length) return;
+    if (bars.length <= allBars.length) return;
+
+    var prevCount = allBars.length;
+    var savedRange = null;
+    try {
+      var lr = mainChart.timeScale().getVisibleLogicalRange();
+      if (lr && lr.from != null && lr.to != null) {
+        savedRange = { from: lr.from, to: lr.to };
+      }
+    } catch (_) {}
+
+    var savedLive = liveBar;
+    paneRangeSyncing = true;
+    try {
+      allBars = bars.slice();
+      liveBar = Object.assign({}, allBars[allBars.length - 1]);
+      if (savedLive && savedLive.time === liveBar.time) {
+        liveBar = Object.assign({}, savedLive);
+        allBars[allBars.length - 1] = liveBar;
+      }
+      candleSeries.setData(allBars);
+      applyVolumeSeriesData(allBars);
+      refreshIndicators();
+    } finally {
+      paneRangeSyncing = false;
+    }
+
+    restoreVisibleLogicalRangeAfterPrepend(allBars.length - prevCount, savedRange);
+    finalizeChartLayoutAfterData();
+  }
+
+  function scheduleHistoryBackfill(loadGen) {
+    var ivCfg = IV_CFG[currentIv] || IV_CFG.day;
+    var initialDays = historyDaysForPhase(ivCfg, 'initial');
+    var fullDays = ivCfg.days;
+    if (initialDays >= fullDays) return;
+
+    fetchHistoryDays(fullDays)
+      .then(function (res) {
+        if (!res.ok || !res.bars) return;
+        applyHistoryBackfill(res.bars, loadGen);
+      })
+      .catch(function () {});
+  }
+
+  function handleHistoryLoadFailure(res) {
+    var msg = (res && res.body && res.body.error) ? String(res.body.error) : 'Could not load chart data.';
+    if (res && res.status === 401) msg = 'Session expired. Open the dashboard and sign in again.';
+    showStatus(msg);
+  }
+
+  function wireChartLoadResults(annotationsPromise, historyPromise, loadGen) {
+    annotationsPromise.then(function (indicatorsChanged) {
+      if (loadGen !== historyLoadGen) return;
+      annotationsFetchDone = true;
+      syncAnnotationsOverlay(indicatorsChanged);
+    });
+
+    historyPromise
+      .then(function (res) {
+        if (loadGen !== historyLoadGen) return;
+        if (!TOKEN) {
+          showStatus('Missing instrument token.');
           return;
         }
-        var body = res.body;
-        var raw = (body.candles || []).map(function (c) {
-          return {
-            time: toTime(c.date),
-            open: c.open,
-            high: c.high,
-            low: c.low,
-            close: c.close,
-            volume: c.volume
-          };
-        });
-        var bars = ivCfg.agg ? aggregateBars(raw, ivCfg.agg) : raw;
-        allBars = bars;
+        if (!candleSeries) return;
+        if (!res.ok) {
+          handleHistoryLoadFailure(res);
+          return;
+        }
+        var bars = res.bars || [];
         if (!bars.length) {
           showStatus('No data for this interval.');
           return;
         }
-        hideStatus();
-        showArea();
-        syncChartPaneSizes();
-        // Suppress main → RSI range sync while we seed every series with
-        // setData. Each setData triggers its chart's auto-fit (including the
-        // rightOffset gutter). Letting the sync mirror those intermediate
-        // states drives multiple competing time-scale fits and can leave the
-        // live candle drifting out of view across subsequent ticks/resizes.
-        // We re-sync once explicitly via alignRsiTimeScaleToMain() below.
-        paneRangeSyncing = true;
-        try {
-          candleSeries.setData(bars);
-          volSeries.setData(bars.map(function (b) {
-            return {
-              time: b.time,
-              value: b.volume,
-              color: b.close >= b.open ? 'rgba(34,197,94,.35)' : 'rgba(239,68,68,.35)'
-            };
-          }));
-          volSeries.applyOptions({ visible: showVolume });
-          liveBar = Object.assign({}, bars[bars.length - 1]);
-          allBars[allBars.length - 1] = liveBar;
-          refreshIndicators();
-          restoreLevels();
-        } finally {
-          paneRangeSyncing = false;
-        }
-        renderChips();
-        drawTrendlines();
-        alignRsiTimeScaleToMain();
-        updateQuoteBarLayout();
-        refreshQuoteBarFromBars();
-        applyRsiVisibility();
-        clearStaleCheck();
-        staleCheckTimer = setInterval(updateStaleHint, 15000);
-        connectWS();
-        replaceChartUrlInterval();
+        applyChartBars(bars, { firstLoad: true, loadGen: loadGen });
       })
       .catch(function () { showStatus('Network error loading chart data.'); });
   }
 
+  function beginParallelChartLoad() {
+    if (!TOKEN) {
+      showStatus('Missing instrument token.');
+      return;
+    }
+    if (!candleSeries) return;
+
+    var loadGen = historyLoadGen;
+    showStatus('Loading\u2026');
+    lastTick = null;
+
+    var ivCfg = IV_CFG[currentIv] || IV_CFG.day;
+    wireChartLoadResults(
+      fetchAnnotationsAsync(),
+      fetchHistoryDays(historyDaysForPhase(ivCfg, 'initial')),
+      loadGen
+    );
+  }
+
   if (!LW) { showStatus('Chart library not available.'); return; }
+
+  showStatus('Loading\u2026');
+  lastTick = null;
+  var bootLoadGen = historyLoadGen;
+  var bootIvCfg = IV_CFG[currentIv] || IV_CFG.day;
+  var embeddedCandles = Array.isArray(boot.initialCandles) && boot.initialCandles.length
+    ? boot.initialCandles
+    : null;
+  var bootHistoryPromise = embeddedCandles
+    ? Promise.resolve({ ok: true, bars: candlesToBars(embeddedCandles, bootIvCfg) })
+    : (TOKEN
+      ? fetchHistoryDays(historyDaysForPhase(bootIvCfg, 'initial'))
+      : Promise.resolve({ ok: false, status: 0, body: {} }));
+  var bootAnnotationsPromise = fetchAnnotationsAsync();
+
   initCharts();
-  loadAnnotations(function () {
-    loadHistory();
-  });
   setupUI();
   renderChips();
+  wireChartLoadResults(bootAnnotationsPromise, bootHistoryPromise, bootLoadGen);
 }

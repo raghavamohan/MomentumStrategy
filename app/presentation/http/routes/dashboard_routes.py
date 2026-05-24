@@ -12,9 +12,13 @@ from kiteconnect.exceptions import KiteException, TokenException
 
 from app.application.dashboard_view_model import (
     build_dashboard_view_model,
-    historical_candles_for_stock,
     ALLOWED_KITE_INTERVALS,
     _INTERVAL_MAX_DAYS,
+)
+from app.infrastructure.services.stock_history_cache import (
+    get_cached_stock_history,
+    initial_history_days,
+    resolve_history_interval,
 )
 from app.presentation.http.jinja_env import KITE_STOCK_HISTORY_HELP_URLS, stock_history_json_error, templates
 from app.infrastructure.live_prices import live_price_stream
@@ -129,6 +133,28 @@ async def dashboard_stock_chart(
     elif ref_clean in ("equity_holding", "holdings"):
         bootstrap["focusContext"] = "equity_holding"
 
+    history_interval = resolve_history_interval(kite_interval)
+    initial_days = initial_history_days(kite_interval, days_clamped)
+    bootstrap["initialDays"] = initial_days
+    kite = kite_for_request()
+    if kite is not None:
+        try:
+            bootstrap["initialCandles"] = await asyncio.to_thread(
+                get_cached_stock_history,
+                kite,
+                instrument_token,
+                history_interval,
+                initial_days,
+            )
+        except TokenException:
+            request.session.clear()
+            live_price_stream.close()
+            return RedirectResponse("/", status_code=303)
+        except KiteException as exc:
+            logger.warning("stock-chart bootstrap history Kite error: %s", exc)
+        except Exception as exc:  # noqa: BLE001 - omit SSR candles on unexpected errors
+            logger.exception("stock-chart bootstrap history failed: %s", exc)
+
     return templates.TemplateResponse(
         request,
         "stock_chart.html",
@@ -175,13 +201,15 @@ async def dashboard_stock_history(
     max_days = _INTERVAL_MAX_DAYS.get(kite_interval, 3650)
     days_clamped = max(1, min(int(days), max_days))
 
+    history_interval = resolve_history_interval(kite_interval)
+
     try:
         candles = await asyncio.to_thread(
-            historical_candles_for_stock,
+            get_cached_stock_history,
             kite,
             instrument_token,
+            history_interval,
             days_clamped,
-            kite_interval,
         )
     except TokenException:
         request.session.clear()
@@ -204,7 +232,7 @@ async def dashboard_stock_history(
         {
             "instrument_token": instrument_token,
             "exchange": ex,
-            "interval": kite_interval,
+            "interval": history_interval,
             "days": days_clamped,
             "candles": candles,
         }

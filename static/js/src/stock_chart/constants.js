@@ -21,9 +21,9 @@ export const IV_CFG = {
   '5minute': { kite: '5minute', days: 100, label: '5m', timeVisible: true },
   '15minute': { kite: '15minute', days: 200, label: '15m', timeVisible: true },
   '60minute': { kite: '60minute', days: 400, label: '1hr', timeVisible: true },
-  day: { kite: 'day', days: 3650, label: '1D', timeVisible: false },
-  week: { kite: 'day', days: 3650, label: '1W', timeVisible: false, agg: 'week' },
-  month: { kite: 'day', days: 3650, label: '1M', timeVisible: false, agg: 'month' }
+  day: { kite: 'day', days: 3650, initialDays: 730, label: '1D', timeVisible: false },
+  week: { kite: 'day', days: 3650, initialDays: 730, label: '1W', timeVisible: false, agg: 'week' },
+  month: { kite: 'day', days: 3650, initialDays: 730, label: '1M', timeVisible: false, agg: 'month' }
 };
 
 /** Default crosshair off (LightweightCharts.CrosshairMode.Hidden === 2). */
