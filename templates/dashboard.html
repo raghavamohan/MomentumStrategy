@@ -1957,6 +1957,21 @@
       syncCsvActionState();
     }
 
+    function reapplyWatchlistTableSort() {
+      const table = document.querySelector('#dashboard-root table[data-table-sort-key="watch-list"]');
+      if (!table) {
+        return;
+      }
+      const col = table.dataset.sortCol;
+      const dir = table.dataset.sortDir || 'asc';
+      const typ = table.dataset.sortType || 'text';
+      if (col === undefined || col === '') {
+        return;
+      }
+      sortDataTable(table, parseInt(col, 10), typ, dir, { persistPreference: false });
+      syncCsvActionState();
+    }
+
     function applyInitialTableSorts() {
       document.querySelectorAll('#dashboard-root table[data-table-sort-key]').forEach(function (table) {
         const tbody = table.querySelector('tbody');
@@ -3415,11 +3430,11 @@
     recalcSummaries();
     syncCsvActionState();
     connectLivePrices();
-    initWatchlistSearch();
+    initWatchlistSearch(reapplyWatchlistTableSort);
     window.setInterval(refreshDashboardSnapshot, SNAPSHOT_MS);
   })();
 
-  function initWatchlistSearch() {
+  function initWatchlistSearch(reapplyWatchlistSort) {
     const input = document.getElementById('watchlist-search-input');
     const resultsUl = document.getElementById('watchlist-search-results');
     if (!input || !resultsUl) return;
@@ -3576,6 +3591,9 @@
       }
       const data = await res.json();
       renderWatchlist(data.items || []);
+      if (typeof reapplyWatchlistSort === 'function') {
+        reapplyWatchlistSort();
+      }
       return Array.isArray(data.symbols) ? data.symbols : readRenderedSymbols();
     }
 

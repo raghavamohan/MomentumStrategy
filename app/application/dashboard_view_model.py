@@ -665,13 +665,7 @@ async def build_dashboard_view_model(
         )
         for name, meta in reference_cache_debug.items()
     )
-    logger.info(
-        "dashboard timing total=%.1fms | %s | reference_cache=%s",
-        total_ms,
-        timings_str,
-        reference_cache_str,
-    )
-    logger.info(
+    _DASHBOARD_TIMING_LOGGER.info(
         "dashboard timing total=%.1fms | %s | reference_cache=%s",
         total_ms,
         timings_str,
