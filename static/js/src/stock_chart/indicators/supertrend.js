@@ -8,7 +8,7 @@ export const SuperTrendIndicator = {
   createSeries: function(chart, options) {
     var lineStyle = options.style === 'dashed' ? 2 : (options.style === 'dotted' ? 3 : 0);
     var mainSeries = chart.addLineSeries({
-      color: options.upColor || '#22c55e', // default fallback color
+      color: options.upColor || '#22c55e',
       lineWidth: options.lineWidth,
       lineStyle: lineStyle,
       crosshairMarkerVisible: false,
@@ -17,7 +17,8 @@ export const SuperTrendIndicator = {
     });
     var glowSeries = chart.addLineSeries({
       color: 'transparent',
-      lineWidth: Math.max(12, options.lineWidth + 8),
+      lineWidth: Math.min(16, options.lineWidth + 5),
+      visible: false,
       crosshairMarkerVisible: false,
       lastValueVisible: false,
       priceLineVisible: false
@@ -28,7 +29,7 @@ export const SuperTrendIndicator = {
   calculate: function(bars, options) {
     var period = parseInt(options.period, 10);
     var multiplier = parseFloat(options.multiplier);
-    var out = { mainData: [], tooltipData: [] };
+    var out = { mainData: [], tooltipData: [], glowData: [] };
 
     if (bars.length <= period) return out;
 
@@ -56,7 +57,6 @@ export const SuperTrendIndicator = {
     for (var i = period; i < bars.length; i++) {
       var currentTr = trueRanges[i - 1];
       
-      // Wilder's Smoothing (RMA) for ATR
       if (i > period) {
         atr = (atr * (period - 1) + currentTr) / period;
       }
@@ -95,17 +95,19 @@ export const SuperTrendIndicator = {
       var pointColor = (dir === 1) ? (options.upColor || '#22c55e') : (options.downColor || '#ef4444');
       
       if (dir !== prevDir && i > period && out.mainData.length > 0) {
-        // In Lightweight Charts, the 'color' property of a point colors the segment
-        // from that point to the NEXT point.
-        // When the trend flips, we want the segment from the PREVIOUS point to THIS point
-        // to be invisible. So we must retroactively change the previous point's color.
         out.mainData[out.mainData.length - 1].color = 'transparent';
+        if (out.glowData.length > 0) {
+          out.glowData[out.glowData.length - 1].color = 'transparent';
+        }
       }
       
       var pt = { time: bars[i].time, value: superTrend, color: pointColor };
+      // glowPt has NO per-point color normally, falling back to series color
+      var glowPt = { time: bars[i].time, value: superTrend };
       
       out.mainData.push(pt);
       out.tooltipData.push(pt);
+      out.glowData.push(glowPt);
 
       prevFinalUpperBand = finalUpperBand;
       prevFinalLowerBand = finalLowerBand;
@@ -117,7 +119,7 @@ export const SuperTrendIndicator = {
 
   updateSeries: function(seriesObj, data) {
     if (seriesObj.mainSeries) seriesObj.mainSeries.setData(data.mainData);
-    if (seriesObj.glowSeries) seriesObj.glowSeries.setData(data.tooltipData);
+    if (seriesObj.glowSeries) seriesObj.glowSeries.setData(data.glowData || []);
   },
 
   getTooltip: function(seriesObj, seriesDataMap, options) {
@@ -136,19 +138,32 @@ export const SuperTrendIndicator = {
 
   syncSelection: function(seriesObj, selected, options) {
     var lw = options.lineWidth || 2;
-    var finalLw = selected ? Math.min(8, lw + 2) : lw;
     var lineStyle = options.style === 'dashed' ? 2 : (options.style === 'dotted' ? 3 : 0);
+
+    function hexToRgba(hex, alpha) {
+      if (!hex || typeof hex !== 'string') return 'rgba(34, 197, 94, ' + alpha + ')';
+      if (hex.startsWith('#')) {
+        if (hex.length === 4) hex = '#' + hex[1] + hex[1] + hex[2] + hex[2] + hex[3] + hex[3];
+        var r = parseInt(hex.slice(1, 3), 16) || 0;
+        var g = parseInt(hex.slice(3, 5), 16) || 0;
+        var b = parseInt(hex.slice(5, 7), 16) || 0;
+        return 'rgba(' + r + ', ' + g + ', ' + b + ', ' + alpha + ')';
+      }
+      return hex;
+    }
 
     if (seriesObj.mainSeries) {
       seriesObj.mainSeries.applyOptions({
-        lineWidth: finalLw,
+        lineWidth: lw, // Do NOT thicken the main line on selection!
         lineStyle: lineStyle
       });
     }
     if (seriesObj.glowSeries) {
+      var seriesColor = hexToRgba(options.color || options.upColor || '#22c55e', 0.33);
       seriesObj.glowSeries.applyOptions({
-        color: selected ? 'rgba(245, 158, 11, 0.33)' : 'transparent',
-        lineWidth: Math.max(12, finalLw + 8)
+        color: selected ? seriesColor : 'transparent',
+        visible: !!selected,
+        lineWidth: Math.min(16, lw + 5)
       });
     }
   }

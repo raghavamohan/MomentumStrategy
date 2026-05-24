@@ -1424,7 +1424,26 @@ export function mountStockChartPage() {
         perLbl.textContent = (plugin && plugin.periodLabel) ? plugin.periodLabel : 'Period';
       }
     }
-    if (color) color.value = ind.color || '#f59e0b';
+    
+    var colorLbl = document.getElementById('sc-ind-edit-color-lbl');
+    var downColorRow = document.getElementById('sc-ind-edit-down-color-row');
+    var downColor = document.getElementById('sc-ind-edit-down-color');
+    var multRow = document.getElementById('sc-ind-edit-multiplier-row');
+    var mult = document.getElementById('sc-ind-edit-multiplier');
+
+    if (ind.type === 'SUPERTREND') {
+      if (color) color.value = ind.upColor || ind.color || '#22c55e';
+      if (colorLbl) colorLbl.textContent = 'Up Color';
+      if (downColorRow) downColorRow.hidden = false;
+      if (downColor) downColor.value = ind.downColor || '#ef4444';
+      if (multRow) multRow.hidden = false;
+      if (mult) mult.value = String(ind.multiplier || 3);
+    } else {
+      if (color) color.value = ind.color || '#f59e0b';
+      if (colorLbl) colorLbl.textContent = 'Color';
+      if (downColorRow) downColorRow.hidden = true;
+      if (multRow) multRow.hidden = true;
+    }
     if (width) width.value = String(Math.max(1, Number(ind.lineWidth) || 2));
     if (style) style.value = ind.style || 'solid';
   }
@@ -1508,7 +1527,9 @@ export function mountStockChartPage() {
     inP.innerHTML = '<h3 id="sc-ind-edit-title">Indicator</h3>' +
       '<div class="sc-panel-row"><label>Type</label><span id="sc-ind-edit-type"></span></div>' +
       '<div class="sc-panel-row"><label>Period</label><input type="number" id="sc-ind-edit-period" min="2" max="200"></div>' +
-      '<div class="sc-panel-row"><label>Color</label><input type="color" id="sc-ind-edit-color"></div>' +
+      '<div class="sc-panel-row"><label id="sc-ind-edit-color-lbl">Color</label><input type="color" id="sc-ind-edit-color"></div>' +
+      '<div class="sc-panel-row" id="sc-ind-edit-down-color-row" hidden><label>Down Color</label><input type="color" id="sc-ind-edit-down-color"></div>' +
+      '<div class="sc-panel-row" id="sc-ind-edit-multiplier-row" hidden><label>Multiplier</label><input type="number" id="sc-ind-edit-multiplier" step="0.1" min="0.1" max="50"></div>' +
       '<div class="sc-panel-row"><label>Width</label><input type="number" id="sc-ind-edit-width" min="1" max="6" step="1"></div>' +
       '<div class="sc-panel-row"><label>Style</label><select id="sc-ind-edit-style"><option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option></select></div>' +
       '<div class="sc-panel-btns"><button type="button" class="sc-btn-primary" id="sc-ind-edit-apply">Apply</button>' +
@@ -1523,7 +1544,14 @@ export function mountStockChartPage() {
       if (!ind) return;
       var per = Math.max(2, Math.min(200, parseInt(document.getElementById('sc-ind-edit-period').value, 10) || ind.period));
       ind.period = per;
-      ind.color = (document.getElementById('sc-ind-edit-color') || {}).value || ind.color;
+      if (ind.type === 'SUPERTREND') {
+        ind.upColor = (document.getElementById('sc-ind-edit-color') || {}).value || ind.upColor;
+        ind.color = ind.upColor;
+        ind.downColor = (document.getElementById('sc-ind-edit-down-color') || {}).value || ind.downColor;
+        ind.multiplier = parseFloat((document.getElementById('sc-ind-edit-multiplier') || {}).value) || ind.multiplier || 3;
+      } else {
+        ind.color = (document.getElementById('sc-ind-edit-color') || {}).value || ind.color;
+      }
       ind.lineWidth = Math.max(1, parseInt(document.getElementById('sc-ind-edit-width').value, 10) || 2);
       ind.style = (document.getElementById('sc-ind-edit-style') || {}).value || 'solid';
       if (ind.series) {
@@ -2365,6 +2393,7 @@ export function mountStockChartPage() {
       var bandKeys = indicatorBandKeys(ind);
       if (plugin && typeof plugin.syncSelection === 'function') {
         try { plugin.syncSelection(ind.seriesObj, selected, ind); } catch (_) {}
+        return;
       } else if (bandKeys && ind.seriesArr && ind.seriesArr.length) {
         var fibLw = Math.max(1, Math.min(8, Number(ind.lineWidth) || 1));
         var fibLs = styleToLw(ind.style || 'solid');
@@ -4411,6 +4440,19 @@ export function mountStockChartPage() {
       });
     });
 
+    var indTypeSel = document.getElementById('sc-ind-type');
+    if (indTypeSel) {
+      indTypeSel.addEventListener('change', function() {
+         var isST = this.value === 'SUPERTREND';
+         var lbl = document.getElementById('sc-ind-color-lbl');
+         if (lbl) lbl.textContent = isST ? 'Up Color' : 'Color';
+         var dcr = document.getElementById('sc-ind-down-color-row');
+         if (dcr) dcr.hidden = !isST;
+         var mr = document.getElementById('sc-ind-multiplier-row');
+         if (mr) mr.hidden = !isST;
+      });
+    }
+
     var indPanel = document.getElementById('sc-ind-panel');
     document.getElementById('sc-ind-cancel') && document.getElementById('sc-ind-cancel').addEventListener('click', function () {
       if (indPanel) indPanel.hidden = true;
@@ -4420,7 +4462,14 @@ export function mountStockChartPage() {
       var typ = normalizeIndicatorType((document.getElementById('sc-ind-type') || {}).value || 'SMA');
       var period = Math.max(2, Math.min(200, parseInt(document.getElementById('sc-ind-period').value, 10) || 20));
       var color = (document.getElementById('sc-ind-color') || {}).value || '#f59e0b';
-      addIndicatorFromContext(typ, { period: period, color: color });
+      
+      var cfg = { period: period, color: color };
+      if (typ === 'SUPERTREND') {
+        cfg.upColor = color;
+        cfg.downColor = (document.getElementById('sc-ind-down-color') || {}).value || '#ef4444';
+        cfg.multiplier = parseFloat((document.getElementById('sc-ind-multiplier') || {}).value) || 3;
+      }
+      addIndicatorFromContext(typ, cfg);
       if (indPanel) indPanel.hidden = true;
     });
 

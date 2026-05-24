@@ -25,25 +25,32 @@ export const FibRetracementDrawing = {
 
     fibs.forEach(function (pct, i) {
       var yy = pixels.y1 + diffY * pct;
-      if (sel) {
-        ctx.strokeStyle = 'rgba(255,255,255,.28)';
-        ctx.lineWidth = lw + 8;
-        ctx.beginPath();
-        ctx.moveTo(0, yy);
-        ctx.lineTo(options.width || 1000, yy);
-        ctx.stroke();
-      }
-      
-      // Simple hex to rgba for stroke
       var color = colorMap[i] || '#f59e0b';
+
       ctx.globalAlpha = sel ? 0.85 : 0.55;
       ctx.strokeStyle = color;
-      ctx.lineWidth = sel ? lw + 1 : lw;
+      ctx.lineWidth = lw;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
       ctx.beginPath();
       ctx.moveTo(0, yy);
       ctx.lineTo(options.width || 1000, yy);
       ctx.stroke();
       ctx.globalAlpha = 1.0;
+
+      if (sel) {
+        ctx.save();
+        ctx.globalAlpha = 0.33;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = Math.min(16, lw + 5);
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(0, yy);
+        ctx.lineTo(options.width || 1000, yy);
+        ctx.stroke();
+        ctx.restore();
+      }
 
       if (options.showLabels !== false) {
         ctx.fillStyle = color;

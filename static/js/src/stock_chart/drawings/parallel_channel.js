@@ -22,20 +22,6 @@ export const ParallelChannelDrawing = {
     var px4 = px3 + dx;
     var py4 = py3 + dy;
 
-    if (sel) {
-      ctx.strokeStyle = 'rgba(255,255,255,.4)';
-      ctx.lineWidth = lw + 8;
-      ctx.setLineDash([]);
-      ctx.beginPath();
-      ctx.moveTo(pixels.x1, pixels.y1);
-      ctx.lineTo(pixels.x2, pixels.y2);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(px3, py3);
-      ctx.lineTo(px4, py4);
-      ctx.stroke();
-    }
-
     ctx.globalAlpha = 0.1;
     ctx.fillStyle = objectState.color || '#f59e0b';
     ctx.beginPath();
@@ -48,7 +34,9 @@ export const ParallelChannelDrawing = {
     ctx.globalAlpha = 1.0;
 
     ctx.strokeStyle = objectState.color || '#f59e0b';
-    ctx.lineWidth = sel ? lw + 1 : lw;
+    ctx.lineWidth = lw;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
     ctx.setLineDash(objectState.style === 'dashed' ? [6, 4] : (objectState.style === 'dotted' ? [2, 4] : []));
     
     ctx.beginPath();
@@ -62,6 +50,25 @@ export const ParallelChannelDrawing = {
     ctx.stroke();
 
     ctx.setLineDash([]);
+
+    if (sel) {
+      ctx.save();
+      ctx.globalAlpha = 0.33;
+      ctx.strokeStyle = objectState.color || '#f59e0b';
+      ctx.lineWidth = Math.min(16, lw + 5);
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(pixels.x1, pixels.y1);
+      ctx.lineTo(pixels.x2, pixels.y2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(px3, py3);
+      ctx.lineTo(px4, py4);
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 };
 
