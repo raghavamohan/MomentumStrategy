@@ -118,6 +118,15 @@ DASHBOARD_HOST = "127.0.0.1"
 DASHBOARD_PORT = 5000
 
 
+def dashboard_reload_enabled() -> bool:
+    """Enable Uvicorn auto-reload for local development when explicitly requested."""
+    raw = os.getenv("DASHBOARD_RELOAD", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+DASHBOARD_RELOAD = dashboard_reload_enabled()
+
+
 def session_secret() -> str:
     """Stable signing key so session cookies survive server restarts.
 

@@ -135,6 +135,7 @@ from app.presentation.http.server_config import (
     DASHBOARD_DISPLAY_NAME,
     DASHBOARD_HOST,
     DASHBOARD_PORT,
+    DASHBOARD_RELOAD,
     SESSION_SECRET,
     STATIC_DIR,
 )
@@ -203,7 +204,7 @@ def main() -> None:
         "app.server:app",
         host=DASHBOARD_HOST,
         port=DASHBOARD_PORT,
-        reload=False,
+        reload=DASHBOARD_RELOAD,
         log_level="info",
         timeout_graceful_shutdown=5,
     )

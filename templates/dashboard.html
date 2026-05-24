@@ -684,8 +684,13 @@
         </section>
 
         <section class="section-panel" data-section-panel="watchlist">
-          {% if watch_list %}
-            <div class="card card-table">
+          <div class="card watchlist-search-container" style="margin-bottom: 16px; overflow: visible;">
+            <div class="watchlist-search-wrapper" style="position: relative;">
+              <input type="text" id="watchlist-search-input" class="form-control" placeholder="Search NSE/BSE stocks & indices to add..." autocomplete="off" style="width: 100%; padding: 10px; font-size: 14px; border-radius: var(--radius-md); border: 1px solid var(--border); background: var(--surface); color: var(--text);">
+              <ul id="watchlist-search-results" class="dropdown-menu" style="display: none; position: absolute; top: 100%; left: 0; right: 0; z-index: 1000; max-height: 300px; overflow-y: auto; background: var(--surface); border: 1px solid var(--border); list-style: none; padding: 0; margin: 4px 0 0; border-radius: var(--radius-md); box-shadow: var(--shadow-card);"></ul>
+            </div>
+          </div>
+            <div id="watchlist-table-card" class="card card-table" style="overflow: visible;{% if not watch_list %} display: none;{% endif %}">
               <table data-table-sort-key="watch-list" data-default-sort-col="4" data-default-sort-type="pct">
                 <thead>
                   <tr>
@@ -704,9 +709,10 @@
                     <th class="num sortable" scope="col" data-live-sort>
                       <button type="button" class="th-sort" data-sort-type="pct">% Change Today <span class="sort-ind" aria-hidden="true"></span></button>
                     </th>
+                    <th scope="col" style="width: 50px;"></th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody id="watchlist-tbody">
                   {% for item in watch_list %}
                     <tr
                       class="live-watch"
@@ -716,7 +722,7 @@
                       <td class="symbol">
                         <a
                           class="stock-chart-link"
-                          href="/dashboard/stock-chart?instrument_token={{ item.instrument_token }}&exchange=NSE&label={{ item.label|urlquote }}&ref=watchlist"
+                          href="/dashboard/stock-chart?instrument_token={{ item.instrument_token }}&exchange={{ item.exchange }}&label={{ item.label|urlquote }}&ref=watchlist"
                           title="Daily OHLC &amp; volume (full history, pan/zoom)"
                         >{{ item.label }}</a>
                       </td>
@@ -724,14 +730,17 @@
                       <td class="num js-watch-ltp">{{ item.last_price|inr }}</td>
                       <td class="num js-watch-change {{ item.change|sign_class }}">{{ item.change|inr }}</td>
                       <td class="num js-watch-change-pct {{ item.change_pct|sign_class }}">{{ item.change_pct|pct }}</td>
+                      <td class="action-col" style="text-align: right;">
+                        <button type="button" class="btn btn-sm btn-ghost js-watchlist-remove" data-key="{{ item.exchange }}:{{ item.symbol }}" title="Remove" style="color: var(--negative); padding: 4px; border-radius: var(--radius-sm); border: none; background: transparent; cursor: pointer;">
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"></path></svg>
+                        </button>
+                      </td>
                     </tr>
                   {% endfor %}
                 </tbody>
               </table>
             </div>
-          {% else %}
-            <div class="card empty">Watch List is empty or reference symbols are still loading.</div>
-          {% endif %}
+            <div id="watchlist-empty-card" class="card empty" style="{% if watch_list %}display: none;{% endif %}">Watch List is empty or reference symbols are still loading.</div>
         </section>
       </div>
     </div>
@@ -753,6 +762,7 @@
     let sectorSummaryLastRun = 0;
     const lastLiveTableResortAt = {};
     let isRefreshing = false;
+    let refreshQueued = false;
     let cacheRefreshDebounceTimer = null;
     let selectedTab = 'equity';
     let selectedSection = 'portfolio';
@@ -791,8 +801,7 @@
         return reference[key] || {};
       });
       const refRefreshing = entries.some(function (meta) {
-        const source = String(meta.source || '');
-        return Boolean(meta.refresh_in_progress) || source.indexOf('bg_refresh') >= 0 || source.indexOf('cold_start') >= 0;
+        return Boolean(meta.refresh_in_progress);
       });
       const mfLoading = Boolean(mfHoldingsLoading) || Boolean(mfUnderlyingsLoading);
       const staleMf = Boolean(mfHoldingsCachedPayload && mfHoldingsCachedPayload.loading);
@@ -3187,15 +3196,25 @@
       }
     }
 
+    let refreshResolvers = [];
+
     async function refreshDashboardSnapshot() {
-      if (isRefreshing || document.hidden) {
+      if (document.hidden) {
         return;
       }
+      if (isRefreshing) {
+        refreshQueued = true;
+        return new Promise(resolve => refreshResolvers.push(resolve));
+      }
       isRefreshing = true;
-      const requestedSection = getActiveSection();
-      const requestedTab = getActiveTab();
+      
       try {
-        const response = await fetch('/dashboard', { cache: 'no-store' });
+        const requestedSection = getActiveSection();
+        const requestedTab = getActiveTab();
+        const response = await fetch('/dashboard?_t=' + Date.now(), { 
+          cache: 'no-store',
+          credentials: 'same-origin'
+        });
         if (!response.ok) {
           return;
         }
@@ -3222,7 +3241,48 @@
           livePriceKpiTimer = null;
         }
 
+        // Pre-apply active classes to nextRoot to prevent CSS transition flickering on refresh
+        const targetSection = selectedSection || requestedSection;
+        if (targetSection) {
+          nextRoot.querySelectorAll('.section-nav-link').forEach(function (item) {
+            item.classList.toggle('active', item.dataset.section === targetSection);
+          });
+          nextRoot.querySelectorAll('.section-panel').forEach(function (section) {
+            section.classList.toggle('active', section.dataset.sectionPanel === targetSection);
+          });
+        }
+
+        const targetTab = selectedTab || requestedTab;
+        if (targetTab) {
+          nextRoot.querySelectorAll('.section-panel[data-section-panel="portfolio"] .tab').forEach(function (item) {
+            item.classList.toggle('active', item.dataset.tab === targetTab);
+          });
+          nextRoot.querySelectorAll('.section-panel[data-section-panel="portfolio"] .panel').forEach(function (panel) {
+            panel.classList.toggle('active', panel.dataset.panel === targetTab);
+          });
+        }
+
+        // Preserve the watchlist search container to avoid losing input focus
+        const searchContainer = document.querySelector('.watchlist-search-container');
+        const placeholder = document.createElement('div');
+        if (searchContainer) {
+          searchContainer.parentNode.insertBefore(placeholder, searchContainer);
+          document.body.appendChild(searchContainer);
+          searchContainer.style.display = 'none';
+        }
+
         currentRoot.innerHTML = nextRoot.innerHTML;
+
+        if (searchContainer) {
+          const newSearchContainer = document.querySelector('.watchlist-search-container');
+          if (newSearchContainer) {
+            searchContainer.style.display = '';
+            newSearchContainer.replaceWith(searchContainer);
+          } else {
+            searchContainer.remove();
+          }
+          placeholder.remove();
+        }
         const oldQuotes = bootstrap.indexQuotes || [];
         bootstrap = readBootstrap();
         // Repaint sector charts immediately so snapshot refresh does not flash empty panels.
@@ -3272,6 +3332,14 @@
       } catch (_err) {
       } finally {
         isRefreshing = false;
+        const resolvers = refreshResolvers;
+        refreshResolvers = [];
+        resolvers.forEach(r => r());
+
+        if (refreshQueued) {
+          refreshQueued = false;
+          window.setTimeout(refreshDashboardSnapshot, 50);
+        }
       }
     }
 
@@ -3347,7 +3415,291 @@
     recalcSummaries();
     syncCsvActionState();
     connectLivePrices();
+    initWatchlistSearch();
     window.setInterval(refreshDashboardSnapshot, SNAPSHOT_MS);
   })();
+
+  function initWatchlistSearch() {
+    const input = document.getElementById('watchlist-search-input');
+    const resultsUl = document.getElementById('watchlist-search-results');
+    if (!input || !resultsUl) return;
+
+    let debounceTimer = null;
+    let watchlistBusy = false;
+    let searchController = null;
+    let searchSeq = 0;
+    const minSearchChars = 2;
+
+    function getWatchlistElements() {
+      return {
+        watchlistTbody: document.getElementById('watchlist-tbody'),
+        watchlistTableCard: document.getElementById('watchlist-table-card'),
+        watchlistEmptyCard: document.getElementById('watchlist-empty-card'),
+      };
+    }
+
+    function escapeHtml(value) {
+      return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function formatInr(value) {
+      return Number(value || 0).toLocaleString('en-US', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
+    }
+
+    function formatPct(value) {
+      return (
+        Number(value || 0).toLocaleString('en-US', {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        }) + '%'
+      );
+    }
+
+    function signClass(value) {
+      const n = Number(value || 0);
+      if (!Number.isFinite(n) || n === 0) {
+        return 'neutral';
+      }
+      return n > 0 ? 'positive' : 'negative';
+    }
+
+    function readRenderedSymbols() {
+      const elements = getWatchlistElements();
+      const watchlistTbody = elements.watchlistTbody;
+      if (!watchlistTbody) {
+        return [];
+      }
+      const btns = watchlistTbody.querySelectorAll('.js-watchlist-remove');
+      const symbols = [];
+      btns.forEach(function (btn) {
+        const key = String(btn.dataset.key || '').trim();
+        if (key) {
+          symbols.push(key);
+        }
+      });
+      return symbols;
+    }
+
+    function renderWatchlist(items) {
+      const elements = getWatchlistElements();
+      const watchlistTbody = elements.watchlistTbody;
+      const watchlistTableCard = elements.watchlistTableCard;
+      const watchlistEmptyCard = elements.watchlistEmptyCard;
+      if (!watchlistTbody || !watchlistTableCard || !watchlistEmptyCard) {
+        return;
+      }
+      const safeItems = Array.isArray(items) ? items : [];
+      if (safeItems.length === 0) {
+        watchlistTbody.innerHTML = '';
+        watchlistTableCard.style.display = 'none';
+        watchlistEmptyCard.style.display = '';
+        return;
+      }
+      const rows = safeItems
+        .map(function (item) {
+          const exchange = String(item.exchange || 'NSE').toUpperCase();
+          const symbol = String(item.symbol || '').toUpperCase();
+          const label = escapeHtml(item.label || symbol);
+          const sector = escapeHtml(item.sector || '—');
+          const token = Number(item.instrument_token || 0);
+          const prevClose = Number(item.prev_close || 0);
+          const ltp = Number(item.last_price || 0);
+          const change = Number(item.change || 0);
+          const changePct = Number(item.change_pct || 0);
+          const href =
+            '/dashboard/stock-chart?instrument_token=' +
+            encodeURIComponent(token) +
+            '&exchange=' +
+            encodeURIComponent(exchange) +
+            '&label=' +
+            encodeURIComponent(String(item.label || symbol)) +
+            '&ref=watchlist';
+          return (
+            '<tr class="live-watch" data-token="' +
+            token +
+            '" data-prev="' +
+            prevClose +
+            '">' +
+            '<td class="symbol"><a class="stock-chart-link" href="' +
+            href +
+            '" title="Daily OHLC &amp; volume (full history, pan/zoom)">' +
+            label +
+            '</a></td>' +
+            '<td>' +
+            sector +
+            '</td>' +
+            '<td class="num js-watch-ltp">' +
+            formatInr(ltp) +
+            '</td>' +
+            '<td class="num js-watch-change ' +
+            signClass(change) +
+            '">' +
+            formatInr(change) +
+            '</td>' +
+            '<td class="num js-watch-change-pct ' +
+            signClass(changePct) +
+            '">' +
+            formatPct(changePct) +
+            '</td>' +
+            '<td class="action-col" style="text-align: right;">' +
+            '<button type="button" class="btn btn-sm btn-ghost js-watchlist-remove" data-key="' +
+            escapeHtml(exchange + ':' + symbol) +
+            '" title="Remove" style="color: var(--negative); padding: 4px; border-radius: var(--radius-sm); border: none; background: transparent; cursor: pointer;">' +
+            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"></path></svg>' +
+            '</button>' +
+            '</td>' +
+            '</tr>'
+          );
+        })
+        .join('');
+      watchlistTbody.innerHTML = rows;
+      watchlistEmptyCard.style.display = 'none';
+      watchlistTableCard.style.display = '';
+    }
+
+    async function refreshWatchlistRows() {
+      const res = await fetch('/api/v1/watchlist', {
+        method: 'GET',
+        credentials: 'same-origin',
+        cache: 'no-store',
+      });
+      if (!res.ok) {
+        throw new Error('watchlist_refresh_failed');
+      }
+      const data = await res.json();
+      renderWatchlist(data.items || []);
+      return Array.isArray(data.symbols) ? data.symbols : readRenderedSymbols();
+    }
+
+    async function updateWatchlist(symbols, progressPlaceholder) {
+      if (watchlistBusy) {
+        return;
+      }
+      watchlistBusy = true;
+      if (input) {
+        input.disabled = true;
+        input.placeholder = progressPlaceholder || "Saving...";
+      }
+      
+      try {
+        const res = await fetch('/api/v1/watchlist', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ symbols: symbols })
+        });
+        if (res.ok) {
+          if (input) {
+            input.value = '';
+            input.placeholder = "Updating list...";
+          }
+          if (resultsUl) resultsUl.style.display = 'none';
+          await refreshWatchlistRows();
+        } else {
+          console.error("Failed to update watchlist");
+        }
+      } catch (err) {
+        console.error(err);
+      } finally {
+        if (input) {
+          input.disabled = false;
+          input.placeholder = "Search NSE/BSE stocks & indices to add...";
+          input.focus();
+        }
+        watchlistBusy = false;
+      }
+    }
+
+    input.addEventListener('input', function() {
+      clearTimeout(debounceTimer);
+      const query = input.value.trim();
+      if (!query) {
+        resultsUl.style.display = 'none';
+        return;
+      }
+      if (query.length < minSearchChars) {
+        resultsUl.innerHTML = '<li style="padding: 8px 12px; color: var(--muted);">Type at least 2 characters</li>';
+        resultsUl.style.display = 'block';
+        return;
+      }
+      debounceTimer = setTimeout(function() {
+        if (searchController) {
+          searchController.abort();
+        }
+        searchController = new AbortController();
+        const seq = ++searchSeq;
+        fetch('/api/v1/instruments/search?q=' + encodeURIComponent(query), { signal: searchController.signal, credentials: 'same-origin' })
+          .then(res => (res.ok ? res.json() : []))
+          .then(data => {
+            if (seq !== searchSeq) {
+              return;
+            }
+            resultsUl.innerHTML = '';
+            if (!data || data.length === 0) {
+              resultsUl.innerHTML = '<li style="padding: 8px 12px; color: var(--muted);">No results found</li>';
+            } else {
+              data.forEach(item => {
+                const li = document.createElement('li');
+                li.style.cssText = 'padding: 8px 12px; cursor: pointer; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;';
+                li.innerHTML = `
+                  <div>
+                    <strong style="color: var(--text);">${item.symbol}</strong>
+                    <span style="font-size: 12px; color: var(--muted); margin-left: 8px;">${item.name}</span>
+                  </div>
+                  <span style="font-size: 10px; padding: 2px 4px; background: var(--bg); border-radius: 4px;">${item.exchange}</span>
+                `;
+                li.addEventListener('mouseenter', () => li.style.background = 'var(--bg)');
+                li.addEventListener('mouseleave', () => li.style.background = 'transparent');
+                li.addEventListener('click', function() {
+                  const current = readRenderedSymbols();
+                  if (!current.includes(item.key)) {
+                    current.push(item.key);
+                    updateWatchlist(current, "Adding...");
+                  }
+                });
+                resultsUl.appendChild(li);
+              });
+            }
+            resultsUl.style.display = 'block';
+          })
+          .catch(function (err) {
+            if (err && err.name === 'AbortError') {
+              return;
+            }
+            resultsUl.innerHTML = '<li style="padding: 8px 12px; color: var(--muted);">Search unavailable</li>';
+            resultsUl.style.display = 'block';
+          });
+      }, 300);
+    });
+
+    document.addEventListener('click', function(e) {
+      if (!input.contains(e.target) && !resultsUl.contains(e.target)) {
+        resultsUl.style.display = 'none';
+      }
+    });
+
+    document.addEventListener('click', async function(e) {
+      const btn = e.target.closest('.js-watchlist-remove');
+      if (btn) {
+        if (watchlistBusy) {
+          return;
+        }
+        const key = btn.dataset.key;
+        if (key) {
+          let current = readRenderedSymbols();
+          current = current.filter(function(k) { return k !== key; });
+          updateWatchlist(current, "Removing...");
+        }
+      }
+    });
+  }
 </script>
 {% endblock %}

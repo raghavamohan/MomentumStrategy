@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
@@ -49,6 +50,9 @@ from app.infrastructure.cache.nse_provider import get_nifty50_symbols
 
 logger = logging.getLogger(__name__)
 _DASHBOARD_TIMING_LOGGER = dashboard_timing_logger()
+_WATCHLIST_SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9 ._-]*$")
+DEFAULT_WATCHLIST_SYMBOLS = ["NSE:NIFTY 50", "NSE:NIFTY BANK"]
+MAX_WATCHLIST_SYMBOLS = 50
 
 KITE_PORTFOLIO_PERMISSION_USER_MESSAGE = (
     "Zerodha rejected portfolio API calls (Insufficient permission). "
@@ -139,6 +143,130 @@ def decorate_position(
         symbol_to_isin=symbol_to_isin,
     )
     return model.to_dict()
+
+
+def normalise_watchlist_symbols(raw_symbols: object) -> list[str]:
+    """Return validated, deduplicated watchlist keys as ``EXCHANGE:SYMBOL``."""
+    if not isinstance(raw_symbols, list):
+        raw_symbols = []
+    clean: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_symbols:
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        if ":" in value:
+            exchange_raw, symbol_raw = value.split(":", 1)
+            exchange = exchange_raw.strip().upper()
+            symbol = symbol_raw.strip().upper()
+        else:
+            exchange = "NSE"
+            symbol = value.upper()
+        if exchange not in {"NSE", "BSE"}:
+            continue
+        if not symbol or not _WATCHLIST_SYMBOL_RE.match(symbol):
+            continue
+        key = f"{exchange}:{symbol}"
+        if key in seen:
+            continue
+        seen.add(key)
+        clean.append(key)
+        if len(clean) >= MAX_WATCHLIST_SYMBOLS:
+            break
+    return clean
+
+
+def session_watchlist_symbols(session: dict[str, Any]) -> list[str]:
+    """Resolve validated watchlist symbols from session.
+
+    Defaults are applied only when the session does not have a watchlist key.
+    If the user explicitly saves an empty watchlist, keep it empty.
+    """
+    if "watchlist" not in session:
+        return list(DEFAULT_WATCHLIST_SYMBOLS)
+    return normalise_watchlist_symbols(session.get("watchlist"))
+
+
+def build_watch_list_rows(
+    custom_watchlist: list[str],
+    quote_batch: dict[str, Any],
+    live_ltp_by_token: dict[int, float],
+    *,
+    token_to_name: dict[int, str],
+    symbol_to_name: dict[tuple[str, str], str],
+    token_to_kite_sector: dict[int, str],
+    symbol_to_kite_sector: dict[tuple[str, str], str],
+    nse_symbol_to_industry: dict[str, str],
+    isin_to_industry: dict[str, str],
+    token_to_isin: dict[int, str],
+    symbol_to_isin: dict[tuple[str, str], str],
+    nse_symbol_to_token: dict[str, int],
+) -> list[dict[str, Any]]:
+    """Build watchlist rows for dashboard template and API responses."""
+    watch_list: list[dict[str, Any]] = []
+    for item in custom_watchlist:
+        exch, symbol = item.split(":", 1) if ":" in item else ("NSE", item)
+
+        qkey = f"{exch}:{symbol}"
+        qrow = quote_batch.get(qkey) or {}
+        qtoken = int(qrow.get("instrument_token") or 0)
+        token = (
+            qtoken
+            if qtoken > 0
+            else (int(nse_symbol_to_token.get(symbol) or 0) if exch == "NSE" else 0)
+        )
+        ohlc = qrow.get("ohlc") or {}
+        raw_prev = ohlc.get("close")
+        raw_ltp = qrow.get("last_price")
+        try:
+            prev_close = float(raw_prev) if raw_prev is not None else None
+        except (TypeError, ValueError):
+            prev_close = None
+        try:
+            last_price = float(raw_ltp) if raw_ltp is not None else None
+        except (TypeError, ValueError):
+            last_price = None
+        if token > 0 and token in live_ltp_by_token:
+            last_price = float(live_ltp_by_token[token])
+
+        if last_price is not None and prev_close is not None and prev_close > 0:
+            change = last_price - prev_close
+            change_pct = (change / prev_close) * 100.0
+        else:
+            change = 0.0
+            change_pct = 0.0
+
+        company_name = str(symbol_to_name.get((exch, symbol)) or "").strip()
+        label = company_name or symbol
+        sector = resolve_equity_sector(
+            symbol=symbol,
+            exchange=exch,
+            instrument_token=token,
+            token_to_name=token_to_name,
+            symbol_to_name=symbol_to_name,
+            token_to_kite_sector=token_to_kite_sector,
+            symbol_to_kite_sector=symbol_to_kite_sector,
+            nse_symbol_to_industry=nse_symbol_to_industry,
+            isin_to_industry=isin_to_industry,
+            token_to_isin=token_to_isin,
+            symbol_to_isin=symbol_to_isin,
+        )
+
+        watch_list.append(
+            {
+                "label": label,
+                "exchange": exch,
+                "symbol": symbol,
+                "sector": sector,
+                "segment": "Equity",
+                "instrument_token": token,
+                "prev_close": prev_close,
+                "last_price": last_price,
+                "change": change,
+                "change_pct": change_pct,
+            }
+        )
+    return watch_list
 
 
 # Maximum chunk sizes (days) per Kite historical API interval
@@ -254,8 +382,13 @@ async def build_dashboard_view_model(
     dashboard_timing_mark(timings, "kite_client", request_start)
 
     index_quote_keys = [f"NSE:{ts}" for _, ts in DASHBOARD_INDEX_ENTRIES]
-    nifty50_symbols = list(get_nifty50_symbols())
-    watch_quote_keys = [f"NSE:{sym}" for sym in nifty50_symbols]
+    custom_watchlist = session_watchlist_symbols(request.session)
+    watch_quote_keys = []
+    for item in custom_watchlist:
+        if ":" in item:
+            watch_quote_keys.append(item)
+        else:
+            watch_quote_keys.append(f"NSE:{item}")
     quote_keys = index_quote_keys + watch_quote_keys
 
     mf_error: str | None = None
@@ -308,11 +441,18 @@ async def build_dashboard_view_model(
     nse_symbol_to_token = ref_snap.kite.nse_symbol_to_token
     reference_cache_debug = get_reference_cache_debug_snapshot()
     dashboard_timing_mark(timings, "instrument_and_reference_lookups", request_start)
-    watch_tokens = {
-        int(nse_symbol_to_token.get(sym) or 0)
-        for sym in nifty50_symbols
-        if int(nse_symbol_to_token.get(sym) or 0) > 0
-    }
+    watch_tokens = set()
+    for item in custom_watchlist:
+        if ":" in item:
+            exch, symbol = item.split(":", 1)
+        else:
+            exch, symbol = "NSE", item
+        qkey = f"{exch}:{symbol}"
+        tok = int((quote_batch.get(qkey) or {}).get("instrument_token") or 0)
+        if tok <= 0 and exch == "NSE":
+            tok = int(nse_symbol_to_token.get(symbol) or 0)
+        if tok > 0:
+            watch_tokens.add(tok)
 
     dashboard_timing_mark(timings, "quote_batch", request_start)
 
@@ -457,66 +597,20 @@ async def build_dashboard_view_model(
         "exchanges": list(profile_raw.get("exchanges") or []),
     }
 
-    watch_list: list[dict[str, Any]] = []
-    for symbol in nifty50_symbols:
-        qkey = f"NSE:{symbol}"
-        qrow = quote_batch.get(qkey) or {}
-        qtoken = int(qrow.get("instrument_token") or 0)
-        token = qtoken if qtoken > 0 else int(nse_symbol_to_token.get(symbol) or 0)
-        ohlc = qrow.get("ohlc") or {}
-        raw_prev = ohlc.get("close")
-        raw_ltp = qrow.get("last_price")
-        try:
-            prev_close = float(raw_prev) if raw_prev is not None else None
-        except (TypeError, ValueError):
-            prev_close = None
-        try:
-            last_price = float(raw_ltp) if raw_ltp is not None else None
-        except (TypeError, ValueError):
-            last_price = None
-        if token > 0 and token in live_ltp_by_token:
-            last_price = float(live_ltp_by_token[token])
-
-        if (
-            last_price is not None
-            and prev_close is not None
-            and prev_close > 0
-        ):
-            change = last_price - prev_close
-            change_pct = (change / prev_close) * 100.0
-        else:
-            change = 0.0
-            change_pct = 0.0
-
-        company_name = str(equity_symbol_to_name.get(("NSE", symbol)) or "").strip()
-        label = company_name or symbol
-        sector = resolve_equity_sector(
-            symbol=symbol,
-            exchange="NSE",
-            instrument_token=token,
-            token_to_name=equity_token_to_name,
-            symbol_to_name=equity_symbol_to_name,
-            token_to_kite_sector=equity_token_to_kite_sector,
-            symbol_to_kite_sector=equity_symbol_to_kite_sector,
-            nse_symbol_to_industry=nse_symbol_to_industry,
-            isin_to_industry=isin_to_industry,
-            token_to_isin=equity_token_to_isin,
-            symbol_to_isin=equity_symbol_to_isin,
-        )
-
-        watch_list.append(
-            {
-                "label": label,
-                "symbol": symbol,
-                "sector": sector,
-                "segment": "Equity",
-                "instrument_token": token,
-                "prev_close": prev_close,
-                "last_price": last_price,
-                "change": change,
-                "change_pct": change_pct,
-            }
-        )
+    watch_list = build_watch_list_rows(
+        custom_watchlist,
+        quote_batch,
+        live_ltp_by_token,
+        token_to_name=equity_token_to_name,
+        symbol_to_name=equity_symbol_to_name,
+        token_to_kite_sector=equity_token_to_kite_sector,
+        symbol_to_kite_sector=equity_symbol_to_kite_sector,
+        nse_symbol_to_industry=nse_symbol_to_industry,
+        isin_to_industry=isin_to_industry,
+        token_to_isin=equity_token_to_isin,
+        symbol_to_isin=equity_symbol_to_isin,
+        nse_symbol_to_token=nse_symbol_to_token,
+    )
     dashboard_timing_mark(timings, "watchlist_build", request_start)
 
     dashboard_bootstrap = {
@@ -577,7 +671,7 @@ async def build_dashboard_view_model(
         timings_str,
         reference_cache_str,
     )
-    _DASHBOARD_TIMING_LOGGER.info(
+    logger.info(
         "dashboard timing total=%.1fms | %s | reference_cache=%s",
         total_ms,
         timings_str,

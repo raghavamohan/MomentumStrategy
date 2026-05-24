@@ -37,6 +37,8 @@ _PORTFOLIO_CACHE_MARGINS_EXPIRES_AT = 0.0
 _QUOTE_CACHE_LOCK = threading.Lock()
 _QUOTE_CACHE_DAY = ""
 _QUOTE_CACHE: dict[str, dict[str, Any]] = {}
+_QUOTE_CACHE_FETCHED_AT: dict[str, float] = {}
+_QUOTE_CACHE_MISS_TTL_SECONDS = 45.0
 _MF_CACHE_LOCK = threading.Lock()
 _MF_HOLDINGS_CACHE_DAY = ""
 _MF_HOLDINGS_CACHE_PAYLOAD: dict[str, Any] | None = None
@@ -64,10 +66,19 @@ def today_cache_token() -> str:
     return current_effective_day_ist(cutoff_hour=9)
 
 
-def _quote_cache_entry_usable(entry: dict[str, Any] | None) -> bool:
-    """True when a cached quote row has enough data to reuse for the day."""
+def _quote_cache_entry_usable(
+    entry: dict[str, Any] | None,
+    *,
+    fetched_at: float,
+    now: float,
+) -> bool:
+    """True when a cached quote can be reused without immediate refetch.
+
+    For sparse/missing quote payloads, retain a short miss-TTL so repeated
+    dashboard hits do not hammer Kite quote() for the same unresolved keys.
+    """
     if not entry:
-        return False
+        return (now - fetched_at) < _QUOTE_CACHE_MISS_TTL_SECONDS
     raw_ltp = entry.get("last_price")
     if raw_ltp is not None:
         try:
@@ -83,7 +94,7 @@ def _quote_cache_entry_usable(entry: dict[str, Any] | None) -> bool:
                 return True
         except (TypeError, ValueError):
             pass
-    return False
+    return (now - fetched_at) < _QUOTE_CACHE_MISS_TTL_SECONDS
 
 
 def get_cached_quotes(kite, quote_keys: list[str]) -> dict[str, Any]:
@@ -92,14 +103,21 @@ def get_cached_quotes(kite, quote_keys: list[str]) -> dict[str, Any]:
     if not quote_keys:
         return {}
     day = today_cache_token()
+    now = time.time()
     with _QUOTE_CACHE_LOCK:
         if _QUOTE_CACHE_DAY != day:
             _QUOTE_CACHE_DAY = day
             _QUOTE_CACHE.clear()
+            _QUOTE_CACHE_FETCHED_AT.clear()
         cached = {
             k: _QUOTE_CACHE[k]
             for k in quote_keys
-            if k in _QUOTE_CACHE and _quote_cache_entry_usable(_QUOTE_CACHE.get(k))
+            if k in _QUOTE_CACHE
+            and _quote_cache_entry_usable(
+                _QUOTE_CACHE.get(k),
+                fetched_at=float(_QUOTE_CACHE_FETCHED_AT.get(k) or 0.0),
+                now=now,
+            )
         }
     missing = [k for k in quote_keys if k not in cached]
     if not missing:
@@ -112,8 +130,10 @@ def get_cached_quotes(kite, quote_keys: list[str]) -> dict[str, Any]:
         if _QUOTE_CACHE_DAY != day:
             _QUOTE_CACHE_DAY = day
             _QUOTE_CACHE.clear()
+            _QUOTE_CACHE_FETCHED_AT.clear()
         for k in missing:
             _QUOTE_CACHE[k] = fetched.get(k) or {}
+            _QUOTE_CACHE_FETCHED_AT[k] = now
             cached[k] = _QUOTE_CACHE[k]
     return cached
 
