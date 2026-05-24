@@ -1,4 +1,5 @@
 import { indicatorRegistry } from '../indicatorRegistry.js';
+import { fibBandColorMap, indicatorGlowColor, styleToLw } from '../visualUtils.js';
 
 export const FibBandsIndicator = {
   id: 'FIB',
@@ -10,12 +11,12 @@ export const FibBandsIndicator = {
 
   createSeries: function(chart, options) {
     var bands = ['l1000', 'l786', 'l618', 'l500', 'l382', 'l236', 'l0'];
-    var lineStyle = options.style === 'solid' ? 0 : (options.style === 'dotted' ? 3 : 2);
+    var lineStyle = styleToLw(options.style);
     
     var seriesObj = {
       bands: {},
       glowBands: {},
-      mainSeries: null // For compatibility with standard indicator checks
+      mainSeries: null
     };
 
     bands.forEach(function(band) {
@@ -30,6 +31,7 @@ export const FibBandsIndicator = {
       seriesObj.glowBands[band] = chart.addLineSeries({
         color: 'transparent',
         lineWidth: Math.max(12, options.lineWidth + 8),
+        lineStyle: 0,
         crosshairMarkerVisible: false,
         lastValueVisible: false,
         priceLineVisible: false
@@ -73,8 +75,35 @@ export const FibBandsIndicator = {
     });
   },
 
+  syncSelection: function(seriesObj, selected, options) {
+    var bands = ['l1000', 'l786', 'l618', 'l500', 'l382', 'l236', 'l0'];
+    var lw = Math.max(1, Math.min(8, Number(options.lineWidth) || 1));
+    var ls = styleToLw(options.style);
+    var colors = fibBandColorMap(options);
+
+    bands.forEach(function(band) {
+      if (seriesObj.bands[band]) {
+        seriesObj.bands[band].applyOptions({
+          color: colors[band] || options.color || '#f59e0b',
+          lineWidth: lw,
+          lineStyle: ls,
+          visible: options.visible !== false,
+          lastValueVisible: true,
+          priceLineVisible: false
+        });
+      }
+      if (seriesObj.glowBands[band]) {
+        seriesObj.glowBands[band].applyOptions({
+          color: selected ? indicatorGlowColor(colors[band] || options.color) : 'transparent',
+          lineWidth: Math.min(16, lw + 5),
+          lineStyle: 0,
+          visible: !!selected && options.visible !== false
+        });
+      }
+    });
+  },
+
   getTooltip: function(seriesObj, seriesDataMap, options) {
-    // For fib, we can just show the max / min or simply "FIB(period)"
     return { label: 'FIB ' + options.period, value: '' };
   }
 };

@@ -1,4 +1,5 @@
 import { indicatorRegistry } from '../indicatorRegistry.js';
+import { createStandardIndicatorSeries, updateStandardIndicatorSeries, syncStandardSelection, getStandardTooltip } from '../visualUtils.js';
 
 export const RsiIndicator = {
   id: 'RSI',
@@ -8,14 +9,7 @@ export const RsiIndicator = {
   userAddable: false,
 
   createSeries: function(chart, options) {
-    var mainSeries = chart.addLineSeries({
-      color: options.color,
-      lineWidth: options.lineWidth,
-      crosshairMarkerVisible: false,
-      lastValueVisible: false,
-      priceLineVisible: false
-    });
-    return { mainSeries };
+    return createStandardIndicatorSeries(chart, options);
   },
 
   calculate: function(bars, options) {
@@ -43,15 +37,15 @@ export const RsiIndicator = {
   },
 
   updateSeries: function(seriesObj, data) {
-    if (seriesObj.mainSeries) seriesObj.mainSeries.setData(data);
+    updateStandardIndicatorSeries(seriesObj, data);
+  },
+
+  syncSelection: function(seriesObj, selected, options) {
+    syncStandardSelection(seriesObj, selected, options);
   },
 
   getTooltip: function(seriesObj, seriesDataMap, options) {
-    var sd = seriesDataMap.get(seriesObj.mainSeries);
-    if (sd && sd.value != null) {
-      return { label: 'RSI' + options.period, value: sd.value };
-    }
-    return null;
+    return getStandardTooltip(seriesObj, seriesDataMap, 'RSI' + options.period);
   }
 };
 

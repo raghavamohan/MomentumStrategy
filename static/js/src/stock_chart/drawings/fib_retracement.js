@@ -1,4 +1,5 @@
 import { drawingRegistry } from '../drawingRegistry.js';
+import { applyCanvasMainStyle, applyCanvasGlowStyle } from '../visualUtils.js';
 
 export const FibRetracementDrawing = {
   id: 'FIB',
@@ -26,12 +27,10 @@ export const FibRetracementDrawing = {
     fibs.forEach(function (pct, i) {
       var yy = pixels.y1 + diffY * pct;
       var color = colorMap[i] || '#f59e0b';
+      var baseLw = objectState.width;
 
+      applyCanvasMainStyle(ctx, color, baseLw, objectState.style);
       ctx.globalAlpha = sel ? 0.85 : 0.55;
-      ctx.strokeStyle = color;
-      ctx.lineWidth = lw;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
       ctx.beginPath();
       ctx.moveTo(0, yy);
       ctx.lineTo(options.width || 1000, yy);
@@ -40,11 +39,7 @@ export const FibRetracementDrawing = {
 
       if (sel) {
         ctx.save();
-        ctx.globalAlpha = 0.33;
-        ctx.strokeStyle = color;
-        ctx.lineWidth = Math.min(16, lw + 5);
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
+        applyCanvasGlowStyle(ctx, color, baseLw);
         ctx.beginPath();
         ctx.moveTo(0, yy);
         ctx.lineTo(options.width || 1000, yy);

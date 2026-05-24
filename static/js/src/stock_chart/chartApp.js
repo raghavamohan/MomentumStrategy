@@ -19,6 +19,7 @@ import {
 } from './constants.js';
 import { indicatorRegistry } from './indicatorRegistry.js';
 import { drawingRegistry } from './drawingRegistry.js';
+import { rgbaFromHex, indicatorGlowColor, styleToLw, normalizeHexColor } from './visualUtils.js';
 import './indicators/sma.js';
 import './indicators/ema.js';
 import './indicators/rsi.js';
@@ -2284,49 +2285,12 @@ export function mountStockChartPage() {
     }).catch(function () {});
   }
 
-  function styleToLw(s) {
-    if (s === 'dotted') return 1;
-    if (s === 'dashed' || s === 'largeDashed') return 2;
-    return 0;
-  }
-
-  function normalizeHexColor(color, fallback) {
-    fallback = fallback || '#94a3b8';
-    if (typeof color !== 'string') return fallback;
-    var h = color.trim();
-    if (h.charAt(0) !== '#') return fallback;
-    var hex = h.slice(1);
-    if (hex.length === 3) {
-      hex = hex.charAt(0) + hex.charAt(0) + hex.charAt(1) + hex.charAt(1) + hex.charAt(2) + hex.charAt(2);
-    }
-    if (!/^[0-9a-fA-F]{6}$/.test(hex)) return fallback;
-    return '#' + hex.toLowerCase();
-  }
-
-  function rgbaFromHex(hex, alpha) {
-    var norm = normalizeHexColor(hex);
-    var h = norm.slice(1);
-    var r = parseInt(h.slice(0, 2), 16);
-    var g = parseInt(h.slice(2, 4), 16);
-    var b = parseInt(h.slice(4, 6), 16);
-    return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
-  }
-
   function applyChipObjectColor(chip, color, fallback) {
     var hex = normalizeHexColor(color, fallback);
     chip.style.borderColor = hex;
     chip.style.background = rgbaFromHex(hex, 0.14);
     chip.style.setProperty('--sc-chip-color', hex);
     chip.style.setProperty('--sc-chip-glow', rgbaFromHex(hex, 0.38));
-  }
-
-  function indicatorGlowColor(color) {
-    if (typeof color !== 'string') return 'rgba(255,255,255,.28)';
-    var h = color.trim();
-    if (h.startsWith('hsl')) {
-      return h.replace('hsl', 'hsla').replace(')', ', 0.33)');
-    }
-    return rgbaFromHex(color, 0.33);
   }
 
   /** Remove all Lightweight Charts series owned by one indicator row. */
@@ -2386,103 +2350,10 @@ export function mountStockChartPage() {
   function syncIndicatorSelectionVisuals() {
     if (!mainChart) return;
     indicators.forEach(function (ind) {
-      var lw = Math.max(1, Math.min(8, Number(ind.lineWidth) || 2));
-      var ls = styleToLw(ind.style || 'solid');
       var selected = selectedIndId != null && selectedIndId === ind.id && chartAllowsObjectSelection();
       var plugin = indicatorRegistry.get(ind.type);
-      var bandKeys = indicatorBandKeys(ind);
       if (plugin && typeof plugin.syncSelection === 'function') {
         try { plugin.syncSelection(ind.seriesObj, selected, ind); } catch (_) {}
-        return;
-      } else if (bandKeys && ind.seriesArr && ind.seriesArr.length) {
-        var fibLw = Math.max(1, Math.min(8, Number(ind.lineWidth) || 1));
-        var fibLs = styleToLw(ind.style || 'solid');
-        var fibColors = fibBandColorMap(ind);
-        ind.seriesArr.forEach(function (s, idx) {
-          var lvl = bandKeys[idx];
-          try {
-            s.applyOptions({
-              color: fibColors[lvl] || ind.color || '#f59e0b',
-              lineWidth: fibLw,
-              lineStyle: fibLs,
-              priceLineVisible: false,
-              lastValueVisible: true,
-              visible: ind.visible !== false
-            });
-          } catch (_) {}
-        });
-        if (!ind.fibGlowSeriesArr) ind.fibGlowSeriesArr = [];
-        if (!selected || ind.visible === false) {
-          if (ind.fibGlowSeriesArr.length) {
-            ind.fibGlowSeriesArr.forEach(function (g) {
-              try { mainChart.removeSeries(g); } catch (_) {}
-            });
-            ind.fibGlowSeriesArr = [];
-          }
-          return;
-        }
-        if (!ind.fibGlowSeriesArr.length && ind.cachedPtsArr) {
-          bandKeys.forEach(function (lvl) {
-            var pts = ind.cachedPtsArr[lvl];
-            if (!pts || !pts.length) return;
-            try {
-              var glow = mainChart.addLineSeries({
-                color: indicatorGlowColor(fibColors[lvl] || ind.color),
-                lineWidth: Math.min(16, fibLw + 5),
-                lineStyle: 0,
-                priceLineVisible: false,
-                lastValueVisible: false,
-                crosshairMarkerVisible: false
-              });
-              glow.setData(pts);
-              ind.fibGlowSeriesArr.push(glow);
-            } catch (_) {}
-          });
-        }
-        return;
-      }
-      if (ind.series) {
-        try {
-          ind.series.applyOptions({
-            color: ind.color || '#f59e0b',
-            lineWidth: lw,
-            lineStyle: ls,
-            priceLineVisible: false,
-            lastValueVisible: true,
-            visible: ind.visible !== false
-          });
-        } catch (_) {}
-      }
-      if (selected && ind.visible !== false) {
-        if (!ind.glowSeries) {
-          try {
-            ind.glowSeries = mainChart.addLineSeries({
-              color: indicatorGlowColor(ind.color),
-              lineWidth: Math.min(16, lw + 5),
-              lineStyle: 0,
-              priceLineVisible: false,
-              lastValueVisible: false,
-              crosshairMarkerVisible: false
-            });
-            if (ind.cachedPts && ind.cachedPts.length) ind.glowSeries.setData(ind.cachedPts);
-          } catch (_) {
-            ind.glowSeries = null;
-          }
-        } else {
-          try {
-            ind.glowSeries.applyOptions({
-              color: indicatorGlowColor(ind.color),
-              lineWidth: Math.min(16, lw + 5),
-              lineStyle: 0,
-              priceLineVisible: false,
-              lastValueVisible: false,
-              crosshairMarkerVisible: false
-            });
-          } catch (_) {}
-        }
-      } else if (ind.glowSeries) {
-        try { mainChart.removeSeries(ind.glowSeries); } catch (_) {}
-        ind.glowSeries = null;
       }
     });
   }
@@ -2615,6 +2486,7 @@ export function mountStockChartPage() {
          ind.fibGlowSeriesArr = Object.values(seriesObj.glowBands || {});
       }
       
+      // The plugin is now responsible for applying styles to its series.
       plugin.updateSeries(seriesObj, data);
     });
 

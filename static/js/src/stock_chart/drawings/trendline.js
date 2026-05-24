@@ -1,4 +1,5 @@
 import { drawingRegistry } from '../drawingRegistry.js';
+import { applyCanvasMainStyle, applyCanvasGlowStyle } from '../visualUtils.js';
 
 export const TrendlineDrawing = {
   id: 'TRENDLINE',
@@ -7,14 +8,10 @@ export const TrendlineDrawing = {
   chipLabel: 'TL',
   pointsNeeded: 2,
   draw: function(ctx, objectState, pixels, options) {
-    var lw = Math.max(1, Number(objectState.width) || 1);
     var sel = options.selected;
+    var baseLw = objectState.width;
     
-    ctx.strokeStyle = objectState.color || '#f59e0b';
-    ctx.lineWidth = lw;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.setLineDash(objectState.style === 'dashed' ? [6, 4] : (objectState.style === 'dotted' ? [2, 4] : []));
+    applyCanvasMainStyle(ctx, objectState.color, baseLw, objectState.style);
     ctx.beginPath();
     ctx.moveTo(pixels.x1, pixels.y1);
     ctx.lineTo(pixels.x2, pixels.y2);
@@ -23,12 +20,7 @@ export const TrendlineDrawing = {
     
     if (sel) {
       ctx.save();
-      ctx.globalAlpha = 0.33;
-      ctx.strokeStyle = objectState.color || '#f59e0b';
-      ctx.lineWidth = Math.min(16, lw + 5);
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.setLineDash([]);
+      applyCanvasGlowStyle(ctx, objectState.color, baseLw);
       ctx.beginPath();
       ctx.moveTo(pixels.x1, pixels.y1);
       ctx.lineTo(pixels.x2, pixels.y2);

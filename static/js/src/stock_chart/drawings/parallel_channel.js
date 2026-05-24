@@ -1,4 +1,5 @@
 import { drawingRegistry } from '../drawingRegistry.js';
+import { applyCanvasMainStyle, applyCanvasGlowStyle } from '../visualUtils.js';
 
 export const ParallelChannelDrawing = {
   id: 'PARALLEL_CHANNEL',
@@ -7,18 +8,13 @@ export const ParallelChannelDrawing = {
   chipLabel: 'Channel',
   pointsNeeded: 3,
   draw: function(ctx, objectState, pixels, options) {
-    var lw = Math.max(1, Number(objectState.width) || 1);
     var sel = options.selected;
-
-    var px3 = pixels.x3;
-    var py3 = pixels.y3;
-    if (px3 == null || py3 == null) {
-      px3 = pixels.x2;
-      py3 = pixels.y2;
-    }
-
+    var baseLw = objectState.width;
+    
     var dx = pixels.x2 - pixels.x1;
     var dy = pixels.y2 - pixels.y1;
+    var px3 = pixels.x3 != null ? pixels.x3 : pixels.x2;
+    var py3 = pixels.y3 != null ? pixels.y3 : pixels.y2;
     var px4 = px3 + dx;
     var py4 = py3 + dy;
 
@@ -33,11 +29,7 @@ export const ParallelChannelDrawing = {
     ctx.fill();
     ctx.globalAlpha = 1.0;
 
-    ctx.strokeStyle = objectState.color || '#f59e0b';
-    ctx.lineWidth = lw;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.setLineDash(objectState.style === 'dashed' ? [6, 4] : (objectState.style === 'dotted' ? [2, 4] : []));
+    applyCanvasMainStyle(ctx, objectState.color, baseLw, objectState.style);
     
     ctx.beginPath();
     ctx.moveTo(pixels.x1, pixels.y1);
@@ -53,12 +45,7 @@ export const ParallelChannelDrawing = {
 
     if (sel) {
       ctx.save();
-      ctx.globalAlpha = 0.33;
-      ctx.strokeStyle = objectState.color || '#f59e0b';
-      ctx.lineWidth = Math.min(16, lw + 5);
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.setLineDash([]);
+      applyCanvasGlowStyle(ctx, objectState.color, baseLw);
       ctx.beginPath();
       ctx.moveTo(pixels.x1, pixels.y1);
       ctx.lineTo(pixels.x2, pixels.y2);

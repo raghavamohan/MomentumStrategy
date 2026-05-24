@@ -1,4 +1,5 @@
 import { indicatorRegistry } from '../indicatorRegistry.js';
+import { hexToRgba, getStandardTooltip } from '../visualUtils.js';
 
 export const SuperTrendIndicator = {
   id: 'SUPERTREND',
@@ -123,12 +124,7 @@ export const SuperTrendIndicator = {
   },
 
   getTooltip: function(seriesObj, seriesDataMap, options) {
-    var sd = seriesDataMap.get(seriesObj.mainSeries);
-    var val = (sd && sd.value != null) ? sd.value : null;
-    if (val != null) {
-      return { label: 'SuperTrend(' + options.period + ',' + options.multiplier + ')', value: val };
-    }
-    return null;
+    return getStandardTooltip(seriesObj, seriesDataMap, 'SuperTrend(' + options.period + ',' + options.multiplier + ')');
   },
 
   getPrimarySeriesData: function(data) {
@@ -139,18 +135,6 @@ export const SuperTrendIndicator = {
   syncSelection: function(seriesObj, selected, options) {
     var lw = options.lineWidth || 2;
     var lineStyle = options.style === 'dashed' ? 2 : (options.style === 'dotted' ? 3 : 0);
-
-    function hexToRgba(hex, alpha) {
-      if (!hex || typeof hex !== 'string') return 'rgba(34, 197, 94, ' + alpha + ')';
-      if (hex.startsWith('#')) {
-        if (hex.length === 4) hex = '#' + hex[1] + hex[1] + hex[2] + hex[2] + hex[3] + hex[3];
-        var r = parseInt(hex.slice(1, 3), 16) || 0;
-        var g = parseInt(hex.slice(3, 5), 16) || 0;
-        var b = parseInt(hex.slice(5, 7), 16) || 0;
-        return 'rgba(' + r + ', ' + g + ', ' + b + ', ' + alpha + ')';
-      }
-      return hex;
-    }
 
     if (seriesObj.mainSeries) {
       seriesObj.mainSeries.applyOptions({
